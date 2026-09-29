@@ -78,6 +78,13 @@ port mirrors (see `internal/version`).
   that fail to launch are named, capped at three with a count of the rest, and
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
+- **(s)omething else on every permission prompt, and the prompt says Esc
+  cancels the turn.** The redirect answer existed only on host-change asks; an
+  ordinary tool ask offered yes / always / no. `s` now declines any ask as a
+  redirect: the model is told the user is about to say what they want instead
+  and to wait for it rather than route around the refusal, and what you type
+  next lands before Klaudia's next step. Both prompts end with `(esc cancels
+  turn)`, because Esc is not "no" — it ends the whole turn.
 
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
