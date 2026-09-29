@@ -382,6 +382,21 @@ port mirrors (see `internal/version`).
   after the last boundary. `--full` still replays the whole transcript; a
   transcript compacted before this change has no boundary and resumes from the
   summary alone, as before.
+- **Compaction on Claude Fable 5.1 and Claude Opus 5.5 no longer edits history
+  that has already been sent.** These models reject a replayed thinking block
+  if anything before it changed since it was produced. For accounts created on
+  or after 2026-08-31, that rejection is a 400. Two edits could trigger it:
+  - Microcompact trimmed old tool results. It is now skipped on these models,
+    because trimming has no form the check accepts. Autocompact still keeps
+    the context within the window.
+  - The autocompact and `/compact` summary request replayed the conversation's
+    thinking without its system prompt and tools. So on an enforced account,
+    compaction would fail exactly when it was needed. The summary request now
+    leaves out the thinking blocks. The history the model continues from is
+    unchanged.
+
+  Other models behave as before. The `opus` and `fable` aliases still point at
+  5.0.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
