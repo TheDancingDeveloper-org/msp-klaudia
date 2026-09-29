@@ -149,6 +149,9 @@ type Sandbox struct {
 	// default. Set it when commands in the sandbox need them — git over ssh,
 	// the aws or kubectl CLIs.
 	ReadCredentials bool `toml:"readCredentials,omitempty"`
+	// FailIfUnavailable refuses to start when the configured sandbox cannot
+	// be used, instead of warning and running commands unconfined.
+	FailIfUnavailable bool `toml:"failIfUnavailable,omitempty"`
 }
 
 // Browser engines.
@@ -368,6 +371,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Sandbox.ReadCredentials {
 		dst.Sandbox.ReadCredentials = true
+	}
+	if src.Sandbox.FailIfUnavailable {
+		dst.Sandbox.FailIfUnavailable = true
 	}
 	if len(src.Sandbox.WriteRoots) > 0 {
 		dst.Sandbox.WriteRoots = append(dst.Sandbox.WriteRoots, src.Sandbox.WriteRoots...)

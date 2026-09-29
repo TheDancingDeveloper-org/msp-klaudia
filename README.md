@@ -616,7 +616,9 @@ check auth, tools and environment.
   `~/.docker/config.json`, gcloud/azure/gh/1Password config and the like — which
   commands cannot read. Set `readCredentials = true` when commands in the
   sandbox need them (git over ssh, the aws or kubectl CLIs). Falls back to
-  local with a warning if the tool is absent.
+  local with a warning if the tool is absent or cannot run (bwrap needs
+  unprivileged user namespaces); set `failIfUnavailable = true` to refuse to
+  start instead.
 - `container` — run inside docker/podman (`runtime`, `image`, `mountCwd`,
   `readOnly`, `network`).
 
