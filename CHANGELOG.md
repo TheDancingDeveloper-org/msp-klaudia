@@ -611,6 +611,16 @@ port mirrors (see `internal/version`).
   cycling. The `@` must start a word, so `bob@example.com` is left alone. A
   follow-up queued during a turn is now indexed when it is sent, so `/outline`
   and `/search --mine` list it like a typed prompt.
+- **A malformed tool call reached the host gate and the user before being
+  rejected as invalid.** `dispatch` ran `tool.ValidateInput` only after the
+  host gate and the permission/approval step, so a tool_use with bad or missing
+  arguments — a call that could never run whatever anyone decided — still made
+  the host gate classify it and, worse, made the user approve it before it was
+  refused. Validation now runs first, right after the tool is looked up, so an
+  obviously-invalid call is rejected immediately without bothering the gate or
+  the user. The rejection returns the same `errResult` (with the accepted-field
+  list) it did before, so the failure counters and loop-breakers behave
+  identically; only the timing moved.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
