@@ -315,6 +315,13 @@ port mirrors (see `internal/version`).
   non-images, and images over 5 MB or 8,000 pixels on a side are refused with
   a message saying why. Upstream 2.1.122/2.1.126/2.1.144/2.1.145/2.1.157/
   2.1.166.
+- **A grep that finds nothing is not a failed command.** Every non-zero exit
+  was an error result, and error results drive the loop's repeat-failure
+  steering, so a model searching for something correctly absent was nudged
+  as if it kept making the same mistake. Exit 1 from grep, rg, ag, diff, cmp
+  and test — the last command in the line — is now an answer, marked "no
+  match / differences found". Exit 2 and above are still errors. Upstream
+  2.1.144.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
