@@ -175,6 +175,23 @@ port mirrors (see `internal/version`).
   match, so a later `--resume` sees the same conversation as the screen; N beyond
   the exchanges present rewinds all of them and says so, and N≤0 or non-numeric is
   a no-op with an error.
+- **Headless `klaudia doctor [--json]` and `klaudia config show [--origin]`.**
+  Two subcommands that run and exit without starting a session, for scripts and
+  CI. `klaudia doctor` prints the same environment diagnostics as the
+  interactive `/doctor` (platform, auth, provider/model, context window,
+  sandbox, MCP, LSP, skills); `--json` emits a `{checks, ok}` object, and the
+  command exits non-zero when a *critical* check fails — defined narrowly as "no
+  usable credential resolved", the one condition under which Klaudia cannot
+  reach a model at all, so a missing sandbox binary or absent language server
+  stays advisory. `klaudia config show` prints the effective merged config as
+  `key = value` lines; `--origin` annotates each with the layer it came from
+  (default / home / project / env). Origins are recovered by a parallel
+  introspection pass that reads the same two files `config.Load` reads but keeps
+  the layers separate and replays the merge precedence per field — `Load` itself
+  is unchanged. The resolved API key is never printed: the `apiKey` line reports
+  only that a key is set and whether it came inline from a file or from the
+  named `apiKeyEnv` variable (an `env` origin), and the key text appears
+  nowhere in the output.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

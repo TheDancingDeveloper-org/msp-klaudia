@@ -770,6 +770,11 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
 
+	// Headless inspection subcommands. These run and exit without starting a
+	// session, so they are safe in scripts and CI.
+	cmd.AddCommand(newDoctorCommand())
+	cmd.AddCommand(newConfigCommand())
+
 	return cmd
 }
 
