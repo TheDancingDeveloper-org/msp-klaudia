@@ -6,6 +6,28 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Session management: titles, `/resume` picker, `/rename`, `klaudia sessions
+  ls|rm`, and startup retention.** Sessions were resumable only by remembering a
+  UUID and passing `--resume`; there was no way to see what was stored, name a
+  session, or clear old ones, so the sessions directory grew without bound and a
+  UUID told you nothing about which conversation it was.
+
+  Each session now derives a one-line title from its first prompt, persisted in a
+  `<id>.meta.json` sidecar beside the transcript (the transcript itself stays an
+  append-only log, so mutable metadata lives next to it, as the compaction
+  summary already does). Titles are backfilled lazily the first time a session is
+  listed. `klaudia sessions ls` prints id, age, project and title (`--json` for
+  the machine-readable form); `klaudia sessions rm <id>` deletes a session's
+  transcript, summary and metadata. In the TUI, `/resume` opens the standard
+  numbered picker over recent sessions (title + age) and switches to the chosen
+  one in place — reusing a swappable recorder so subsequent turns append to the
+  resumed transcript — and `/rename <title>` sets the current session's title.
+
+  Retention prunes stale sessions once at startup, bounded by a new `[sessions]`
+  config section: `retentionDays` (default 30) and `retentionMax` (default 100),
+  each independent, with `-1` to disable. The active session is never pruned and
+  never counts against the cap, and every delete — retention or `sessions rm` —
+  is guarded to only remove files sitting directly inside the sessions store.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

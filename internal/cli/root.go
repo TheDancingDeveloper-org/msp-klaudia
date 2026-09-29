@@ -101,7 +101,7 @@ var builtinSlashCommands = map[string]bool{
 	"config": true, "agents": true, "context": true,
 	"compact": true, "add-dir": true,
 	"plan": true, "doctor": true, "diff": true, "commit": true, "export": true,
-	"last": true,
+	"last": true, "resume": true, "rename": true,
 }
 
 // withExtraDirs appends an "additional working directories" note to the system
@@ -478,6 +478,15 @@ apiKeyEnv = "MY_API_KEY"
 # TUI theme (Markdown + chrome). /theme switches it for a session.
 # theme = "nord" # dracula | gruvbox | tokyo-night | nord | catppuccin
 
+# Session retention: old transcripts under ~/.klaudia/sessions are pruned once
+# at startup. The active session is never touched. Both caps are independent —
+# a session is pruned if it is older than retentionDays OR beyond the newest
+# retentionMax. Defaults: 30 days / 100 sessions. Set a value to -1 to disable
+# that cap. "klaudia sessions ls" lists them; "klaudia sessions rm <id>" deletes.
+# [sessions]
+# retentionDays = 30
+# retentionMax = 100
+
 # Optional examples:
 # [sandbox]
 # mode = "local" # local | os | container
@@ -638,6 +647,9 @@ func NewRootCommand() *cobra.Command {
 	// Match commander's `--version` output: "<version> (Klaudia)" with no prefix.
 	cmd.SetVersionTemplate("{{.Version}}\n")
 
+	// `klaudia sessions ls|rm` manages the on-disk transcript store headlessly.
+	cmd.AddCommand(newSessionsCommand())
+
 	// A malformed command line is a usage error, not a run failure: nothing
 	// happened, and the caller should fix the invocation rather than retry it.
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
@@ -767,6 +779,15 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
 	cfg := config.Load(cwd)
+
+	// Prune stale sessions once at startup, best effort. The session opened for
+	// this run is passed as the active id so retention can never delete it.
+	// Silent unless it removed something and --verbose is set: an automatic
+	// cleanup should not be chatty, but a surprised user should be able to see it.
+	if removed, perr := session.Prune(sessionRetention(cfg.Sessions), sessionID); perr == nil && opts.verbose && len(removed) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "session retention: pruned %d old session(s)\n", len(removed))
+	}
+
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err
@@ -1040,13 +1061,24 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	loop := agent.New(provider, registry)
 
+	// live tracks the session this run is currently recording to. It starts at
+	// the session chosen at launch and is repointed by the interactive /resume
+	// picker (below), so compaction summaries follow the resumed session rather
+	// than the one Klaudia started in. Read on the agent goroutine, written on
+	// the UI goroutine, so it is guarded.
+	liveID, livePath := sessionID, transcriptPath
+	var liveMu sync.Mutex
+
 	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
 	onSummary := func(summary string) {
-		if transcriptPath != "" {
-			_ = session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
+		liveMu.Lock()
+		id, p := liveID, livePath
+		liveMu.Unlock()
+		if p != "" {
+			_ = session.WriteSummaryAt(session.SummaryPathFor(p), id, summary, gitCommit(cwd))
 			return
 		}
-		_ = session.WriteSummary(cwd, sessionID, summary, gitCommit(cwd))
+		_ = session.WriteSummary(cwd, id, summary, gitCommit(cwd))
 	}
 
 	// Interactive TUI: the default when not headless and not stream-json input.
@@ -1101,6 +1133,50 @@ func run(cmd *cobra.Command, opts *options) error {
 			Executor:   executor,
 		}
 		extraDirs = func() []string { return sess.ExtraDirs }
+
+		// A swappable recorder lets the /resume picker repoint the transcript
+		// mid-session without rebuilding the loop. The launch transcript's own
+		// defer closes it; a resumed one is closed here (and each swap closes the
+		// one it replaces).
+		rec := newSwapRecorder(recorder)
+		defer func() {
+			if cur := rec.current(); cur != recorder {
+				closeRecorder(cur)
+			}
+		}()
+		sess.Resume = func(id string) ([]anthropic.BetaMessageParam, error) {
+			if !session.ValidID(id) {
+				return nil, fmt.Errorf("invalid session id %q", id)
+			}
+			tp := resumeTranscript(cwd, id)
+			entries, rerr := session.Read(tp)
+			if rerr != nil {
+				return nil, fmt.Errorf("read session %s: %w", id, rerr)
+			}
+			hist, rerr := agent.MessagesFromEntries(entries)
+			if rerr != nil {
+				return nil, fmt.Errorf("resume %s: %w", id, rerr)
+			}
+			// Append new turns to the located transcript so the resumed session
+			// stays in one file, exactly as the CLI --resume path does.
+			ntr, rerr := session.NewTranscript(session.Meta{
+				SessionID:      id,
+				CWD:            cwd,
+				Version:        version.Version,
+				GitBranch:      gitBranch(cwd),
+				PermissionMode: sess.PermissionMode,
+				Path:           tp,
+			})
+			if rerr != nil {
+				return nil, fmt.Errorf("resume %s: %w", id, rerr)
+			}
+			closeRecorder(rec.swap(ntr))
+			liveMu.Lock()
+			liveID, livePath = id, ntr.Path()
+			liveMu.Unlock()
+			return hist, nil
+		}
+
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
 			// Permission mode reads live from the session every check, so a
 			// /mode bypass (or ExitPlanMode flipping out of plan) takes effect
@@ -1133,7 +1209,7 @@ func run(cmd *cobra.Command, opts *options) error {
 				Asker:           asker,
 				Planner:         planner,
 				InitialMessages: history,
-				Recorder:        recorder,
+				Recorder:        rec,
 				WebTools:        true,
 				OnSummary:       onSummary,
 			}, emit)

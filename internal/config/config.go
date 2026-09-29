@@ -70,6 +70,23 @@ type Config struct {
 	Trust Trust `toml:"trust,omitempty"`
 	// Input configures the prompt's key handling.
 	Input Input `toml:"input,omitempty"`
+	// Sessions configures on-disk session retention.
+	Sessions Sessions `toml:"sessions,omitempty"`
+}
+
+// Sessions configures retention of stored session transcripts, pruned once at
+// startup. The active session is always kept.
+//
+// The two caps are independent: a session is pruned when it is older than the
+// age cap OR beyond the newest-N count cap. A zero (unset) field takes the
+// conservative default; a negative value disables that cap entirely.
+type Sessions struct {
+	// RetentionDays deletes sessions last modified more than N days ago.
+	// 0 (unset) uses the default of 30 days; a negative value disables the age cap.
+	RetentionDays int `toml:"retentionDays,omitempty"`
+	// RetentionMax keeps at most the N newest sessions.
+	// 0 (unset) uses the default of 100; a negative value disables the count cap.
+	RetentionMax int `toml:"retentionMax,omitempty"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -360,6 +377,15 @@ func merge(dst *Config, src Config) {
 	dst.Permissions.Deny = append(dst.Permissions.Deny, src.Permissions.Deny...)
 	if src.Trust.Mode != "" {
 		dst.Trust.Mode = src.Trust.Mode
+	}
+	// Session retention: project overrides home. 0 means unset (keep the
+	// default), so only a non-zero value — including a negative "disable" —
+	// carries over.
+	if src.Sessions.RetentionDays != 0 {
+		dst.Sessions.RetentionDays = src.Sessions.RetentionDays
+	}
+	if src.Sessions.RetentionMax != 0 {
+		dst.Sessions.RetentionMax = src.Sessions.RetentionMax
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)

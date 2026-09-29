@@ -95,6 +95,11 @@ type Session struct {
 	// and what the classifier has found. Nil when there is no gate, which
 	// /trust reports rather than hiding.
 	Trust TrustController
+	// Resume, if set, backs the /resume picker: it switches the live transcript
+	// recorder to the session with the given id and returns that session's
+	// reconstructed history for the TUI to load. Nil when resume isn't wired
+	// (e.g. no transcript), in which case /resume says so rather than pretending.
+	Resume func(id string) ([]anthropic.BetaMessageParam, error)
 }
 
 // MCPController lets the TUI manage MCP servers without owning the manager.
@@ -1467,6 +1472,8 @@ var commandList = []cmdInfo{
 	{"/mcp", "", "List MCP servers; reconnect or disconnect them"},
 	{"/stats", "", "Show session stats (turns, tokens)"},
 	{"/status", "", "Show the current session settings"},
+	{"/resume", "", "Pick a recent session to resume in place"},
+	{"/rename", "<title>", "Set a title for the current session"},
 	{"/config", "", "Show resolved provider/model/sandbox settings"},
 	{"/agents", "", "List available sub-agent types"},
 	{"/context", "", "Show what Klaudia has in context: pinned, changed, active, recently inspected"},
@@ -2043,6 +2050,13 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		}
 		m.appendLine(bannerStyle.Render(fmt.Sprintf("model=%s  permissions=%s  messages=%d%s",
 			model, m.currentMode().Label(), len(m.history), resume)))
+	case "/resume":
+		if m.busyGuard("/resume") {
+			break
+		}
+		return m.startResumePicker()
+	case "/rename":
+		m.renameSession(strings.TrimSpace(strings.Join(args, " ")))
 	case "/mode":
 		if len(args) > 0 {
 			want := permission.Mode(args[0])
