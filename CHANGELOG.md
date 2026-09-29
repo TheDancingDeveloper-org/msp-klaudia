@@ -6,6 +6,18 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Security
+- **File permission rules match paths.** Read, Glob and Grep sent no
+  specifier, so `Read(~/.ssh/**)` denied nothing, and Edit/Write compared the
+  path as the model wrote it against the rule as a string: `~` was not
+  expanded, `Edit(src/**)` became a prefix that never matched, and `./x` and
+  `/abs/x` disagreed. File rules are now path patterns — `~` is home, relative
+  patterns are relative to the project, `**` crosses directories, a trailing
+  `/` or a glob-free pattern covers everything beneath — checked against the
+  path as written, its absolute form and its symlink target. A `Read` deny
+  also covers Glob and Grep (by search root) and an `Edit` deny covers Write
+  and NotebookEdit; allow rules are not widened. Rules written for the old
+  string matching keep matching. Upstream 2.1.162/2.1.163/2.1.172/2.1.176/
+  2.1.214/2.1.268/2.1.280.
 - **Bash permission rules check every command in a line.** They matched only
   the first command's two-word prefix, so `Bash(git status:*)` approved
   `git status && curl … | sh`, and `ls && rm -rf x`, `sudo rm x` or `/bin/rm x`
