@@ -275,6 +275,11 @@ port mirrors (see `internal/version`).
   8 MiB while the command runs, counting what it drops between them, and says
   so in the output. The model still sees the usual head and tail. Upstream
   2.1.247/2.1.252/2.1.265.
+- **A sub-agent that fails keeps what it found.** An error part-way through a
+  sub-agent's run — an overloaded service, a dropped stream — returned only
+  "Sub-agent failed", and everything it had worked out was lost. Its last
+  completed reply now comes back with the error, marked as possibly
+  incomplete. Upstream 2.1.199/2.1.200/2.1.246.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
