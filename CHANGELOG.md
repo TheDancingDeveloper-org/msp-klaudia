@@ -80,6 +80,10 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`[input] enter = "newline"` now takes effect.** Loading the config dropped
+  the whole `[input]` section when it merged the home and project files, so
+  Return always sent, whichever file set it. The setting now loads like the
+  others: project over home.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
