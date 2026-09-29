@@ -128,3 +128,36 @@ func TestSystemNoClaudeMd(t *testing.T) {
 		t.Error("should not emit CLAUDE.md section when none exists")
 	}
 }
+
+// Memory and knowledge are keyed by the project root; a subdirectory's own
+// .klaudia notes, written when they were keyed by cwd, are recalled after them.
+func TestSystemInRecallsRootThenCWDState(t *testing.T) {
+	root := t.TempDir()
+	cwd := filepath.Join(root, "internal", "tui")
+	for path, body := range map[string]string{
+		filepath.Join(root, ".klaudia", "MEMORY.md"):    "- root memory note",
+		filepath.Join(cwd, ".klaudia", "MEMORY.md"):     "- subdir memory note",
+		filepath.Join(root, ".klaudia", "KNOWLEDGE.md"): "- root knowledge",
+		filepath.Join(cwd, ".klaudia", "KNOWLEDGE.md"):  "- subdir knowledge",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := SystemIn(cwd, root, "")
+	if !strings.Contains(p, "Working directory: "+cwd) {
+		t.Error("env block should name the launch directory, not the root")
+	}
+	for _, pair := range [][2]string{{"root memory note", "subdir memory note"}, {"root knowledge", "subdir knowledge"}} {
+		i, j := strings.Index(p, pair[0]), strings.Index(p, pair[1])
+		if i < 0 || j < 0 || i > j {
+			t.Errorf("want %q then %q in the prompt (at %d, %d)", pair[0], pair[1], i, j)
+		}
+	}
+	if strings.Count(SystemIn(root, root, ""), "root memory note") != 1 {
+		t.Error("root == cwd should recall the memory once")
+	}
+}

@@ -304,14 +304,19 @@ Auto-resume is an interactive convenience: headless (`-p`) and embedding
 (`--input-format stream-json`) runs stay stateless unless you pass
 `--continue` or `-r <id>`.
 
-Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
-(override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
-transcripts from `~/.klaudia/projects/<encoded-cwd>/` during migration. When a
-session has a persisted compaction summary, resume seeds from it (token-saving)
-unless `--full`.
+Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-root>/`
+(override the base with `KLAUDIA_CONFIG_DIR`), where the root is the project
+root: the git top-level of the launch directory, or the launch directory itself
+outside a repository. Starting Klaudia in a subdirectory therefore resumes the
+repository's session. The launch directory's own dir (where sessions went
+before they were keyed by the root) is still read by auto-resume and
+`--continue`, and Klaudia still reads legacy transcripts from
+`~/.klaudia/projects/<encoded-dir>/` during migration. When a session has a
+persisted compaction summary, resume seeds from it (token-saving) unless
+`--full`.
 
 `-r <id>` finds the transcript by id anywhere under the sessions root, not only
-in the current directory's project dir, and keeps appending to the file it was
+in the current project's dir, and keeps appending to the file it was
 found in. An embedder can therefore pin the id with `--session-id`, stop the
 process, move the sessions root (for example to another host, pointed at with
 `KLAUDIA_CONFIG_DIR`) and resume from a different working directory. A session
@@ -679,6 +684,11 @@ skill overrides an installed one of the same name:
 ~/.claude/skills/     ~/.klaudia/skills/     .claude/skills/     .klaudia/skills/
 ```
 
+The two project directories are read at the project root (the git top-level),
+so a launch from a subdirectory still gets the repository's skills; when the
+launch directory is a subdirectory, its own `.claude/skills/` and
+`.klaudia/skills/` are read after the root's and win a name collision.
+
 `.claude` is included because that is where the ecosystem's skill installers
 put things (`anthropics/skills` and friends), for the same reason Klaudia reads
 `~/.claude/CLAUDE.md`. Either layout works in any of them:
@@ -770,6 +780,10 @@ Two complementary modes for working toward an objective:
   notes (a hit is tagged with its filename).
 - **Project knowledge** — `.klaudia/KNOWLEDGE.md` (curated, durable lessons) is
   injected into the system prompt when present.
+- Both live in the project root's `.klaudia/` (the git top-level; the launch
+  directory outside a repository), so a launch from a subdirectory shares them.
+  A subdirectory's own `.klaudia/MEMORY.md` and `KNOWLEDGE.md`, from before
+  memory was keyed by the root, are still recalled after the root's.
 
 ## Internal package layout
 

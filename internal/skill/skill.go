@@ -1,9 +1,10 @@
 // Package skill loads reusable prompt/command skills from Markdown files with
 // YAML frontmatter. Skills are read from ~/.claude/skills, ~/.klaudia/skills,
-// <cwd>/.claude/skills and <cwd>/.klaudia/skills, in that order of increasing
-// precedence — the same user-then-project overlay as config.Load and
-// mcp.LoadConfig, extended to the directories the wider ecosystem installs
-// into.
+// <root>/.claude/skills and <root>/.klaudia/skills (root being the project
+// root, the git top-level), then the same two under cwd when it is a
+// subdirectory, in that order of increasing precedence — the same
+// user-then-project overlay as config.Load and mcp.LoadConfig, extended to the
+// directories the wider ecosystem installs into.
 //
 // A skill file looks like:
 //
@@ -69,6 +70,15 @@ func (s Skill) Render(args string) string {
 // (project skills win on name collision). Malformed files are skipped, reporting
 // the reason to warn (warn may be nil). The result is sorted by name.
 func Load(cwd string, warn func(string)) []Skill {
+	return LoadProject(cwd, cwd, warn)
+}
+
+// LoadProject is Load for a launch directory inside a project: the project
+// root's .claude/skills and .klaudia/skills are read, then — when cwd is not
+// the root — cwd's own, which win on a name collision the way the closer
+// CLAUDE.md does. Reading cwd's directories also keeps skills that were put
+// beside a subdirectory launch (when skills were keyed by cwd) working.
+func LoadProject(root, cwd string, warn func(string)) []Skill {
 	byName := map[string]Skill{}
 
 	// Searched in increasing precedence. ~/.claude and .claude are read for
@@ -83,10 +93,12 @@ func Load(cwd string, warn func(string)) []Skill {
 			filepath.Join(home, ".klaudia", "skills"),
 		)
 	}
-	dirs = append(dirs,
-		filepath.Join(cwd, ".claude", "skills"),
-		filepath.Join(cwd, ".klaudia", "skills"),
-	)
+	for _, d := range projectDirs(root, cwd) {
+		dirs = append(dirs,
+			filepath.Join(d, ".claude", "skills"),
+			filepath.Join(d, ".klaudia", "skills"),
+		)
+	}
 
 	for _, dir := range dirs {
 		for _, sk := range loadDir(dir, warn) {
@@ -100,6 +112,18 @@ func Load(cwd string, warn func(string)) []Skill {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// projectDirs returns root then cwd, leaving cwd out when it is the root, so
+// a caller reading project-scoped files from both does not read one twice.
+func projectDirs(root, cwd string) []string {
+	if root == "" {
+		root = cwd
+	}
+	if cwd == "" || filepath.Clean(cwd) == filepath.Clean(root) {
+		return []string{root}
+	}
+	return []string{root, cwd}
 }
 
 // loadDir parses every *.md file in dir. A missing dir yields nothing.

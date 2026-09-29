@@ -52,6 +52,15 @@ If the user declines, do not look for another route to the same change. Carry on
 // System builds the full system prompt for a run in the given working directory.
 // model is the model ID/alias (may be empty).
 func System(cwd, model string) string {
+	return SystemIn(cwd, cwd, model)
+}
+
+// SystemIn is System for a run whose project-scoped state (memory and project
+// knowledge under .klaudia) is keyed by root, the project root, rather than by
+// the working directory. When cwd is a subdirectory, cwd's own .klaudia notes
+// are recalled after the root's, so memory written while it was keyed by the
+// launch directory is not lost.
+func SystemIn(cwd, root, model string) string {
 	var b strings.Builder
 	b.WriteString(base)
 	if model != "" {
@@ -63,12 +72,13 @@ func System(cwd, model string) string {
 		b.WriteString("\n\n# Project instructions (from CLAUDE.md)\n")
 		b.WriteString(instr)
 	}
-	if mem := recalledMemory(cwd); mem != "" {
+	dirs := stateDirs(root, cwd)
+	if mem := recalledMemory(dirs...); mem != "" {
 		b.WriteString("\n\n# Recalled memory\n")
 		b.WriteString("These are notes you saved in earlier sessions. Use the Memory tool to search for more or to add new ones.\n\n")
 		b.WriteString(mem)
 	}
-	if kn := recalledKnowledge(cwd); kn != "" {
+	if kn := recalledKnowledge(dirs...); kn != "" {
 		b.WriteString("\n\n# Project knowledge\n")
 		b.WriteString("Curated, durable lessons about this project (from .klaudia/KNOWLEDGE.md). Treat these as established facts.\n\n")
 		b.WriteString(kn)
@@ -79,12 +89,20 @@ func System(cwd, model string) string {
 // recalledKnowledge returns the curated project-knowledge file for priming the
 // model, or "" if there is none. Sibling of recalledMemory; KNOWLEDGE.md holds
 // hand-curated, durable lessons distinct from the free-form memory index.
-func recalledKnowledge(cwd string) string {
-	data, err := os.ReadFile(filepath.Join(cwd, ".klaudia", "KNOWLEDGE.md"))
-	if err != nil {
-		return ""
+func recalledKnowledge(dirs ...string) string {
+	var paths []string
+	for _, d := range dirs {
+		paths = append(paths, filepath.Join(d, ".klaudia", "KNOWLEDGE.md"))
 	}
-	return strings.TrimSpace(string(data))
+	return strings.TrimSpace(strings.Join(readMarkdownFiles(paths...), "\n\n"))
+}
+
+// stateDirs is the project root then cwd, leaving cwd out when it is the root.
+func stateDirs(root, cwd string) []string {
+	if root == "" || filepath.Clean(root) == filepath.Clean(cwd) {
+		return []string{cwd}
+	}
+	return []string{root, cwd}
 }
 
 // recalledMemory returns the project memory index for priming the model, or ""
@@ -93,14 +111,16 @@ func recalledKnowledge(cwd string) string {
 // (maintained by memory.Store.SyncLinks). The detail notes themselves are not
 // inlined — the model opens one (Read / Memory search) only when it's relevant,
 // so recall stays cheap as memory grows.
-func recalledMemory(cwd string) string {
-	klaudiaDir := filepath.Join(cwd, ".klaudia")
-	parts := readMarkdownFiles(filepath.Join(klaudiaDir, "MEMORY.md"))
+func recalledMemory(dirs ...string) string {
+	var parts []string
+	for _, d := range dirs {
+		klaudiaDir := filepath.Join(d, ".klaudia")
+		parts = append(parts, readMarkdownFiles(filepath.Join(klaudiaDir, "MEMORY.md"))...)
 
-	// Backward compatibility for projects that still have the old session-memory
-	// index under .klaudia/memory/MEMORY.md.
-	parts = append(parts, readMarkdownFiles(filepath.Join(klaudiaDir, "memory", "MEMORY.md"))...)
-
+		// Backward compatibility for projects that still have the old session-memory
+		// index under .klaudia/memory/MEMORY.md.
+		parts = append(parts, readMarkdownFiles(filepath.Join(klaudiaDir, "memory", "MEMORY.md"))...)
+	}
 	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
