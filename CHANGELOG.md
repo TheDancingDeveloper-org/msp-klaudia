@@ -6,6 +6,13 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **`Memory` can forget.** `operation=remove` deletes one session note from
+  MEMORY.md — the one `query` matches, with the same all-terms matching as
+  `search` — or, given `name`, a detail note under `.klaudia/memory/` and its
+  pointer in the index. A query that matches more than one note removes
+  nothing and lists the candidates; the timestamp on each note tells apart
+  similar ones. Until now a wrong note stayed in the prompt of every later
+  session unless someone edited the file by hand (#121).
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
@@ -101,6 +108,22 @@ port mirrors (see `internal/version`).
   events — they have no message form. A client that had adapted to the flat
   shape will need to read the envelope; the README's embedding section shows
   it.
+
+- **Memory index pointers showed `---` for notes with frontmatter.** A
+  `.klaudia/memory/*.md` note's hook in MEMORY.md's `## Linked memory` section
+  was its first line, which for a note with YAML frontmatter is the fence — and
+  `promote` and `supersede` add frontmatter, so they turned a useful pointer
+  into `- [n](memory/n.md) — ---`. The hook is now the frontmatter's
+  `description` when it has one, else the first line after the frontmatter;
+  `promote` and `supersede` keep a `description` when they rewrite a note. The
+  hook was also cut at byte 80, which could split a multi-byte character into
+  invalid UTF-8; it is now cut at 80 characters (#121).
+
+- **The recalled memory index had no size limit.** MEMORY.md is injected into
+  every request's system prompt and grows with every note. The recalled copy is
+  now cut at 200 lines or 25,000 bytes, at a line boundary, ending with a line
+  that says how many lines were left out and to open `.klaudia/MEMORY.md` or
+  search memory for them. The file itself is not changed (#121).
 
 - **A permission rule naming an MCP server matched nothing.** Rules were
   compared for equality against the tool's qualified name, so `mcp__loki` in
