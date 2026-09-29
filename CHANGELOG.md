@@ -27,6 +27,12 @@ port mirrors (see `internal/version`).
   An "always allow" saved from the TUI in an untrusted folder says it will not
   load until the folder is trusted. Upstream Claude Code closed the same class
   in 2.1.251/2.1.257.
+- **Files that make code run later are asked about in auto-accept modes.**
+  In `autonomous` and `acceptEdits`, writes to `.git/`, `.husky/`, `.klaudia/`,
+  `.claude/`, `.devcontainer/`, `.vscode/`, `.mcp.json`, `.envrc`, `.npmrc`,
+  `.yarnrc(.yml)`, `.pre-commit-config.yaml`, `bunfig.toml` and `.bazelrc` —
+  hooks, server and task config, rc files — now prompt, including through a
+  symlinked parent. Upstream 2.1.78/2.1.90/2.1.160.
 
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
