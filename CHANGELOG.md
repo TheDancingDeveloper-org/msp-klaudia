@@ -33,6 +33,12 @@ port mirrors (see `internal/version`).
   `.yarnrc(.yml)`, `.pre-commit-config.yaml`, `bunfig.toml` and `.bazelrc` —
   hooks, server and task config, rc files — now prompt, including through a
   symlinked parent. Upstream 2.1.78/2.1.90/2.1.160.
+- **Approval prompts show the whole command, with hidden characters escaped.**
+  Commands were cut at 220 characters, so a dangerous tail could be padded out
+  of view, and zero-width, bidi-override, control and look-alike space
+  characters reached the terminal as-is (a raw ESC or CR can redraw the
+  line). The full command is shown with those as `\u{XXXX}`. Upstream
+  2.1.211/2.1.223.
 
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
