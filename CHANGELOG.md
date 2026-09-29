@@ -101,6 +101,15 @@ port mirrors (see `internal/version`).
   resolved (five deep, cycles cut, not inside code fences); HTML comments are
   removed; each file is labelled with its path and included once. Upstream
   2.1.72/2.1.277.
+- **Bundled skills: `code-review`, `review-pr` and `feature-dev`.** They ship in
+  the binary, so a fresh install can review a diff, run a multi-aspect pre-merge
+  review through read-only `Explore` sub-agents, or walk a feature from
+  exploration through design to a reviewed implementation. They take the shape
+  of Claude Code's `code-review`, `pr-review-toolkit` and `feature-dev` plugins
+  but are original prompts written for Klaudia's tools: the upstream repository
+  is all-rights-reserved. A skill of the same name in any skills directory
+  replaces the bundled one, and `/doctor` lists them with scope `bundled`. One
+  consequence: the `Skill` tool is now always registered.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
