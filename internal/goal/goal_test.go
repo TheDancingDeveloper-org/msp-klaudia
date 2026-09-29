@@ -18,15 +18,18 @@ func TestSpecPathPrecedence(t *testing.T) {
 		}
 	})
 
-	t.Run("PRD.md wins over .klaudia/GOAL.md", func(t *testing.T) {
+	t.Run(".klaudia/GOAL.md wins over a goal-shaped PRD.md", func(t *testing.T) {
 		dir := t.TempDir()
 		os.MkdirAll(filepath.Join(dir, ".klaudia"), 0o755)
 		os.WriteFile(filepath.Join(dir, ".klaudia", "GOAL.md"), []byte("# Goal\n"), 0o644)
-		os.WriteFile(filepath.Join(dir, "PRD.md"), []byte("# PRD\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, "PRD.md"), []byte(Template("x")), 0o644)
 
 		path, found := SpecPath(dir)
-		if !found || path != filepath.Join(dir, "PRD.md") {
-			t.Errorf("got (%q, %v), want PRD.md found", path, found)
+		if !found || path != filepath.Join(dir, ".klaudia", "GOAL.md") {
+			t.Errorf("got (%q, %v), want .klaudia/GOAL.md found", path, found)
+		}
+		if _, ignored := IgnoredPRD(dir); ignored {
+			t.Error("IgnoredPRD should be quiet when GOAL.md is the spec")
 		}
 	})
 
@@ -40,6 +43,61 @@ func TestSpecPathPrecedence(t *testing.T) {
 			t.Errorf("got (%q, %v), want .klaudia/GOAL.md found", path, found)
 		}
 	})
+
+	t.Run("a goal-shaped PRD.md is adopted", func(t *testing.T) {
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "PRD.md"), []byte(Template("ship it")), 0o644)
+
+		path, found := SpecPath(dir)
+		if !found || path != filepath.Join(dir, "PRD.md") {
+			t.Errorf("got (%q, %v), want PRD.md found", path, found)
+		}
+		if _, ignored := IgnoredPRD(dir); ignored {
+			t.Error("IgnoredPRD should be quiet when PRD.md was adopted")
+		}
+	})
+
+	// The reported bug: a product PRD that was never written for the loop
+	// became its spec, and wrap-up summaries were written into it.
+	t.Run("an unrelated PRD.md is not adopted", func(t *testing.T) {
+		dir := t.TempDir()
+		prd := filepath.Join(dir, "PRD.md")
+		os.WriteFile(prd, []byte("# Product requirements\n\n## Users\n\nTeams who ...\n"), 0o644)
+
+		path, found := SpecPath(dir)
+		if found || path != filepath.Join(dir, ".klaudia", "GOAL.md") {
+			t.Errorf("got (%q, %v), want the .klaudia/GOAL.md create path, not found", path, found)
+		}
+		if got, ignored := IgnoredPRD(dir); !ignored || got != prd {
+			t.Errorf("IgnoredPRD = (%q, %v), want (%q, true)", got, ignored, prd)
+		}
+	})
+
+	t.Run("no PRD.md: nothing ignored", func(t *testing.T) {
+		if _, ignored := IgnoredPRD(t.TempDir()); ignored {
+			t.Error("IgnoredPRD reported a PRD.md that does not exist")
+		}
+	})
+}
+
+func TestIsGoalSpec(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"template", Template("x"), true},
+		{"ticked items and Verification heading", "# G\n\n- [x] done\n* [X] also\n\n### Verification\n\n`make test`\n", true},
+		{"checklist without verify", "# PRD\n\n- [ ] login\n", false},
+		{"verify without checklist", "# PRD\n\n## Verify\n\nmake test\n", false},
+		{"plain list is not a checklist", "# PRD\n\n- login\n\n## Verify\n\nmake\n", false},
+		{"verify in prose is not a section", "- [ ] a\n\nWe verify by hand.\n", false},
+	}
+	for _, tc := range cases {
+		if got := IsGoalSpec(tc.text); got != tc.want {
+			t.Errorf("%s: IsGoalSpec = %v, want %v", tc.name, got, tc.want)
+		}
+	}
 }
 
 func TestRead(t *testing.T) {
@@ -47,9 +105,10 @@ func TestRead(t *testing.T) {
 	if text, _, err := Read(dir); err != nil || text != "" {
 		t.Fatalf("Read with no spec = (%q, %v), want empty", text, err)
 	}
-	os.WriteFile(filepath.Join(dir, "PRD.md"), []byte("hello"), 0o644)
+	os.MkdirAll(filepath.Join(dir, ".klaudia"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".klaudia", "GOAL.md"), []byte("hello"), 0o644)
 	text, path, err := Read(dir)
-	if err != nil || text != "hello" || path != filepath.Join(dir, "PRD.md") {
+	if err != nil || text != "hello" || path != filepath.Join(dir, ".klaudia", "GOAL.md") {
 		t.Fatalf("Read = (%q, %q, %v)", text, path, err)
 	}
 }

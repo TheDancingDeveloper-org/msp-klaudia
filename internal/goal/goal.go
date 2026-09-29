@@ -24,19 +24,64 @@ const (
 )
 
 // SpecPath returns the goal-spec path for cwd and whether it already exists.
-// Preference order: ./PRD.md, then ./.klaudia/GOAL.md. When neither exists it
-// returns the default create path (.klaudia/GOAL.md) with found=false.
+// Preference order: ./.klaudia/GOAL.md, then ./PRD.md — but only when PRD.md
+// has the goal-spec shape (see IsGoalSpec). A PRD.md is a common name for a
+// product requirements document that was never written for the loop; adopting
+// one would point every iteration at it and write wrap-up summaries into it.
+// When neither qualifies it returns the default create path (.klaudia/GOAL.md)
+// with found=false.
 func SpecPath(cwd string) (path string, found bool) {
-	candidates := []string{
-		filepath.Join(cwd, "PRD.md"),
-		filepath.Join(cwd, ".klaudia", "GOAL.md"),
+	own := filepath.Join(cwd, ".klaudia", "GOAL.md")
+	if isFile(own) {
+		return own, true
 	}
-	for _, p := range candidates {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			return p, true
+	if prd := filepath.Join(cwd, "PRD.md"); isFile(prd) {
+		if data, err := os.ReadFile(prd); err == nil && IsGoalSpec(string(data)) {
+			return prd, true
 		}
 	}
-	return candidates[1], false
+	return own, false
+}
+
+// IgnoredPRD returns ./PRD.md when it exists but SpecPath passed it over for
+// lacking the goal-spec shape, so a caller can say why the loop is not using
+// it. It returns ("", false) when there is no PRD.md or it was adopted.
+func IgnoredPRD(cwd string) (string, bool) {
+	if _, found := SpecPath(cwd); found {
+		return "", false // GOAL.md, or a PRD.md that qualified
+	}
+	if prd := filepath.Join(cwd, "PRD.md"); isFile(prd) {
+		return prd, true
+	}
+	return "", false
+}
+
+// IgnoredPRDNote explains why prd is not the goal spec.
+func IgnoredPRDNote(prd string) string {
+	return "Not using " + prd + " as the goal spec: it lacks an acceptance checklist (\"- [ ]\" items) " +
+		"or a Verify section. The loop keeps its spec in .klaudia/GOAL.md."
+}
+
+func isFile(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
+// checklistItemPattern matches an acceptance-checklist line, ticked or not:
+// "- [ ] …", "* [x] …".
+var checklistItemPattern = regexp.MustCompile(`(?m)^\s*[-*]\s+\[[ xX]\]\s`)
+
+// verifyHeadingPattern matches the heading of the section that names the
+// command proving success: "## Verify", "### Verification".
+var verifyHeadingPattern = regexp.MustCompile(`(?im)^\s*#{1,6}\s+verif(y|ication)\b`)
+
+// IsGoalSpec reports whether text has the shape of a goal spec as Template and
+// FacilitatorPrompt lay it out: at least one acceptance-checklist item and a
+// Verify section. The loop's completion gate counts those checkboxes and its
+// iterations run that command, so a document without both gives the loop
+// nothing to drive toward.
+func IsGoalSpec(text string) bool {
+	return checklistItemPattern.MatchString(text) && verifyHeadingPattern.MatchString(text)
 }
 
 // Read returns the spec contents and its path. If no spec exists yet, text is ""

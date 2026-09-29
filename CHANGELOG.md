@@ -80,6 +80,17 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`/goal` survives a resume, and an unrelated `PRD.md` is no longer the loop
+  spec.** The standing goal set with `/goal <text>` lived only in memory, so a
+  resumed session lost it and the resume banner's Goal section could never
+  appear. It is now kept in a `<session>.goal` file beside the transcript,
+  restored on resume (a fork inherits it), and removed by `/goal clear`.
+  Separately, the goal loop picked `./PRD.md` over `.klaudia/GOAL.md` whatever
+  it contained, so a project's product requirements document became the Ralph
+  spec and had wrap-up summaries written into it. `.klaudia/GOAL.md` now comes
+  first, and `PRD.md` is used only when it has a goal spec's shape (a `- [ ]`
+  checklist and a Verify section); otherwise `/goal` and `--loop` say it was
+  passed over and why.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

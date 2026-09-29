@@ -587,6 +587,27 @@ func resumeTranscript(cwd, resumeID string) string {
 	return session.ExistingPath(cwd, resumeID)
 }
 
+// standingGoal returns the file this session keeps its standing goal in, and
+// the goal restored from the resumed session (empty when not resuming or none
+// was set). A fork (--fork-session, or --resume A --session-id B) inherits the
+// goal and records it under its own id straight away, so resuming the fork
+// restores it too.
+func standingGoal(cwd, sessionID, transcriptPath, resumeID string) (path, goal string) {
+	if transcriptPath == "" {
+		transcriptPath = session.Path(cwd, sessionID)
+	}
+	path = session.GoalPathFor(transcriptPath)
+	if resumeID == "" {
+		return path, ""
+	}
+	from := session.GoalPathFor(resumeTranscript(cwd, resumeID))
+	goal = session.ReadGoal(from)
+	if goal != "" && from != path {
+		_ = session.WriteGoal(path, goal)
+	}
+	return path, goal
+}
+
 // chooseSessionID returns the id this run records under and, when it continues
 // an existing transcript, that transcript's path (empty for a new file at the
 // default location).
@@ -1064,6 +1085,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		}
 		// Shared settings so slash commands can read/change them between turns.
 		ctxLimit, ctxSource := api.ContextWindow(string(model), cfg.ContextWindow)
+		goalPath, restoredGoal := standingGoal(cwd, sessionID, transcriptPath, resumeID)
 		sess := &tui.Session{
 			// Effective model (flag or config default), never "" — otherwise a
 			// non-Anthropic provider would wrongly resolve to the Anthropic default.
@@ -1074,6 +1096,8 @@ func run(cmd *cobra.Command, opts *options) error {
 			PermissionMode:      string(mode),
 			EnterInserts:        tui.EnterInserts(cfg.Input.Enter, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			Memory:              memStore,
+			Goal:                restoredGoal,
+			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },
 			MCP:                 mcpController{mgr: mcpMgr, ctx: ctx},
 			OnMCPReload:         mcpReloads.register,
 			Skills:              tuiSkills(skills, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
