@@ -1,5 +1,6 @@
 // Package skill loads reusable prompt/command skills from Markdown files with
-// YAML frontmatter. Skills are read from ~/.claude/skills, ~/.klaudia/skills,
+// YAML frontmatter. Skills are read from ~/.claude/skills, ~/.klaudia/skills
+// (under config.Root, so KLAUDIA_CONFIG_DIR moves it),
 // <cwd>/.claude/skills and <cwd>/.klaudia/skills, in that order of increasing
 // precedence — the same user-then-project overlay as config.Load and
 // mcp.LoadConfig, extended to the directories the wider ecosystem installs
@@ -26,6 +27,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/greenthread-ai/klaudia/internal/config"
 )
 
 // Skill types.
@@ -65,7 +68,8 @@ func (s Skill) Render(args string) string {
 	return strings.TrimRight(s.Body, "\n") + "\n\n" + args
 }
 
-// Load reads skills from ~/.klaudia/skills then overlays <cwd>/.klaudia/skills
+// Load reads skills from ~/.klaudia/skills (config.Root, so KLAUDIA_CONFIG_DIR
+// moves it) then overlays <cwd>/.klaudia/skills
 // (project skills win on name collision). Malformed files are skipped, reporting
 // the reason to warn (warn may be nil). The result is sorted by name.
 func Load(cwd string, warn func(string)) []Skill {
@@ -78,10 +82,10 @@ func Load(cwd string, warn func(string)) []Skill {
 	// each level, so a project can override an installed skill by name.
 	dirs := make([]string, 0, 4)
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
-			filepath.Join(home, ".claude", "skills"),
-			filepath.Join(home, ".klaudia", "skills"),
-		)
+		dirs = append(dirs, filepath.Join(home, ".claude", "skills"))
+	}
+	if root := config.Root(); root != "" {
+		dirs = append(dirs, filepath.Join(root, "skills"))
 	}
 	dirs = append(dirs,
 		filepath.Join(cwd, ".claude", "skills"),

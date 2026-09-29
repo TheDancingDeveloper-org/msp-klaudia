@@ -76,6 +76,7 @@ func TestLoadProjectOverlaysHome(t *testing.T) {
 	cwd := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 
 	write(t, filepath.Join(home, ".klaudia", "skills", "review.md"), "---\nname: review\ndescription: home version\n---\nhome body")
 	write(t, filepath.Join(home, ".klaudia", "skills", "deploy.md"), "---\nname: deploy\ndescription: deploy\n---\ndeploy")
@@ -209,5 +210,26 @@ body`)
 	}
 	if _, ok := byName["solo"]; !ok {
 		t.Error("a skill only in .claude/skills should load")
+	}
+}
+
+func TestLoadUserSkillsFollowKlaudiaConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := t.TempDir()
+	t.Setenv("KLAUDIA_CONFIG_DIR", dir)
+
+	write(t, filepath.Join(home, ".klaudia", "skills", "stale.md"), "---\nname: stale\ndescription: d\n---\nx")
+	write(t, filepath.Join(dir, "skills", "moved.md"), "---\nname: moved\ndescription: d\n---\nx")
+
+	names := map[string]bool{}
+	for _, sk := range Load(t.TempDir(), nil) {
+		names[sk.Name] = true
+	}
+	if !names["moved"] {
+		t.Error("skill under $KLAUDIA_CONFIG_DIR/skills not loaded")
+	}
+	if names["stale"] {
+		t.Error("skill under ~/.klaudia/skills loaded although KLAUDIA_CONFIG_DIR points elsewhere")
 	}
 }

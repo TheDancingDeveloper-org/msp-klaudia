@@ -80,6 +80,15 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`KLAUDIA_CONFIG_DIR` now moves `config.toml` and user skills too.** Sessions,
+  the global `.mcp.json`, job logs and the browser profile already followed it,
+  but the global `config.toml` was still read from `~/.klaudia`,
+  `--create-config=global` wrote there, `/doctor` looked there for "config
+  found", and user skills were read from `~/.klaudia/skills` — so a relocated
+  config dir silently ran on another file's settings. Every caller now resolves
+  the directory through one helper, `config.Root()` (`$KLAUDIA_CONFIG_DIR`,
+  else `~/.klaudia`). If you set `KLAUDIA_CONFIG_DIR` and kept `config.toml` or
+  `skills/` in `~/.klaudia`, move them into that directory.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

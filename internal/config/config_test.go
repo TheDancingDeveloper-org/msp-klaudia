@@ -21,6 +21,7 @@ func writeConfig(t *testing.T, dir, body string) {
 func TestLoadProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `provider = "anthropic"
 model = "sonnet"
 `)
@@ -46,6 +47,7 @@ baseURL = "https://x/v1"
 func TestLoadThemeProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `theme = "nord"`)
 
 	// Global-only: inherited.
@@ -64,6 +66,7 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, "[permissions]\nmode = \"acceptEdits\"\n")
 
 	// Global-only → inherited.
@@ -81,6 +84,7 @@ func TestLoadPermissionModeOverridesHome(t *testing.T) {
 func TestLoadBrowserProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `
 [browser]
 engine = "chrome"
@@ -142,6 +146,7 @@ func TestResolveAPIKey(t *testing.T) {
 func TestLoadPermissionsAccumulate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `
 [permissions]
 allow = ["Edit"]
@@ -192,6 +197,7 @@ func TestAppendProjectPermission(t *testing.T) {
 
 func TestLoadMissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	cfg := Load(t.TempDir())
 	if cfg.Provider != "" {
 		t.Errorf("expected empty config, got %+v", cfg)
@@ -201,6 +207,7 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 func TestExtraHeadersEnvMergeOverlaysPerKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `provider = "openai"
 baseURL = "https://x/v1"
 extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_HOME", "X-Extra" = "X_HOME" }

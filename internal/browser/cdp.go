@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/chromedp/chromedp"
+
+	"github.com/greenthread-ai/klaudia/internal/config"
 )
 
 type Mode int
@@ -43,13 +45,9 @@ func defaultChromePath() string {
 }
 
 func DefaultUserDataDir() string {
-	base := os.Getenv("KLAUDIA_CONFIG_DIR")
+	base := config.Root()
 	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		base = filepath.Join(home, ".klaudia")
+		return ""
 	}
 	return filepath.Join(base, "browser", "chrome-profile")
 }

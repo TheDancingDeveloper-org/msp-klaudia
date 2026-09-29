@@ -160,10 +160,11 @@ func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd string, mcpS
 	return in
 }
 
-// configFileExists reports whether a home or project .klaudia/config.toml exists.
+// configFileExists reports whether the global config (config.GlobalPath) or
+// the project .klaudia/config.toml exists.
 func configFileExists(cwd string) bool {
-	if home, err := os.UserHomeDir(); err == nil {
-		if _, err := os.Stat(filepath.Join(home, ".klaudia", "config.toml")); err == nil {
+	if p := config.GlobalPath(); p != "" {
+		if _, err := os.Stat(p); err == nil {
 			return true
 		}
 	}
@@ -451,7 +452,7 @@ func gitCommit(dir string) string {
 }
 
 const starterConfig = `# Klaudia config
-# Global: ~/.klaudia/config.toml
+# Global: ~/.klaudia/config.toml ($KLAUDIA_CONFIG_DIR/config.toml when set)
 # Local:  ./.klaudia/config.toml (overrides global settings)
 
 provider = "openai"
@@ -496,11 +497,10 @@ func createConfig(scope, cwd string) (string, error) {
 	var path string
 	switch scope {
 	case "global":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("find home directory: %w", err)
+		path = config.GlobalPath()
+		if path == "" {
+			return "", fmt.Errorf("find config directory: no home directory, and KLAUDIA_CONFIG_DIR is not set")
 		}
-		path = filepath.Join(home, ".klaudia", "config.toml")
 	case "local":
 		path = config.ProjectPath(cwd)
 	default:
@@ -663,7 +663,7 @@ func NewRootCommand() *cobra.Command {
 	f.StringSliceVar(&opts.allowedTools, "allowedTools", nil, "Auto-allow tool rules, e.g. 'Edit' or 'Bash(git status:*)' (repeatable, comma-separated)")
 	f.StringSliceVar(&opts.disallowedTools, "disallowedTools", nil, "Deny tool rules (same format as --allowedTools)")
 	f.BoolVar(&opts.partialMessages, "include-partial-messages", false, "Include partial message chunks as they arrive (only with --print and --output-format=stream-json)")
-	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml) or local (./.klaudia/config.toml)")
+	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml, or $KLAUDIA_CONFIG_DIR/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
 
