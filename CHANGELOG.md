@@ -491,6 +491,12 @@ port mirrors (see `internal/version`).
   is written. A write to a path held in a variable (`rm -rf "$BUILD_DIR"`) now
   says whether it writes or deletes, and the refusal suggests re-running with
   the literal path.
+- **`--create-config` broke a working Anthropic setup.** The starter set
+  `provider = "openai"` with a placeholder `baseURL`, so a user with only
+  `ANTHROPIC_API_KEY` who ran it could no longer start (`provider "openai"
+  needs apiKey…`). The starter now selects `provider = "anthropic"` and carries
+  the OpenAI-compatible block commented out, with instructions for swapping it
+  in. Its permissions example also lists `dontAsk`, which it had left out.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
