@@ -80,6 +80,25 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Two more transcript-sanitiser gaps that 400 the request.** The message
+  sanitiser (`internal/agent/sanitize.go`) already repaired empty content,
+  orphan tool_use/tool_result and broken server-tool blocks; it now also handles
+  two shapes the API rejects on send. (1) A **tool_use `name` over ~200
+  characters** — a long namespaced MCP tool name is the usual source — is
+  truncated to the limit. Pairing is by `tool_use_id`, which is left untouched,
+  and a `tool_result` carries no name field, so the paired result round-trips
+  unchanged. (2) **Thinking blocks left stale by a mid-session `/model`
+  switch:** a `thinking`/`redacted_thinking` block is bound to the model that
+  produced it, so after a switch the ones already in history are rejected (or
+  silently dropped) by the new model. They are now dropped from every assistant
+  turn *except* the in-progress one — a completed prior turn's thinking is never
+  required by the API, while the current turn's may be, so it is preserved.
+  Limitation: the sanitiser sees only the message list, not the active model, so
+  it cannot tell a still-valid same-model prior-turn block from a stale one and
+  drops both (never an API error — prior-turn thinking is optional); and if a
+  switch lands mid-tool-loop the in-progress turn's thinking is kept and could
+  still be stale, an edge accepted over the risk of stripping thinking the model
+  needs.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
