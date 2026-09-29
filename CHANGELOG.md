@@ -563,6 +563,12 @@ port mirrors (see `internal/version`).
   jobs that exist and their state, instead of a bare "no job X". `/stopjob` on a
   job that had already exited used to report "stopped" — the store's kill is a
   no-op there — and now says it already exited, with its code.
+- **`@` completion no longer litters scrollback or fires inside words.** An
+  ambiguous `@path` Tab printed a permanent `candidates: …` line; the matches are
+  now shown under the prompt, with the current one bracketed, only while Tab is
+  cycling. The `@` must start a word, so `bob@example.com` is left alone. A
+  follow-up queued during a turn is now indexed when it is sent, so `/outline`
+  and `/search --mine` list it like a typed prompt.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
