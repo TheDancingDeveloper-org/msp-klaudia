@@ -80,6 +80,14 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **MCP, Grep and Glob output is capped like Bash's.** Only Bash output was
+  clamped (head and tail kept, the whole spilled to a file the model can
+  read), so one MCP call or a broad Grep could put megabytes into the
+  context. All three now go through the same cap. Grep also stops collecting
+  after 20,000 matches (it held every match in memory first) and says it
+  stopped; Glob shows the 20,000 most recently modified files and says how
+  many matched; and both stop when the turn is interrupted, where they used
+  to run to the end. Upstream 2.1.91/2.1.98/2.1.105/2.1.275/2.1.277.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
