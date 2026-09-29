@@ -18,6 +18,14 @@ func writeConfig(t *testing.T, dir, body string) {
 	}
 }
 
+// trust puts dir on the trust list, so its project config applies in full.
+func trust(t *testing.T, dir string) {
+	t.Helper()
+	if _, err := TrustProject(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLoadProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -29,6 +37,7 @@ model = "sonnet"
 	writeConfig(t, cwd, `provider = "openai"
 baseURL = "https://x/v1"
 `)
+	trust(t, cwd)
 
 	cfg := Load(cwd)
 	if cfg.Provider != "openai" {
@@ -56,6 +65,7 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 	// Project overrides global.
 	cwd := t.TempDir()
 	writeConfig(t, cwd, `theme = "dracula"`)
+	trust(t, cwd)
 	if cfg := Load(cwd); cfg.Theme != "dracula" {
 		t.Errorf("theme = %q, want dracula (project wins)", cfg.Theme)
 	}
@@ -73,6 +83,7 @@ func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	// Project overrides global.
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "[permissions]\nmode = \"plan\"\n")
+	trust(t, cwd)
 	if cfg := Load(cwd); cfg.Permissions.Mode != "plan" {
 		t.Errorf("mode = %q, want plan (project wins)", cfg.Permissions.Mode)
 	}
@@ -101,6 +112,7 @@ userDataDir = "/project/profile"
 headedFallback = true
 searchEngine = "ddg"
 `)
+	trust(t, cwd)
 
 	cfg := Load(cwd)
 	if cfg.Browser.Engine != "chrome" {
@@ -152,6 +164,7 @@ deny = ["Bash(rm:*)"]
 [permissions]
 allow = ["Bash(go test:*)"]
 `)
+	trust(t, cwd)
 
 	cfg := Load(cwd)
 	if len(cfg.Permissions.Allow) != 2 {
@@ -163,7 +176,9 @@ allow = ["Bash(go test:*)"]
 }
 
 func TestAppendProjectPermission(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
+	trust(t, cwd)
 	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || ok {
 		t.Fatalf("AppendProjectPermission without .klaudia = %v,%v, want false,nil", ok, err)
 	}
@@ -208,6 +223,7 @@ extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_HOME", "X-Extra" = "X_HOME" }
 	cwd := t.TempDir()
 	writeConfig(t, cwd, `extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_PROJECT", "CF-Access-Client-Secret" = "CF_SECRET" }
 `)
+	trust(t, cwd)
 
 	cfg := Load(cwd)
 	// Project overrides the shared key; home-only key survives; project-only key is added.

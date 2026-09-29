@@ -54,6 +54,17 @@ klaudia --create-config=local    # ./.klaudia/config.toml  (project override)
 Both commands refuse to overwrite an existing config (so you can't accidentally
 clobber settings); delete the file first if you want a fresh starter.
 
+A project config arrives with the checkout, so in a folder you haven't trusted
+Klaudia ignores its security-relevant keys and says which ones: `provider`,
+`baseURL`, `apiKey`, `apiKeyEnv`, `extraHeadersEnv`, `permissions.mode`,
+`permissions.allow`, `trust.mode`, the sandbox settings other than `readOnly`,
+and `browser.chromePath`/`remoteUrl`/`userDataDir`. Preferences (model, theme,
+limits) and deny rules always apply. Run `klaudia --trust-project` in the folder
+to apply the whole file; `--create-config=local` trusts the folder it writes to.
+The list is `~/.klaudia/trusted-projects`, one directory per line. A launcher
+that renders `./.klaudia/config.toml` itself (an embedder writing a per-session
+config) passes `--trusted-project-config` to apply it in full for that run.
+
 ### Authentication
 
 Pick one of these paths:
@@ -479,7 +490,9 @@ OpenAI-compatible provider translates the Anthropic message shape to Chat
 Completions (including image tool-results → `image_url`).
 
 `~/.klaudia/config.toml` is the user default; a project `./.klaudia/config.toml`
-overlays it (project wins). Settings merge per field.
+overlays it (project wins). Settings merge per field. The provider, endpoint and
+key settings apply from a project file only once the folder is trusted (see
+[Create a config](#create-a-config-optional-but-recommended)).
 
 ### Auth
 

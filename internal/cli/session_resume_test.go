@@ -73,7 +73,9 @@ func embed(t *testing.T, cwd string, args []string, prompts ...string) ([]map[st
 	}
 	var out bytes.Buffer
 	cmd := NewRootCommand()
-	cmd.SetArgs(append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk"}, args...))
+	// --trusted-project-config: like msp-agent, the test renders the workdir's
+	// .klaudia/config.toml itself, so it is the launcher's to trust.
+	cmd.SetArgs(append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--trusted-project-config"}, args...))
 	cmd.SetIn(&in)
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)

@@ -5,6 +5,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -70,6 +71,10 @@ type Config struct {
 	Trust Trust `toml:"trust,omitempty"`
 	// Input configures the prompt's key handling.
 	Input Input `toml:"input,omitempty"`
+
+	// Warnings are Load's notes about settings it did not apply. They are
+	// never read from or written to a file.
+	Warnings []string `toml:"-"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -238,13 +243,32 @@ func contains(ss []string, s string) bool {
 }
 
 // Load reads ~/.klaudia/config.toml then overlays ./.klaudia/config.toml
-// (project settings win). Missing files are ignored.
+// (project settings win). Missing files are ignored. In a folder that is not
+// on the trust list, the project file's security-relevant keys are withheld
+// (see withholdUntrusted) and named in Warnings.
 func Load(cwd string) Config {
+	return LoadTrusting(cwd, IsTrustedProject(cwd))
+}
+
+// LoadTrusting is Load with the project's trust decided by the caller. A
+// launcher that writes ./.klaudia/config.toml itself — an embedder rendering
+// a per-session config — passes true (--trusted-project-config), since the
+// file is its own and not the checkout's.
+func LoadTrusting(cwd string, trusted bool) Config {
 	var cfg Config
 	if home, err := os.UserHomeDir(); err == nil {
 		merge(&cfg, read(filepath.Join(home, ".klaudia", "config.toml")))
 	}
-	merge(&cfg, read(ProjectPath(cwd)))
+	proj := read(ProjectPath(cwd))
+	if !trusted {
+		if held := withholdUntrusted(&proj); len(held) > 0 {
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
+				"%s: this folder is not trusted, so these settings were ignored: %s. "+
+					"Review the file, then run `klaudia --trust-project` here to apply them.",
+				ProjectPath(cwd), strings.Join(held, ", ")))
+		}
+	}
+	merge(&cfg, proj)
 	return cfg
 }
 
