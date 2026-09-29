@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeConfig(t *testing.T, dir, body string) {
@@ -384,5 +385,41 @@ func TestResolveExtraHeaders(t *testing.T) {
 	}
 	if len(missing) != 1 || missing[0] != "CF_SECRET" {
 		t.Errorf("missing = %v, want [CF_SECRET]", missing)
+	}
+}
+
+func TestSessionMaxAge(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"", DefaultAutoResumeMaxAge, false},
+		{"0", 0, false},
+		{"12h", 12 * time.Hour, false},
+		{"90m", 90 * time.Minute, false},
+		{"7d", 7 * 24 * time.Hour, false},
+		{"soon", DefaultAutoResumeMaxAge, true},
+		{"-1h", DefaultAutoResumeMaxAge, true},
+		{"xd", DefaultAutoResumeMaxAge, true},
+	} {
+		got, err := Session{AutoResumeMaxAge: tc.in}.MaxAge()
+		if got != tc.want || (err != nil) != tc.wantErr {
+			t.Errorf("MaxAge(%q) = %s, %v; want %s, error %v", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
+
+func TestLoadSessionProjectOverridesHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, "[session]\nautoResumeMaxAge = \"12h\"\n")
+	if cfg := Load(t.TempDir()); cfg.Session.AutoResumeMaxAge != "12h" {
+		t.Errorf("autoResumeMaxAge = %q, want 12h (from home)", cfg.Session.AutoResumeMaxAge)
+	}
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "[session]\nautoResumeMaxAge = \"0\"\n")
+	if cfg := Load(cwd); cfg.Session.AutoResumeMaxAge != "0" {
+		t.Errorf("autoResumeMaxAge = %q, want 0 (project wins)", cfg.Session.AutoResumeMaxAge)
 	}
 }

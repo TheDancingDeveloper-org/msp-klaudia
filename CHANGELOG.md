@@ -426,6 +426,18 @@ port mirrors (see `internal/version`).
   toolset too (previously `ToolSearch` was registered only when MCP tools were
   present). The common edit/read/bash/search core is untouched.
 
+- **Auto-resume announces itself, and skips a stale session.** An interactive
+  launch picks up the directory's most recent session, and the resume banner
+  only rendered when there was a goal, a dirty tree or a dead job — so a
+  week-old conversation on a clean tree came back with no sign, and its whole
+  history was re-sent on the first turn. Auto-resume now always prints one
+  line (`Resumed <id> · N messages · last active 3h ago · --new-session to
+  start fresh`), and a session last active longer ago than
+  `[session] autoResumeMaxAge` (default `24h`; `7d` style accepted; `0`
+  disables it) is not auto-resumed: the launch starts fresh and names the old
+  session and `--continue` / `-r <id>` to get it back. An explicit
+  `--continue` or `-r` ignores the cutoff.
+
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
   `--resume`, an unknown `--output-format`, and an unknown `--create-config`

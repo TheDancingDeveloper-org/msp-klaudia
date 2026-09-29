@@ -737,6 +737,79 @@ func resumeMessages(cwd, resumeID string, full bool) ([]anthropic.BetaMessagePar
 	return msgs, false, err
 }
 
+// vetAutoResume decides whether an implicit resume of id goes ahead, and
+// returns the id to resume ("" to start fresh) with the one line that says
+// what happened. Auto-resume used to be silent unless the resume banner had
+// something else to show, so a week-old conversation came back unannounced and
+// its whole history was re-sent on the first turn.
+//
+//   - A session last active more than maxAge ago (0: no cutoff) is left alone:
+//     the notice names it and how to resume it.
+//   - A session that ended in a model refusal is left alone too: its context
+//     keeps tripping the refusal, so every prompt in the resumed session —
+//     even an unrelated one — would refuse.
+//   - Otherwise it is resumed, and the notice says which session, how long it
+//     is and how old, and how to start fresh instead.
+func vetAutoResume(cwd, id string, maxAge time.Duration, now time.Time) (string, string) {
+	path := resumeTranscript(cwd, id)
+	var age time.Duration
+	if st, err := os.Stat(path); err == nil {
+		age = now.Sub(st.ModTime())
+	}
+	if maxAge > 0 && age > maxAge {
+		return "", fmt.Sprintf("Last session %s was active %s, past autoResumeMaxAge (%s) — starting fresh. --continue or -r %s resumes it.",
+			id, humanAgo(age), configDuration(maxAge), id)
+	}
+	entries, err := session.Read(path)
+	if err == nil && session.LastTurnRefused(entries) {
+		return "", "Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume " + id + " to see it."
+	}
+	messages := fmt.Sprintf("%d messages", len(entries))
+	if len(entries) == 1 {
+		messages = "1 message"
+	}
+	return id, fmt.Sprintf("Resumed %s · %s · last active %s · --new-session to start fresh",
+		id, messages, humanAgo(age))
+}
+
+// humanAgo renders an age as "just now" or "3d ago".
+func humanAgo(d time.Duration) string {
+	if d < time.Minute {
+		return "just now"
+	}
+	return humanDuration(d) + " ago"
+}
+
+// humanDuration renders d in its largest whole unit: 3d, 5h, 12m, 40s.
+func humanDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return fmt.Sprintf("%ds", int(d/time.Second))
+	}
+}
+
+// configDuration renders d the way [session] autoResumeMaxAge would spell it:
+// whole days as "7d", anything else without zero units ("12h", "1h30m").
+func configDuration(d time.Duration) string {
+	if d >= 24*time.Hour && d%(24*time.Hour) == 0 {
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	}
+	s := d.String() // "12h0m0s", "1h30m0s", "45s"
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
 // chooseSessionID returns the id this run records under and, when it continues
 // an existing transcript, that transcript's path (empty for a new file at the
 // default location).
@@ -914,35 +987,6 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return err
 	}
-	// Auto-resume must not revive a session that ended in a model refusal:
-	// its context keeps tripping the refusal, so every prompt in the resumed
-	// session — even an unrelated one — refuses too. Start fresh instead. Only
-	// for the implicit pick-the-most-recent case; an explicit --resume/--continue
-	// is the user asking for that session by name, so it is honoured.
-	autoResume := resumeID != "" && opts.resume == "" && !opts.continueSession
-	if autoResume {
-		if entries, rerr := session.Read(resumeTranscript(cwd, resumeID)); rerr == nil && session.LastTurnRefused(entries) {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume "+resumeID+" to see it.")
-			resumeID = ""
-		}
-	}
-
-	sessionID, transcriptPath, err := chooseSessionID(cwd, *opts, resumeID)
-	if err != nil {
-		return err
-	}
-	if resumeID != "" {
-		var fromSummary bool
-		initialMessages, fromSummary, err = resumeMessages(cwd, resumeID, opts.fullResume)
-		if err != nil {
-			return fmt.Errorf("resume %s: %w", resumeID, err)
-		}
-		if fromSummary {
-			fmt.Fprintln(cmd.ErrOrStderr(), "resuming from compacted summary (--full for the entire transcript)")
-		}
-	}
-
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
 	// A project's own config — .klaudia/config.toml and its .mcp.json files —
 	// applies in full only in a trusted folder, or when the launcher that
@@ -971,6 +1015,34 @@ func run(cmd *cobra.Command, opts *options) error {
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 	}
+	// The implicit pick-the-most-recent case is vetted and always announced;
+	// an explicit --resume/--continue is the user asking for that session by
+	// name, so it is honoured as is.
+	if resumeID != "" && opts.resume == "" && !opts.continueSession {
+		maxAge, aerr := cfg.Session.MaxAge()
+		if aerr != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning:", aerr)
+		}
+		var notice string
+		resumeID, notice = vetAutoResume(cwd, resumeID, maxAge, time.Now())
+		fmt.Fprintln(cmd.ErrOrStderr(), notice)
+	}
+
+	sessionID, transcriptPath, err := chooseSessionID(cwd, *opts, resumeID)
+	if err != nil {
+		return err
+	}
+	if resumeID != "" {
+		var fromSummary bool
+		initialMessages, fromSummary, err = resumeMessages(cwd, resumeID, opts.fullResume)
+		if err != nil {
+			return fmt.Errorf("resume %s: %w", resumeID, err)
+		}
+		if fromSummary {
+			fmt.Fprintln(cmd.ErrOrStderr(), "resuming from compacted summary (--full for the entire transcript)")
+		}
+	}
+
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err

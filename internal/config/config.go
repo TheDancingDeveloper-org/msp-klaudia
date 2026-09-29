@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -90,6 +92,45 @@ type Config struct {
 	// Warnings are Load's notes about settings it did not apply. They are
 	// never read from or written to a file.
 	Warnings []string `toml:"-"`
+	// Session configures how a launch picks up earlier sessions.
+	Session Session `toml:"session,omitempty"`
+}
+
+// Session configures session resume.
+type Session struct {
+	// AutoResumeMaxAge is how long after its last activity a session is still
+	// picked up implicitly by an interactive launch: a Go duration ("24h",
+	// "90m") or whole days ("7d"). "0" turns the cutoff off. Unset means
+	// DefaultAutoResumeMaxAge. It does not affect --continue or --resume,
+	// which name the session they want.
+	AutoResumeMaxAge string `toml:"autoResumeMaxAge,omitempty"`
+}
+
+// DefaultAutoResumeMaxAge is the auto-resume staleness cutoff when
+// [session] autoResumeMaxAge is unset.
+const DefaultAutoResumeMaxAge = 24 * time.Hour
+
+// MaxAge returns the auto-resume staleness cutoff; 0 means no cutoff. An
+// unparseable or negative value returns DefaultAutoResumeMaxAge with an error
+// for the caller to report.
+func (s Session) MaxAge() (time.Duration, error) {
+	v := strings.TrimSpace(s.AutoResumeMaxAge)
+	if v == "" {
+		return DefaultAutoResumeMaxAge, nil
+	}
+	var d time.Duration
+	var err error
+	if days, ok := strings.CutSuffix(v, "d"); ok {
+		var n int
+		n, err = strconv.Atoi(days)
+		d = time.Duration(n) * 24 * time.Hour
+	} else {
+		d, err = time.ParseDuration(v)
+	}
+	if err != nil || d < 0 {
+		return DefaultAutoResumeMaxAge, fmt.Errorf("session.autoResumeMaxAge %q is not a duration like \"24h\", \"7d\" or \"0\"; using 24h", v)
+	}
+	return d, nil
 }
 
 // Input configures how the prompt treats the Return key.
@@ -482,6 +523,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Input.Enter != "" {
 		dst.Input.Enter = src.Input.Enter
+	}
+	if src.Session.AutoResumeMaxAge != "" {
+		dst.Session.AutoResumeMaxAge = src.Session.AutoResumeMaxAge
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)
