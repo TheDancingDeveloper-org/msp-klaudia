@@ -304,6 +304,10 @@ Auto-resume is an interactive convenience: headless (`-p`) and embedding
 (`--input-format stream-json`) runs stay stateless unless you pass
 `--continue` or `-r <id>`.
 
+`/clear` starts a new session id. The cleared conversation stays on disk as its
+own session (`/clear` prints the `-r <id>` that reopens it) and is not what the
+next launch auto-resumes — not even when you clear and quit straight away.
+
 Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
 (override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
 transcripts from `~/.klaudia/projects/<encoded-cwd>/` during migration. When a

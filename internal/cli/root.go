@@ -587,6 +587,24 @@ func resumeTranscript(cwd, resumeID string) string {
 	return session.ExistingPath(cwd, resumeID)
 }
 
+// autoResumeVeto says why auto-resume should start fresh instead of reviving
+// session id, or returns "" when it may resume it.
+//
+//   - It ended in a model refusal: its context keeps tripping the refusal, so
+//     every prompt in the resumed session — even an unrelated one — refuses too.
+//   - Its last act was /clear, with nothing said after it (so it is still the
+//     newest transcript): reviving it would undo the clear.
+func autoResumeVeto(cwd, id string) string {
+	path := resumeTranscript(cwd, id)
+	if entries, err := session.Read(path); err == nil && session.LastTurnRefused(entries) {
+		return "Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume " + id + " to see it."
+	}
+	if session.EndsCleared(path) {
+		return "Last session was cleared — starting fresh. --resume " + id + " to reopen it."
+	}
+	return ""
+}
+
 // chooseSessionID returns the id this run records under and, when it continues
 // an existing transcript, that transcript's path (empty for a new file at the
 // default location).
@@ -725,16 +743,13 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return err
 	}
-	// Auto-resume must not revive a session that ended in a model refusal:
-	// its context keeps tripping the refusal, so every prompt in the resumed
-	// session — even an unrelated one — refuses too. Start fresh instead. Only
-	// for the implicit pick-the-most-recent case; an explicit --resume/--continue
-	// is the user asking for that session by name, so it is honoured.
+	// Only for the implicit pick-the-most-recent case; an explicit
+	// --resume/--continue is the user asking for that session by name, so it
+	// is honoured.
 	autoResume := resumeID != "" && opts.resume == "" && !opts.continueSession
 	if autoResume {
-		if entries, rerr := session.Read(resumeTranscript(cwd, resumeID)); rerr == nil && session.LastTurnRefused(entries) {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume "+resumeID+" to see it.")
+		if why := autoResumeVeto(cwd, resumeID); why != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), why)
 			resumeID = ""
 		}
 	}
@@ -1025,28 +1040,25 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Open the transcript for this session (best effort: a transcript failure
 	// should not abort the run).
-	var recorder agent.Recorder
-	if tr, terr := session.NewTranscript(session.Meta{
+	// The TUI's /clear rotates it to a new session id, so what records or names
+	// the session mid-run reads it from here rather than from sessionID.
+	sessRec := newSessionRecorder(session.Meta{
 		SessionID:      sessionID,
 		CWD:            cwd,
 		Version:        version.Version,
 		GitBranch:      gitBranch(cwd),
 		PermissionMode: string(mode),
 		Path:           transcriptPath,
-	}); terr == nil {
-		defer func() { _ = tr.Close() }()
-		recorder = tr
-	}
+	})
+	defer func() { _ = sessRec.Close() }()
+	recorder := agent.Recorder(sessRec)
 
 	loop := agent.New(provider, registry)
 
-	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
+	// Persist compaction summaries for token-saving resume (a Klaudia divergence),
+	// under whichever session is current: after /clear, the new one.
 	onSummary := func(summary string) {
-		if transcriptPath != "" {
-			_ = session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
-			return
-		}
-		_ = session.WriteSummary(cwd, sessionID, summary, gitCommit(cwd))
+		_ = session.WriteSummaryAt(sessRec.SummaryPath(), sessRec.ID(), summary, gitCommit(cwd))
 	}
 
 	// Interactive TUI: the default when not headless and not stream-json input.
@@ -1099,6 +1111,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			Trust:      tui.NewTrustController(hostGate),
 			Jobs:       jobStore,
 			Executor:   executor,
+			Rotate:     sessRec.Rotate,
 		}
 		extraDirs = func() []string { return sess.ExtraDirs }
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {

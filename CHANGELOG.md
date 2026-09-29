@@ -80,6 +80,16 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`/clear` starts a new session; the next launch no longer brings the cleared
+  conversation back.** `/clear` reset only the in-memory history: the transcript
+  kept being appended to under the same id and its compaction summary stayed, so
+  auto-resume restored exactly what had been cleared. It now closes the old
+  transcript (kept on disk as its own session — `/clear` prints its
+  `klaudia --resume <id>`) and records what follows under a fresh id with no
+  summary. If you clear and quit without saying anything more, the old
+  transcript is still the newest in the folder; it now ends with a
+  `{"type":"system","subtype":"clear"}` line, and auto-resume starts fresh
+  instead of reviving it. `--continue` and `--resume` still reopen it.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
