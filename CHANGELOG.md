@@ -206,6 +206,14 @@ port mirrors (see `internal/version`).
   worked, but cobra hides it on a command with no sub-commands; `--help` and the
   README now say it exists. `--continue`'s help no longer says "(default when
   available)", which read oddly on a flag you pass explicitly.
+- **An "Environment variables" table in the README.** It lists all 16
+  `KLAUDIA_*` and `ANTHROPIC_*` variables with their defaults; the README used to
+  mention 8, so `KLAUDIA_MAX_RETRIES` — which the 429 error tells you to set —
+  was documented nowhere. `cmd/klaudia/envdocs_test.go` fails when non-test code
+  names such a variable the table lacks, or the table lists one no code reads.
+  It collects every string literal that is exactly a variable name, not only
+  `os.Getenv` arguments, because the browser package reads through its own
+  `getenv`/`envBool` helpers.
 
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
