@@ -39,6 +39,12 @@ port mirrors (see `internal/version`).
   characters reached the terminal as-is (a raw ESC or CR can redraw the
   line). The full command is shown with those as `\u{XXXX}`. Upstream
   2.1.211/2.1.223.
+- **Klaudia's own git lookups no longer run programs a repository names.** The
+  startup status, `/diff` and branch lookups ran `core.fsmonitor` and
+  external diff/textconv drivers from the repository's config — present in
+  archives, vendored and nested repositories. They now run through
+  `internal/gitprobe`, which switches those off; `/commit` and the goal loop
+  still run plain git. Clean/smudge filters are not covered. Upstream 2.1.265.
 
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
