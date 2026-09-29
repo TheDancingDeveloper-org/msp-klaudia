@@ -201,6 +201,11 @@ port mirrors (see `internal/version`).
   that fail to launch are named, capped at three with a count of the rest, and
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
+- **`-c` for `--continue`, and shell completion in `--help`.** `-c` was an
+  "unknown shorthand". `klaudia completion bash|zsh|fish|powershell` always
+  worked, but cobra hides it on a command with no sub-commands; `--help` and the
+  README now say it exists. `--continue`'s help no longer says "(default when
+  available)", which read oddly on a flag you pass explicitly.
 
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
@@ -509,6 +514,12 @@ port mirrors (see `internal/version`).
   needs apiKey…`). The starter now selects `provider = "anthropic"` and carries
   the OpenAI-compatible block commented out, with instructions for swapping it
   in. Its permissions example also lists `dontAsk`, which it had left out.
+- **A negative `--max-turns` is a usage error (exit 2)** instead of being
+  accepted and silently treated as unlimited.
+- **The OpenAI-provider missing-key error names the variable.** With
+  `apiKeyEnv = "MY_API_KEY"` set and `$MY_API_KEY` empty, it said only "needs
+  apiKey or apiKeyEnv" — pointing at a config that was already right. It now
+  says `$MY_API_KEY` is unset or empty.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

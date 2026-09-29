@@ -253,6 +253,18 @@ git diff | ./klaudia -p "Review this change"
 ./klaudia -p "…" --output-format stream-json --verbose --include-partial-messages
 ```
 
+A positional prompt is shorthand for `-p`: `./klaudia "What files are here?"`
+runs headless and exits, so it scripts the same way. (Claude Code opens its TUI
+with the prompt instead; see [docs/ux-spec.md](docs/ux-spec.md).)
+`--max-turns N` caps the agentic loop; `0`, the default, is unlimited.
+
+### Shell completion
+
+```bash
+./klaudia completion bash > ~/.local/share/bash-completion/completions/klaudia
+./klaudia completion zsh|fish|powershell --help   # install steps per shell
+```
+
 ### Embedding (stream-json over stdin)
 
 A persistent agent driven by newline-delimited JSON over stdin/stdout — the
@@ -341,7 +353,7 @@ The `result` line carries `session_id` and `duration_ms` alongside `usage`.
 ```bash
 ./klaudia                            # auto-resume the most recent session here
 ./klaudia --new-session              # start fresh instead of auto-resuming
-./klaudia --continue                 # explicitly resume the most recent session here
+./klaudia --continue                 # explicitly resume the most recent session here (-c)
 ./klaudia -r <session-id>            # resume a specific session
 ./klaudia -r <session-id> --full     # replay the whole transcript (not the summary)
 ./klaudia --session-id <id> …        # record under an id you choose (must be new)

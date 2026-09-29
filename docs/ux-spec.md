@@ -26,6 +26,7 @@ of the spec. Each was a decision, not an oversight.
 | §17: undo | Git blob checkpoints, never the index or a stash | A stash moves the *whole* working tree including the user's unrelated edits. |
 | §19: "Jobs: local #1 postgres running" on resume | Jobs are always reported as **stopped** | They were children of a process that exited. Reporting them as running would be a lie the moment it was written. |
 | §20: `klaudia review --json` subcommand | `-p "…" --output-format json` | The existing flag already does it; a subcommand would be a second way to say the same thing. |
+| Claude Code parity: `claude "prompt"` opens the TUI with that prompt | `klaudia "prompt"` is shorthand for `-p "prompt"`: it runs headless and exits | Intentional: a positional prompt is how scripts call Klaudia, and a script has no one to drive a TUI. The interactive TUI is `klaudia` with no prompt. |
 
 ## Phase 1 — Don't break my terminal
 
