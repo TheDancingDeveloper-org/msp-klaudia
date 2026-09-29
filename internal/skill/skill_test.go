@@ -223,3 +223,38 @@ body`)
 		t.Error("a skill only in .claude/skills should load")
 	}
 }
+
+// Launched from a subdirectory, the project root's skills load, and the
+// subdirectory's own (where they lived when skills were keyed by cwd) still
+// do, winning a name collision as the closer directory.
+func TestLoadProjectReadsTheRootThenCWD(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	cwd := filepath.Join(root, "internal", "tui")
+
+	write(t, filepath.Join(root, ".klaudia", "skills", "review.md"), "---\nname: review\ndescription: root version\n---\nroot")
+	write(t, filepath.Join(root, ".claude", "skills", "ship", "SKILL.md"), "---\nname: ship\ndescription: ship\n---\nship")
+	write(t, filepath.Join(cwd, ".klaudia", "skills", "review.md"), "---\nname: review\ndescription: subdir version\n---\nsub")
+	write(t, filepath.Join(cwd, ".klaudia", "skills", "local.md"), "---\nname: local\ndescription: local\n---\nlocal")
+
+	byName := map[string]Skill{}
+	for _, sk := range LoadProject(root, cwd, func(string) {}) {
+		byName[sk.Name] = sk
+	}
+	if _, ok := byName["ship"]; !ok {
+		t.Error("root skill ship not loaded from a subdirectory launch")
+	}
+	if _, ok := byName["local"]; !ok {
+		t.Error("cwd skill local not loaded")
+	}
+	if byName["review"].Description != "subdir version" {
+		t.Errorf("review = %q, want the subdirectory's version to win", byName["review"].Description)
+	}
+
+	// Load(cwd) alone still sees only cwd's project skills.
+	for _, sk := range Load(cwd, func(string) {}) {
+		if sk.Name == "ship" {
+			t.Error("Load(cwd) read the root's skills")
+		}
+	}
+}

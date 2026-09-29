@@ -878,6 +878,17 @@ port mirrors (see `internal/version`).
   first, and `PRD.md` is used only when it has a goal spec's shape (a `- [ ]`
   checklist and a Verify section); otherwise `/goal` and `--loop` say it was
   passed over and why.
+- **Launching from a subdirectory lost the project's memory, session and
+  skills.** Memory (`.klaudia/MEMORY.md`, `KNOWLEDGE.md`), session transcripts
+  and project skills were keyed by the launch directory, so starting in
+  `internal/tui` gave a separate memory, no auto-resume of the repository's
+  session and none of its skills — while CLAUDE.md lookup already walked to the
+  git root. They are now keyed by the project root: the git top-level, or the
+  launch directory outside a repository (or when the top-level is `$HOME`, a
+  dotfiles repository). The launch directory's own memory, knowledge, skills
+  and sessions are still read, after the root's, so nothing recorded under the
+  old key is orphaned; new writes go to the root. Tools, config and the
+  `Working directory` the model sees still use the launch directory.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

@@ -38,7 +38,7 @@ func newDoctorCommand() *cobra.Command {
 			// reflects what an unflagged `klaudia` would use.
 			model := api.ResolveModel(cfg.Model)
 			mcpCfg, _ := mcp.LoadConfig(cwd)
-			checks := doctor.Run(buildDoctorInput(cfg, model, cwd, len(mcpCfg.MCPServers)))
+			checks := doctor.Run(buildDoctorInput(cfg, model, cwd, projectRoot(cwd), len(mcpCfg.MCPServers)))
 
 			out := cmd.OutOrStdout()
 			if asJSON {

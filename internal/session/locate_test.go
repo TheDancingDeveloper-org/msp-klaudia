@@ -79,3 +79,25 @@ func TestSummaryFollowsTheLocatedTranscript(t *testing.T) {
 		t.Fatalf("ReadSummary from another cwd = %q, %v", got, ok)
 	}
 }
+
+// MostRecent reads every key it is given — the project root and the launch
+// directory — and returns the newest transcript across them.
+func TestMostRecentAcrossKeys(t *testing.T) {
+	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
+	root, cwd := "/work/proj", "/work/proj/sub"
+	writeTranscript(t, Path(cwd, "old-cwd-keyed"))
+	if id, ok := MostRecent(root, cwd); !ok || id != "old-cwd-keyed" {
+		t.Fatalf("MostRecent = %q, %v; want the cwd-keyed session", id, ok)
+	}
+	if _, ok := MostRecent(root); ok {
+		t.Fatal("MostRecent(root) found a session only the cwd key holds")
+	}
+	writeTranscript(t, Path(root, "root-keyed"))
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(Path(root, "root-keyed"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := MostRecent(root, cwd, root); id != "root-keyed" {
+		t.Fatalf("MostRecent = %q, want the newer root-keyed session", id)
+	}
+}

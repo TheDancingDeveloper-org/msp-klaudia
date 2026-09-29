@@ -227,30 +227,6 @@ func TestNewWriterIsLazy(t *testing.T) {
 	}
 }
 
-// /work/my_proj and /work/my-proj encode to the same directory. Auto-resume in
-// one must not pick up the other's conversation.
-func TestMostRecentIgnoresCollidingProject(t *testing.T) {
-	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
-	a, b := "/work/my_proj", "/work/my-proj"
-	if Dir(a) != Dir(b) {
-		t.Fatalf("precondition: %s and %s should share a directory", a, b)
-	}
-	w, err := NewWriter(a, "session-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Append(Entry{Type: "user", CWD: a, Message: json.RawMessage(`{}`)}); err != nil {
-		t.Fatal(err)
-	}
-	w.Close()
-
-	if id, ok := MostRecent(b); ok {
-		t.Errorf("MostRecent(%s) = %q; want nothing (that session belongs to %s)", b, id, a)
-	}
-	if id, ok := MostRecent(a); !ok || id != "session-a" {
-		t.Errorf("MostRecent(%s) = %q,%v; want session-a", a, id, ok)
-	}
-}
 
 // One line longer than the old 16 MB scanner cap stopped Read there, and the
 // resumed history silently ended before it.

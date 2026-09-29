@@ -37,7 +37,7 @@ func TestResolveResumeIDAutoResumesMostRecentSessionForCWD(t *testing.T) {
 	seedSession(t, otherCWD, "other-session")
 	seedSession(t, cwd, "project-session")
 
-	got, err := resolveResumeID(cwd, options{}, true)
+	got, err := resolveResumeID(cwd, cwd, options{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func TestResolveResumeIDAutoResumesMostRecentSessionForCWD(t *testing.T) {
 func TestResolveResumeIDStartsNewWhenNoSessionExists(t *testing.T) {
 	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
 
-	got, err := resolveResumeID("/work/proj", options{}, true)
+	got, err := resolveResumeID("/work/proj", "/work/proj", options{}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestResolveResumeIDNewSessionSkipsAutoResume(t *testing.T) {
 	cwd := "/work/proj"
 	seedSession(t, cwd, "project-session")
 
-	got, err := resolveResumeID(cwd, options{newSession: true}, true)
+	got, err := resolveResumeID(cwd, cwd, options{newSession: true}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestResolveResumeIDExplicitResumeWinsOverAutoResume(t *testing.T) {
 	cwd := "/work/proj"
 	seedSession(t, cwd, "project-session")
 
-	got, err := resolveResumeID(cwd, options{resume: "explicit-session"}, true)
+	got, err := resolveResumeID(cwd, cwd, options{resume: "explicit-session"}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestResolveResumeIDExplicitResumeWinsOverAutoResume(t *testing.T) {
 }
 
 func TestResolveResumeIDNewSessionConflictsWithExplicitResume(t *testing.T) {
-	_, err := resolveResumeID("/work/proj", options{newSession: true, resume: "old"}, true)
+	_, err := resolveResumeID("/work/proj", "/work/proj", options{newSession: true, resume: "old"}, true)
 	if err == nil || !strings.Contains(err.Error(), "--new-session cannot be combined") {
 		t.Fatalf("err = %v, want --new-session conflict", err)
 	}
@@ -99,11 +99,11 @@ func TestResolveResumeIDHeadlessDoesNotAutoResume(t *testing.T) {
 	seedSession(t, cwd, "project-session")
 
 	// Headless (interactive=false): a prior session is NOT auto-resumed.
-	if got, err := resolveResumeID(cwd, options{}, false); err != nil || got != "" {
+	if got, err := resolveResumeID(cwd, cwd, options{}, false); err != nil || got != "" {
 		t.Fatalf("headless auto-resume = (%q, %v), want empty", got, err)
 	}
 	// …but an explicit --continue still resumes it, even headless.
-	if got, err := resolveResumeID(cwd, options{continueSession: true}, false); err != nil || got != "project-session" {
+	if got, err := resolveResumeID(cwd, cwd, options{continueSession: true}, false); err != nil || got != "project-session" {
 		t.Fatalf("headless --continue = (%q, %v), want project-session", got, err)
 	}
 }
@@ -145,7 +145,7 @@ func TestResolveResumeIDPinnedSessionIDSkipsAutoResume(t *testing.T) {
 	cwd := "/work/proj"
 	seedSession(t, cwd, "project-session")
 
-	if got, err := resolveResumeID(cwd, options{sessionID: "pinned"}, true); err != nil || got != "" {
+	if got, err := resolveResumeID(cwd, cwd, options{sessionID: "pinned"}, true); err != nil || got != "" {
 		t.Fatalf("resolveResumeID = %q, %v; want no auto-resume for a pinned id", got, err)
 	}
 }

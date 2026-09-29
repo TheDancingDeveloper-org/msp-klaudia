@@ -120,17 +120,17 @@ func withExtraDirs(sys string, dirs []string) string {
 }
 
 // buildDoctorInput gathers the facts /doctor reports, without prompting.
-func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd string, mcpServers int) doctor.Input {
+func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string, mcpServers int) doctor.Input {
 	servers, hints := lsp.Survey(cwd)
 	// Loaded silently: skill.Load's warnings go to the session that owns the
 	// prompt, not to /doctor, which must stay quiet on stderr.
 	doctorSkills := make([]doctor.Skill, 0)
-	for _, sk := range skill.Load(cwd, func(string) {}) {
+	for _, sk := range skill.LoadProject(root, cwd, func(string) {}) {
 		scope := "user"
 		switch {
 		case sk.Bundled:
 			scope = "bundled"
-		case strings.HasPrefix(sk.Path, cwd):
+		case strings.HasPrefix(sk.Path, root) || strings.HasPrefix(sk.Path, cwd):
 			scope = "project"
 		}
 		doctorSkills = append(doctorSkills, doctor.Skill{Name: sk.Name, Scope: scope})
@@ -665,7 +665,11 @@ type options struct {
 // --resume/--continue is honored in any mode; the implicit "pick up the most
 // recent project session" is an interactive convenience only, so headless (-p)
 // and embedding (stream-json) runs stay stateless unless asked.
-func resolveResumeID(cwd string, opts options, interactive bool) (string, error) {
+//
+// Sessions are keyed by the project root; the launch directory's own session
+// dir is read too, so a session recorded from a subdirectory before sessions
+// were keyed by the root is still picked up.
+func resolveResumeID(root, cwd string, opts options, interactive bool) (string, error) {
 	if opts.newSession && (opts.resume != "" || opts.continueSession) {
 		return "", usageErrorf("--new-session cannot be combined with --resume or --continue")
 	}
@@ -673,15 +677,15 @@ func resolveResumeID(cwd string, opts options, interactive bool) (string, error)
 		return opts.resume, nil
 	}
 	if opts.continueSession {
-		if id, ok := session.MostRecent(cwd); ok {
+		if id, ok := session.MostRecent(root, cwd); ok {
 			return id, nil
 		}
-		return "", fmt.Errorf("--continue: no previous session found in this directory")
+		return "", fmt.Errorf("--continue: no previous session found in this project")
 	}
 	// A pinned --session-id names a new session, so it opts out of the
 	// implicit pick-up just as --new-session does.
 	if interactive && !opts.newSession && opts.sessionID == "" {
-		if id, ok := session.MostRecent(cwd); ok {
+		if id, ok := session.MostRecent(root, cwd); ok {
 			return id, nil
 		}
 	}
@@ -690,12 +694,12 @@ func resolveResumeID(cwd string, opts options, interactive bool) (string, error)
 
 // resumeTranscript is the transcript file to read a resumed session from: the
 // located copy (which may live under another working directory's project dir),
-// else the cwd path, whose read error then names the missing file.
-func resumeTranscript(cwd, resumeID string) string {
-	if p, ok := session.Locate(cwd, resumeID); ok {
+// else the project-root path, whose read error then names the missing file.
+func resumeTranscript(root, resumeID string) string {
+	if p, ok := session.Locate(root, resumeID); ok {
 		return p
 	}
-	return session.ExistingPath(cwd, resumeID)
+	return session.ExistingPath(root, resumeID)
 }
 
 // resumeMessages is the history a resumed session starts with, and whether it
@@ -709,9 +713,9 @@ func resumeTranscript(cwd, resumeID string) string {
 // recorded has no marker to cut at and resumes from the summary alone, as it
 // always did. Without a summary, or with full, the whole transcript is
 // replayed.
-func resumeMessages(cwd, resumeID string, full bool) ([]anthropic.BetaMessageParam, bool, error) {
-	path := resumeTranscript(cwd, resumeID)
-	if summary, ok := session.ReadSummary(cwd, resumeID); ok && !full {
+func resumeMessages(root, resumeID string, full bool) ([]anthropic.BetaMessageParam, bool, error) {
+	path := resumeTranscript(root, resumeID)
+	if summary, ok := session.ReadSummary(root, resumeID); ok && !full {
 		msgs := []anthropic.BetaMessageParam{
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
 				"Summary of the earlier conversation in this session:\n\n" + summary)),
@@ -750,8 +754,8 @@ func resumeMessages(cwd, resumeID string, full bool) ([]anthropic.BetaMessagePar
 //     even an unrelated one — would refuse.
 //   - Otherwise it is resumed, and the notice says which session, how long it
 //     is and how old, and how to start fresh instead.
-func vetAutoResume(cwd, id string, maxAge time.Duration, now time.Time) (string, string) {
-	path := resumeTranscript(cwd, id)
+func vetAutoResume(root, id string, maxAge time.Duration, now time.Time) (string, string) {
+	path := resumeTranscript(root, id)
 	var age time.Duration
 	if st, err := os.Stat(path); err == nil {
 		age = now.Sub(st.ModTime())
@@ -760,7 +764,7 @@ func vetAutoResume(cwd, id string, maxAge time.Duration, now time.Time) (string,
 		return "", fmt.Sprintf("Last session %s was active %s, past autoResumeMaxAge (%s) — starting fresh. --continue or -r %s resumes it.",
 			id, humanAgo(age), configDuration(maxAge), id)
 	}
-	if why := autoResumeVeto(cwd, id); why != "" {
+	if why := autoResumeVeto(root, id); why != "" {
 		return "", why
 	}
 	entries, _ := session.Read(path)
@@ -779,8 +783,8 @@ func vetAutoResume(cwd, id string, maxAge time.Duration, now time.Time) (string,
 //     every prompt in the resumed session — even an unrelated one — refuses too.
 //   - Its last act was /clear, with nothing said after it (so it is still the
 //     newest transcript): reviving it would undo the clear.
-func autoResumeVeto(cwd, id string) string {
-	path := resumeTranscript(cwd, id)
+func autoResumeVeto(root, id string) string {
+	path := resumeTranscript(root, id)
 	if entries, err := session.Read(path); err == nil && session.LastTurnRefused(entries) {
 		return "Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume " + id + " to see it."
 	}
@@ -833,15 +837,15 @@ func configDuration(d time.Duration) string {
 // was set). A fork (--fork-session, or --resume A --session-id B) inherits the
 // goal and records it under its own id straight away, so resuming the fork
 // restores it too.
-func standingGoal(cwd, sessionID, transcriptPath, resumeID string) (path, goal string) {
+func standingGoal(root, sessionID, transcriptPath, resumeID string) (path, goal string) {
 	if transcriptPath == "" {
-		transcriptPath = session.Path(cwd, sessionID)
+		transcriptPath = session.Path(root, sessionID)
 	}
 	path = session.GoalPathFor(transcriptPath)
 	if resumeID == "" {
 		return path, ""
 	}
-	from := session.GoalPathFor(resumeTranscript(cwd, resumeID))
+	from := session.GoalPathFor(resumeTranscript(root, resumeID))
 	goal = session.ReadGoal(from)
 	if goal != "" && from != path {
 		_ = session.WriteGoal(path, goal)
@@ -860,16 +864,16 @@ func standingGoal(cwd, sessionID, transcriptPath, resumeID string) (path, goal s
 //   - --resume A --session-id B, or --fork-session: a new id (B, or minted)
 //     seeded from A, leaving A untouched;
 //   - otherwise a freshly minted id.
-func chooseSessionID(cwd string, opts options, resumeID string) (string, string, error) {
+func chooseSessionID(root string, opts options, resumeID string) (string, string, error) {
 	fork := opts.forkSession || (opts.sessionID != "" && opts.sessionID != resumeID)
 	if resumeID != "" && !fork {
-		p, _ := session.Locate(cwd, resumeID)
+		p, _ := session.Locate(root, resumeID)
 		return resumeID, p, nil
 	}
 	if opts.sessionID == "" {
 		return uuid.NewString(), "", nil
 	}
-	if p, exists := session.Locate(cwd, opts.sessionID); exists {
+	if p, exists := session.Locate(root, opts.sessionID); exists {
 		return "", "", usageErrorf("--session-id %s: a session with this id already exists (%s); use --resume %s to continue it", opts.sessionID, p, opts.sessionID)
 	}
 	return opts.sessionID, "", nil
@@ -959,6 +963,11 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	cwd, _ := os.Getwd()
+	// Project-scoped state — sessions, memory, project skills — is keyed by
+	// the project root (the git top-level), so a launch from a subdirectory
+	// shares it with a launch from the top. Everything else, tools included,
+	// runs in cwd.
+	root := projectRoot(cwd)
 	if opts.createConfig != "" {
 		path, err := createConfig(opts.createConfig, cwd)
 		if err != nil {
@@ -1022,7 +1031,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	if opts.sessionID != "" && !session.ValidID(opts.sessionID) {
 		return usageErrorf("--session-id %q: use letters, digits, '-' and '_' (at most 128)", opts.sessionID)
 	}
-	resumeID, err := resolveResumeID(cwd, *opts, interactive)
+	resumeID, err := resolveResumeID(root, cwd, *opts, interactive)
 	if err != nil {
 		return err
 	}
@@ -1063,17 +1072,21 @@ func run(cmd *cobra.Command, opts *options) error {
 			fmt.Fprintln(cmd.ErrOrStderr(), "warning:", aerr)
 		}
 		var notice string
-		resumeID, notice = vetAutoResume(cwd, resumeID, maxAge, time.Now())
+		resumeID, notice = vetAutoResume(root, resumeID, maxAge, time.Now())
 		fmt.Fprintln(cmd.ErrOrStderr(), notice)
 	}
 
-	sessionID, transcriptPath, err := chooseSessionID(cwd, *opts, resumeID)
+	sessionID, transcriptPath, err := chooseSessionID(root, *opts, resumeID)
 	if err != nil {
 		return err
 	}
+	if transcriptPath == "" {
+		// A new session is recorded under the project root, not cwd.
+		transcriptPath = session.Path(root, sessionID)
+	}
 	if resumeID != "" {
 		var fromSummary bool
-		initialMessages, fromSummary, err = resumeMessages(cwd, resumeID, opts.fullResume)
+		initialMessages, fromSummary, err = resumeMessages(root, resumeID, opts.fullResume)
 		if err != nil {
 			return fmt.Errorf("resume %s: %w", resumeID, err)
 		}
@@ -1188,10 +1201,10 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Refresh MEMORY.md's links to the .klaudia/memory/*.md detail notes before
 	// building the prompt, so recall surfaces them (best-effort; idempotent).
-	_ = memory.New(filepath.Join(cwd, ".klaudia")).SyncLinks()
+	_ = memory.New(filepath.Join(root, ".klaudia")).SyncLinks()
 	// Assemble the full system prompt (base instructions + env context +
 	// CLAUDE.md) once for this run.
-	sysPrompt := prompt.System(cwd, string(model))
+	sysPrompt := prompt.SystemIn(cwd, root, string(model))
 	if opts.safeMode {
 		sysPrompt = prompt.SafeSystem(cwd, string(model))
 	}
@@ -1277,8 +1290,8 @@ func run(cmd *cobra.Command, opts *options) error {
 	// Persistent memory: one store shared by the Memory tool (agent + sub-agents)
 	// and the /memory command.
 	staticTools := base.All()
-	memStore := memory.New(filepath.Join(cwd, ".klaudia"))
-	if memTool, merr := tools.NewMemoryForProject(memStore, cwd); merr == nil {
+	memStore := memory.New(filepath.Join(root, ".klaudia"))
+	if memTool, merr := tools.NewMemoryForProject(memStore, root); merr == nil {
 		staticTools = append(staticTools, memTool)
 	}
 
@@ -1286,7 +1299,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	// project's) become a single Skill tool the model can invoke; the TUI also
 	// dispatches /<skill>. In safe mode the project's skills are left out.
 	skillWarn := func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }
-	skills := skill.Load(cwd, skillWarn)
+	skills := skill.LoadProject(root, cwd, skillWarn)
 	if opts.safeMode {
 		skills = skill.LoadUser(skillWarn)
 	}
@@ -1464,7 +1477,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		}
 		// Shared settings so slash commands can read/change them between turns.
 		ctxLimit, ctxSource := api.ContextWindow(string(model), cfg.ContextWindow)
-		goalPath, restoredGoal := standingGoal(cwd, sessionID, transcriptPath, resumeID)
+		goalPath, restoredGoal := standingGoal(root, sessionID, transcriptPath, resumeID)
 		sess := &tui.Session{
 			// Effective model (flag or config default), never "" — otherwise a
 			// non-Anthropic provider would wrongly resolve to the Anthropic default.
@@ -1498,7 +1511,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			Rewind: rewindFn,
 
 			Doctor: func() string {
-				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, len(mcpCfg.MCPServers))))
+				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, root, len(mcpCfg.MCPServers))))
 			},
 			// Nil unless the provider can enumerate its models; /model falls
 			// back to type-the-id when it is.

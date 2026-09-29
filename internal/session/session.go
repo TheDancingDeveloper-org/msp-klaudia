@@ -1,5 +1,5 @@
 // Package session reads and writes Klaudia session transcripts:
-// newline-delimited JSON (JSONL) under ~/.klaudia/sessions/<encoded-cwd>/.
+// newline-delimited JSON (JSONL) under ~/.klaudia/sessions/<encoded-project-root>/.
 package session
 
 import (
@@ -281,12 +281,24 @@ func eachLine(r io.Reader, fn func([]byte) bool) error {
 }
 
 // MostRecent returns the session ID of the most recently modified transcript in
-// the project dir for cwd, or ("", false) if none exists. The current sessions
-// root and legacy projects root are both considered during migration.
-func MostRecent(cwd string) (string, bool) {
-	matches, _ := filepath.Glob(filepath.Join(Dir(cwd), "*.jsonl"))
-	legacyMatches, _ := filepath.Glob(filepath.Join(legacyDir(cwd), "*.jsonl"))
-	matches = append(matches, legacyMatches...)
+// the project dirs for the given directories, or ("", false) if none exists.
+// The first directory is the project's own key; any others are read as well,
+// so transcripts recorded under an older key (the launch directory, before
+// sessions were keyed by the project root) are still picked up. The current
+// sessions root and legacy projects root are both considered during migration.
+func MostRecent(dirs ...string) (string, bool) {
+	var matches []string
+	seen := map[string]bool{}
+	for _, d := range dirs {
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		m, _ := filepath.Glob(filepath.Join(Dir(d), "*.jsonl"))
+		legacyMatches, _ := filepath.Glob(filepath.Join(legacyDir(d), "*.jsonl"))
+		matches = append(matches, m...)
+		matches = append(matches, legacyMatches...)
+	}
 	if len(matches) == 0 {
 		return "", false
 	}
@@ -313,7 +325,7 @@ func MostRecent(cwd string) (string, bool) {
 	// mtime. Auto-resuming that would silently drop the user's real history
 	// ("resumed but no memory"), so skip to the newest one with messages.
 	for _, f := range files {
-		if hasMessagesFrom(f.path, cwd) {
+		if hasMessages(f.path) {
 			name := filepath.Base(f.path)
 			return strings.TrimSuffix(name, ".jsonl"), true
 		}
@@ -331,7 +343,7 @@ func MostRecent(cwd string) (string, bool) {
 // Auto-resume picked the newest transcript there, so starting Klaudia in one
 // of them resumed a conversation from another. A message with no recorded cwd
 // (older transcripts, imports) is accepted, as it was before.
-func hasMessagesFrom(path, cwd string) bool {
+func hasMessages(path string) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -341,12 +353,11 @@ func hasMessagesFrom(path, cwd string) bool {
 	_ = eachLine(f, func(line []byte) bool {
 		var e struct {
 			Type string `json:"type"`
-			CWD  string `json:"cwd"`
 		}
 		if json.Unmarshal(line, &e) != nil || (e.Type != "user" && e.Type != "assistant") {
 			return true
 		}
-		found = e.CWD == "" || filepath.Clean(e.CWD) == filepath.Clean(cwd)
+		found = true
 		return false
 	})
 	return found
