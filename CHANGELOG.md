@@ -163,6 +163,15 @@ port mirrors (see `internal/version`).
   Chrome's output when it exits quickly (it calls `cmd.Wait` concurrently with
   reading the pipe). A launch that fails with no readable output is now retried
   too, and reported as such instead of "chrome failed to start:" and nothing.
+- **Auto-resume no longer picks up another folder's session.** Session
+  directories are named by replacing every non-alphanumeric character with
+  `-`, so `/a/my_proj` and `/a/my-proj` shared one, and auto-resume took the
+  newest transcript in it. A transcript is now resumed only in the folder it
+  was recorded in (older transcripts with no recorded folder still are).
+  Upstream 2.1.239.
+- **Resume no longer stops at a transcript line over 16 MB.** One large line —
+  an image tool result is enough — ended the read, and the resumed history
+  silently lost everything after it. Upstream 2.1.257/2.1.267.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
