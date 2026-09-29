@@ -102,6 +102,18 @@ port mirrors (see `internal/version`).
   shape will need to read the envelope; the README's embedding section shows
   it.
 
+- **A sub-agent worked without the project's context and shared the parent's
+  todo list.** Its system prompt was only its type's paragraph: no working
+  directory, platform or git branch, and no CLAUDE.md or
+  `.klaudia/KNOWLEDGE.md`, so a general-purpose sub-agent editing code ignored
+  the project's rules. It now gets the same environment block and project
+  instructions as the main agent (not the parent's recalled memory). A
+  general-purpose sub-agent was also handed the parent's TodoWrite, whose store
+  its first call replaced, and AskUserQuestion, although the Agent tool tells
+  the model a sub-agent cannot ask questions; it now has a todo list of its own
+  and no AskUserQuestion. A sub-agent's result now ends with a `<usage>` block
+  giving its turns, input and output tokens, and duration.
+
 - **A permission rule naming an MCP server matched nothing.** Rules were
   compared for equality against the tool's qualified name, so `mcp__loki` in
   `[permissions] allow` never matched `mcp__loki__loki_query`, and the check
