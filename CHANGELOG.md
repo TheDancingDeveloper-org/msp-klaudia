@@ -80,6 +80,12 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`/restart`, `/stopjob` and `/logs` resolve job names the same way.** With no
+  argument and more than one job running, all three now list the jobs with the
+  usage line (only `/logs` did); a name that matches nothing is answered with the
+  jobs that exist and their state, instead of a bare "no job X". `/stopjob` on a
+  job that had already exited used to report "stopped" — the store's kill is a
+  no-op there — and now says it already exited, with its code.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
