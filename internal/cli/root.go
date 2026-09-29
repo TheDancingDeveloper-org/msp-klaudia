@@ -114,6 +114,15 @@ func withExtraDirs(sys string, dirs []string) string {
 		strings.Join(dirs, "\n- ")
 }
 
+// sessionRoots builds the trust roots for a session: the working directory plus
+// any extra in-scope directories (--add-dir at launch, /add-dir at runtime).
+// trust.NewRoots canonicalises them and drops any that are unsafe to treat as
+// project (a system prefix, or "/"), so an extra dir counts as project work
+// rather than a host change on the next tool call.
+func sessionRoots(home, cwd string, extra []string) trust.Roots {
+	return trust.NewRoots(home, append([]string{cwd}, extra...)...)
+}
+
 // buildDoctorInput gathers the facts /doctor reports, without prompting.
 func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd string, mcpServers int) doctor.Input {
 	servers, hints := lsp.Survey(cwd)
@@ -547,6 +556,11 @@ type options struct {
 	loop            bool   // --loop: autonomous goal-spec iteration
 	maxIterations   int    // --max-iterations: outer-loop cap for --loop
 
+	systemPrompt       string   // --system-prompt: replace the default system prompt
+	appendSystemPrompt string   // --append-system-prompt: append to the system prompt
+	mcpConfigs         []string // --mcp-config: extra MCP servers (path or inline JSON), repeatable
+	addDirs            []string // --add-dir: extra in-scope directories, repeatable
+
 	askTimeout time.Duration // --ask-timeout: bound on a stream-json can_use_tool wait
 }
 
@@ -666,6 +680,10 @@ func NewRootCommand() *cobra.Command {
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
+	f.StringVar(&opts.systemPrompt, "system-prompt", "", "Replace the default system prompt entirely with this text")
+	f.StringVar(&opts.appendSystemPrompt, "append-system-prompt", "", "Append this text to the system prompt (after --system-prompt when both are given)")
+	f.StringArrayVar(&opts.mcpConfigs, "mcp-config", nil, "Load additional MCP servers from a file path or inline JSON (.mcp.json shape), merged over configured servers (repeatable)")
+	f.StringArrayVar(&opts.addDirs, "add-dir", nil, "Add an extra directory the agent may operate in, beyond the working directory (repeatable)")
 
 	return cmd
 }
@@ -824,15 +842,15 @@ func run(cmd *cobra.Command, opts *options) error {
 		mode = permission.ModeBypassPermissions
 	}
 
-	var extraDirs func() []string
+	// --add-dir seeds the extra roots in every mode. Interactive sessions can add
+	// more at runtime with /add-dir, so extraDirs is read live (see below); in the
+	// non-interactive modes the CLI dirs are the whole set.
+	cliExtraDirs := append([]string(nil), opts.addDirs...)
+	extraDirs := func() []string { return cliExtraDirs }
 	hostGate := &agent.HostGate{
 		Roots: func() trust.Roots {
 			home, _ := os.UserHomeDir()
-			roots := []string{cwd}
-			if extraDirs != nil {
-				roots = append(roots, extraDirs()...)
-			}
-			return trust.NewRoots(home, roots...)
+			return sessionRoots(home, cwd, extraDirs())
 		},
 		Ledger: trust.NewLedger(trust.NewRoots(func() string { h, _ := os.UserHomeDir(); return h }(), cwd)),
 		// Refusals point the model at the tool that gets an operation approved
@@ -853,8 +871,14 @@ func run(cmd *cobra.Command, opts *options) error {
 	// building the prompt, so recall surfaces them (best-effort; idempotent).
 	_ = memory.New(filepath.Join(cwd, ".klaudia")).SyncLinks()
 	// Assemble the full system prompt (base instructions + env context +
-	// CLAUDE.md) once for this run.
-	sysPrompt := prompt.System(cwd, string(model))
+	// CLAUDE.md) once for this run, then apply the --system-prompt (replace) and
+	// --append-system-prompt (append) overrides. The extra-dirs note is layered on
+	// per mode below (per turn in the TUI, since /add-dir can change it).
+	sysPrompt := prompt.Compose(prompt.System(cwd, string(model)), opts.systemPrompt, opts.appendSystemPrompt)
+	// Non-interactive modes have a fixed extra-dirs set (--add-dir only), so the
+	// note is baked in once. The TUI re-wraps sysPrompt per turn instead, because
+	// /add-dir can change the set mid-session.
+	headlessSys := withExtraDirs(sysPrompt, cliExtraDirs)
 
 	// Build the tool registry. Sub-agents draw from the base tools (incl. any
 	// MCP tools); the top-level registry adds the Agent tool.
@@ -898,6 +922,20 @@ func run(cmd *cobra.Command, opts *options) error {
 	mcpCfg, mcpCfgErr := mcp.LoadConfig(cwd)
 	if mcpCfgErr != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: mcp config:", mcpCfgErr)
+	}
+	// --mcp-config adds servers from a path or inline JSON, merged over the
+	// on-disk config. The merged servers connect through the same mcp.Connect
+	// path and their tools carry the same mcp__<server>__<tool> names, so they
+	// are gated for trust exactly like project .mcp.json servers (mcpPermission):
+	// allowed only under an enforcing trust posture, asked in interactive modes,
+	// and refused where there is nobody to ask. A CLI flag buys no extra trust.
+	// A bad value is a usage error — nothing has run yet and the user typed it.
+	for _, arg := range opts.mcpConfigs {
+		extra, perr := mcp.ParseConfigArg(arg)
+		if perr != nil {
+			return usageErrorf("--mcp-config %v", perr)
+		}
+		mcpCfg = mcp.Merge(mcpCfg, extra)
 	}
 	// Servers log to stderr. Headless and embedded runs forward it, prefixed
 	// with the server name, to Klaudia's own stderr (which an embedder drains);
@@ -1100,6 +1138,9 @@ func run(cmd *cobra.Command, opts *options) error {
 			Jobs:       jobStore,
 			Executor:   executor,
 		}
+		// Seed from --add-dir so /add-dir extends that set rather than starting
+		// empty, and the host gate reads the combined list live each tool call.
+		sess.ExtraDirs = append([]string(nil), cliExtraDirs...)
 		extraDirs = func() []string { return sess.ExtraDirs }
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
 			// Permission mode reads live from the session every check, so a
@@ -1162,7 +1203,7 @@ func run(cmd *cobra.Command, opts *options) error {
 				WorkingDir:      cwd,
 				Prompt:          prompt,
 				Model:           model,
-				System:          sysPrompt,
+				System:          headlessSys,
 				MaxTurns:        opts.maxTurns,
 				ContextWindow:   cfg.ContextWindow,
 				MaxTokens:       int64(cfg.MaxTokens),
@@ -1188,7 +1229,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			cwd:        cwd,
 			mode:       mode,
 			model:      model,
-			system:     sysPrompt,
+			system:     headlessSys,
 			maxTurns:   opts.maxTurns,
 			iterations: opts.maxIterations,
 			permCtx:    permCtx,
@@ -1221,7 +1262,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		WorkingDir:      cwd,
 		Prompt:          opts.prompt,
 		Model:           model,
-		System:          sysPrompt,
+		System:          headlessSys,
 		MaxTurns:        opts.maxTurns,
 		ContextWindow:   cfg.ContextWindow,
 		MaxTokens:       int64(cfg.MaxTokens),

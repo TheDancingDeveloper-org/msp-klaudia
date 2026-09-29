@@ -121,6 +121,48 @@ func LoadConfig(dir string) (Config, error) {
 	return cfg, nil
 }
 
+// ParseConfigArg parses one --mcp-config value. It is inline JSON when it begins
+// (after trimming) with '{' or '[', otherwise a path to a .mcp.json-shaped file.
+// Either way it must carry the top-level "mcpServers" object, the same shape
+// LoadConfig reads; JSONC comments are tolerated as they are for on-disk configs.
+func ParseConfigArg(arg string) (Config, error) {
+	s := strings.TrimSpace(arg)
+	if s == "" {
+		return Config{MCPServers: map[string]ServerConfig{}}, nil
+	}
+	var data []byte
+	if strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[") {
+		data = []byte(s)
+	} else {
+		b, err := os.ReadFile(s)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: %w", s, err)
+		}
+		data = b
+	}
+	var c Config
+	if err := json.Unmarshal(stripJSONComments(data), &c); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", s, err)
+	}
+	if c.MCPServers == nil {
+		c.MCPServers = map[string]ServerConfig{}
+	}
+	return c, nil
+}
+
+// Merge folds extra's servers into cfg, extra winning on a name clash (it is the
+// later, more specific source — a CLI --mcp-config over the on-disk .mcp.json).
+// It mutates and returns cfg.
+func Merge(cfg, extra Config) Config {
+	if cfg.MCPServers == nil {
+		cfg.MCPServers = map[string]ServerConfig{}
+	}
+	for name, sc := range extra.MCPServers {
+		cfg.MCPServers[name] = sc
+	}
+	return cfg
+}
+
 // Server is a connected MCP server session and its configured name.
 //
 // session is guarded because the goroutines that read it and the ones that
