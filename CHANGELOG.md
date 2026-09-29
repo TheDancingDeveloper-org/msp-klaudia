@@ -80,6 +80,16 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **The model no longer writes `.klaudia/KNOWLEDGE.md` without asking.** The
+  `Memory` tool allowed every operation, including `add scope=project` and
+  `promote`, and the file it writes is injected into every later session's
+  system prompt — so a prompt injection read from a web page or an MCP server
+  could make itself permanent. Those two writes now ask, in autonomous mode
+  too, and show the note being written; `dontAsk`, headless and plan mode
+  refuse them with a message pointing at session memory and the allow rule
+  `Memory(project)`. Session notes in `MEMORY.md` stay autonomous. The injected
+  knowledge is now framed as project notes to weigh against the code, not
+  "established facts".
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
