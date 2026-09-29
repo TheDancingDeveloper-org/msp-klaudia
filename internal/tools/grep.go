@@ -74,6 +74,7 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		root = tctx.WorkingDir
 	}
 
+	hidden := 0
 	matches, err := search.Grep(search.GrepOptions{
 		Pattern:    in.Pattern,
 		Root:       root,
@@ -82,18 +83,20 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		Glob:       in.Glob,
 		Limit:      maxSearchResults,
 		Ctx:        ctx,
+		Skip:       tctx.Hidden,
+		Skipped:    &hidden,
 	})
 	if err != nil {
 		return []Result{{Content: fmt.Sprintf("Error: %v", err), IsError: true}}, nil
 	}
+	note := hiddenNote(hidden)
 	if len(matches) == 0 {
-		return []Result{{Content: "No matches found"}}, nil
+		return []Result{{Content: "No matches found" + note}}, nil
 	}
 
-	var note string
 	if len(matches) > maxSearchResults {
 		matches = matches[:maxSearchResults]
-		note = fmt.Sprintf("\n(stopped after %d matches — narrow the pattern, path or glob to see the rest)", maxSearchResults)
+		note += fmt.Sprintf("\n(stopped after %d matches — narrow the pattern, path or glob to see the rest)", maxSearchResults)
 	}
 	var out string
 	switch in.OutputMode {
@@ -149,4 +152,13 @@ func formatCount(matches []search.GrepMatch) string {
 		fmt.Fprintf(&b, "%s:%d\n", f, counts[f])
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// hiddenNote says how many paths a search left out under Read deny rules, so
+// the model knows the result is not the whole tree.
+func hiddenNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n(%d path(s) not searched: covered by a Read deny rule)", n)
 }

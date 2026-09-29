@@ -24,6 +24,25 @@ type GlobOptions struct {
 	Hidden  bool   // include dotfiles/dotdirs even when Pattern does not name them
 	// Ctx, when set, stops the walk once it is done (an interrupted turn).
 	Ctx context.Context
+	// Skip, when set, excludes a file or directory (given its absolute path)
+	// from the walk; Skipped counts how many it excluded.
+	Skip    func(abs string) bool
+	Skipped *int
+}
+
+// skipped reports whether skip excludes path, counting it when it does.
+func skipped(skip func(string) bool, count *int, path string) bool {
+	if skip == nil {
+		return false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil || !skip(abs) {
+		return false
+	}
+	if count != nil {
+		*count++
+	}
+	return true
 }
 
 // Glob returns files under Root matching Pattern, sorted by modification time
@@ -49,6 +68,12 @@ func Glob(opts GlobOptions) ([]string, error) {
 		}
 		if err != nil {
 			return nil // skip unreadable entries
+		}
+		if skipped(opts.Skip, opts.Skipped, path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if filter.skip(path, d) {
 			if d.IsDir() {
@@ -114,6 +139,9 @@ type GrepOptions struct {
 	Limit int
 	// Ctx, when set, stops the search once it is done (an interrupted turn).
 	Ctx context.Context
+	// Skip and Skipped are as for GlobOptions.
+	Skip    func(abs string) bool
+	Skipped *int
 }
 
 // errLimit ends a walk that has found enough.
@@ -174,7 +202,9 @@ func Grep(opts GrepOptions) ([]GrepMatch, error) {
 	}
 
 	if !info.IsDir() {
-		visit(root)
+		if !skipped(opts.Skip, opts.Skipped, root) {
+			visit(root)
+		}
 		return matches, nil
 	}
 	root = filepath.Clean(root)
@@ -188,6 +218,12 @@ func Grep(opts GrepOptions) ([]GrepMatch, error) {
 			return errLimit
 		}
 		if err != nil {
+			return nil
+		}
+		if skipped(opts.Skip, opts.Skipped, path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if filter.skip(path, d) {

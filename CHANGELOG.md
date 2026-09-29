@@ -63,6 +63,13 @@ port mirrors (see `internal/version`).
   sandbox-exec — with `~/.ssh/known_hosts` and `~/.ssh/config` left visible.
   `sandbox.readCredentials = true` turns this off for sandboxes that need
   them. Upstream 2.1.187/2.1.224.
+- **Grep and Glob do not search into a denied directory from above it.** A
+  `Read` deny rule covered a search rooted inside the denied directory, but
+  one rooted above it walked straight in: with `Read(~/secrets/**)` denied,
+  Grep of `~` returned `~/secrets`' contents. The walk now leaves out any path
+  a `Read` deny rule covers, and the result says how many were left out.
+  (Dot-directories such as `~/.ssh` were already skipped by default.)
+  Upstream 2.1.162.
 - **File permission rules match paths.** Read, Glob and Grep sent no
   specifier, so `Read(~/.ssh/**)` denied nothing, and Edit/Write compared the
   path as the model wrote it against the rule as a string: `~` was not

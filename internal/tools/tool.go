@@ -99,6 +99,10 @@ type Context struct {
 	// wire it — makes the append a no-op; it is backed by the LSP pool. A hook
 	// error or timeout appends nothing (never a false "clean").
 	Diagnostics DiagnosticsFunc
+	// Hidden, if non-nil, reports whether an absolute path is covered by a
+	// Read deny rule. Grep and Glob leave such paths out of what they walk,
+	// so a search started above a denied directory does not read into it.
+	Hidden func(abs string) bool
 }
 
 // Tool is the contract implemented by every local tool (Read, Write, Bash, …).
