@@ -188,6 +188,17 @@ port mirrors (see `internal/version`).
   `/compact` succeeds (an overflow still forces one). Summaries get the
   model's output budget, 4k–16k tokens, instead of a fixed 4096. Upstream
   2.1.69/2.1.76/2.1.85/2.1.89/2.1.269/2.1.281/2.1.284.
+- **A reply cut off mid-stream is no longer shown as a finished answer.** A
+  stream that closed without `message_stop` (Anthropic) or without `[DONE]`
+  and a `finish_reason` (OpenAI-compatible) was accepted as complete, so a
+  truncated reply — or a turn with no stop reason — was recorded as the
+  answer. A mid-stream `overloaded_error` or `api_error` ended the turn with a
+  raw error. These, and a response that cannot be assembled, are now an
+  interrupted stream: retried when nothing had been shown yet, like a stall,
+  and otherwise reported as a reply that was cut off. The OpenAI-compatible
+  provider now honours `Retry-After`, which its comment always claimed and
+  its code never read; a wait over 60 seconds is surfaced instead of sat
+  through. Upstream 2.1.94/2.1.98/2.1.199/2.1.281/2.1.284.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
