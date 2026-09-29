@@ -951,12 +951,16 @@ theme = "nord"
 Two complementary modes for working toward an objective:
 
 - **Standing goal** — `/goal <text>` pins an objective re-stated to the model at
-  the start of every turn so it doesn't drift; `/goal clear` removes it.
+  the start of every turn so it doesn't drift; `/goal clear` removes it. It is
+  kept beside the session's transcript, so resuming the session restores it
+  (and the resume banner shows it).
 - **Goal spec + Ralph loop** — for bigger objectives:
   - `/goal` (no args) enters **goal-setting**: it loads an existing spec
-    (`./PRD.md` or `./.klaudia/GOAL.md`) or, if none, helps you draft one
-    (objective, an acceptance-criteria checklist, and a verification command).
-    `/goal` again finishes.
+    (`./.klaudia/GOAL.md`, or `./PRD.md` if it has a spec's shape — at least one
+    `- [ ]` checklist item and a `## Verify` section) or, if none, helps you
+    draft `.klaudia/GOAL.md` (objective, an acceptance-criteria checklist, and a
+    verification command). A `PRD.md` without that shape is left alone, and
+    Klaudia says why. `/goal` again finishes.
   - `/goal run [N]` then runs an **autonomous loop** against the spec: each
     iteration re-reads the spec, makes the next valuable change, verifies, and
     commits — progress accumulating in files and git, not the context window

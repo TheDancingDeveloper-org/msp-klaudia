@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -132,5 +134,39 @@ func TestJobNamesIgnoresUnrelatedText(t *testing.T) {
 	}
 	if got := jobNamesFromResults(nil); len(got) != 0 {
 		t.Errorf("got %v from no input", got)
+	}
+}
+
+func TestGoalCommandSavesStandingGoal(t *testing.T) {
+	m := newTestModel()
+	var saved []string
+	m.sess.SaveGoal = func(g string) error { saved = append(saved, g); return nil }
+
+	m.handleSlash("/goal finish the importer")
+	m.handleSlash("/goal clear")
+	if len(saved) != 2 || saved[0] != "finish the importer" || saved[1] != "" {
+		t.Fatalf("saved = %q, want the goal then a clear", saved)
+	}
+}
+
+func TestResumeBannerShowsRestoredGoal(t *testing.T) {
+	m := newTestModel()
+	m.sess.Goal = "finish the importer" // as the CLI restores it on resume
+	st := m.buildResumeState()
+	if !st.hasContent() || !strings.Contains(st.render(), "finish the importer") {
+		t.Fatalf("resume banner lacks the restored goal:\n%s", st.render())
+	}
+}
+
+func TestGoalLoopExplainsIgnoredPRD(t *testing.T) {
+	m := newTestModel()
+	m.sess.CWD = t.TempDir()
+	if err := os.WriteFile(filepath.Join(m.sess.CWD, "PRD.md"), []byte("# Product\n\nUsers want things.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.handleSlash("/goal run")
+	out := m.transcript.String()
+	if !strings.Contains(out, "Not using") || !strings.Contains(out, "No goal spec found") {
+		t.Fatalf("/goal run did not explain the ignored PRD.md:\n%s", out)
 	}
 }

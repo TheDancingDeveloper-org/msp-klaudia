@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"io"
@@ -75,7 +76,11 @@ func retryTransient(ctx context.Context, errOut io.Writer, what string, turn fun
 func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	specText, specPath, _ := goal.Read(p.cwd)
 	if strings.TrimSpace(specText) == "" {
-		return fmt.Errorf("no goal spec found — create PRD.md or .klaudia/GOAL.md first (run klaudia interactively and use /goal)")
+		msg := "no goal spec found — create .klaudia/GOAL.md first (run klaudia interactively and use /goal)"
+		if prd, ok := goal.IgnoredPRD(p.cwd); ok {
+			msg += "; " + goal.IgnoredPRDNote(prd)
+		}
+		return errors.New(msg)
 	}
 	// No human is present to approve tool use, so the loop can only do real work
 	// in a mode that does not ask. Autonomous qualifies now that the host gate

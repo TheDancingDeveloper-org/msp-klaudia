@@ -52,7 +52,7 @@ type Session struct {
 	Effort         string         // reasoning effort ("" = the model's default); /effort changes it
 	PermissionMode string         // live mode (ExitPlanMode flips it out of "plan")
 	Memory         memory.Store   // backs /memory; never nil — set to memory.Disabled() when unavailable
-	Goal           string         // standing goal re-injected each turn (Ralph-style)
+	Goal           string         // standing goal re-injected each turn (Ralph-style); restored on resume
 	Theme          string         // markdown render theme ("" = dark)
 	EnterInserts   bool           // Return inserts a newline; alt+Return/ctrl+j submit
 	Skills         []SkillCommand // user-defined skills dispatched as /<name>
@@ -69,6 +69,10 @@ type Session struct {
 	// Zero means "unknown"; /stats omits the usage ratio in that case.
 	ContextWindow       int
 	ContextWindowSource string
+
+	// SaveGoal, if set, records the standing goal ("" clears it) so a resume
+	// of this session restores it. Called whenever /goal sets or clears it.
+	SaveGoal func(string) error
 
 	// Compact, if set, runs a model-based compaction of the given history and
 	// returns the replacement history plus the summary. Backs /compact.
@@ -1741,8 +1745,19 @@ func (m *Model) busyGuard(what string) bool {
 	return false
 }
 
+// saveGoal records the standing goal for resume, saying so when it cannot:
+// the goal still applies to this run, but a resume would not bring it back.
+func (m *Model) saveGoal() {
+	if m.sess == nil || m.sess.SaveGoal == nil {
+		return
+	}
+	if err := m.sess.SaveGoal(m.sess.Goal); err != nil {
+		m.appendLine(errStyle.Render("  could not save the standing goal for resume: " + err.Error()))
+	}
+}
+
 // toggleGoalSetting flips goal-setting mode. Turning it on loads any existing
-// spec (PRD.md / .klaudia/GOAL.md) or invites the user to describe the goal so
+// spec (.klaudia/GOAL.md, or a PRD.md shaped like one) or invites the user to describe the goal so
 // the model can draft one on the next turn; turning it off readies the loop.
 func (m *Model) toggleGoalSetting() (tea.Model, tea.Cmd) {
 	if m.goalSetting {
@@ -1756,6 +1771,7 @@ func (m *Model) toggleGoalSetting() (tea.Model, tea.Cmd) {
 		cwd = m.sess.CWD
 	}
 	text, specPath, _ := goal.Read(cwd)
+	m.noteIgnoredPRD(cwd)
 	if strings.TrimSpace(text) != "" {
 		m.appendLine(bannerStyle.Render(fmt.Sprintf(
 			"Goal-setting on. Loaded spec from %s:\n  %s\nRefine it in chat, /goal to finish, then /goal run to start.",
@@ -1766,6 +1782,14 @@ func (m *Model) toggleGoalSetting() (tea.Model, tea.Cmd) {
 			specPath)))
 	}
 	return m, nil
+}
+
+// noteIgnoredPRD says when ./PRD.md was passed over as the goal spec, so a
+// user who wrote one for the loop learns what it is missing.
+func (m *Model) noteIgnoredPRD(cwd string) {
+	if prd, ok := goal.IgnoredPRD(cwd); ok {
+		m.appendLine(toolStyle.Render("  " + goal.IgnoredPRDNote(prd)))
+	}
 }
 
 // startGoalLoop kicks off the "/goal run [N]" Ralph loop: requires a spec, moves
@@ -1781,7 +1805,8 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 	}
 	specText, specPath, _ := goal.Read(cwd)
 	if strings.TrimSpace(specText) == "" {
-		m.appendLine(errStyle.Render("No goal spec found. Run /goal first to create one (PRD.md or .klaudia/GOAL.md)."))
+		m.noteIgnoredPRD(cwd)
+		m.appendLine(errStyle.Render("No goal spec found. Run /goal first to create one (.klaudia/GOAL.md)."))
 		return m, nil
 	}
 
@@ -2123,9 +2148,11 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		case strings.EqualFold(args[0], "clear"):
 			m.sess.Goal = ""
 			m.appendLine(bannerStyle.Render("Standing goal cleared."))
+			m.saveGoal()
 		default:
 			m.sess.Goal = strings.Join(args, " ")
 			m.appendLine(bannerStyle.Render("Standing goal set; it will be re-stated each turn:\n" + m.sess.Goal))
+			m.saveGoal()
 		}
 	case "/memory":
 		// Memory is always an interface value; headless mode gets memory.Disabled()
