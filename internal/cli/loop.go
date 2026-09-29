@@ -11,6 +11,7 @@ import (
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/goal"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
 
@@ -34,6 +35,7 @@ type loopRun struct {
 	deferred   map[string]bool
 	recorder   agent.Recorder
 	onSummary  func(string)
+	hooks      *hooks.Runner
 	render     *Renderer
 }
 
@@ -94,6 +96,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			Recorder:      p.recorder,
 			WebTools:      true,
 			OnSummary:     p.onSummary,
+			Hooks:         p.hooks,
 		}, emit)
 	}
 

@@ -21,6 +21,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/browser"
 	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/doctor"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/lsp"
 	"github.com/greenthread-ai/klaudia/internal/mcp"
 	"github.com/greenthread-ai/klaudia/internal/memory"
@@ -767,6 +768,14 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
 	cfg := config.Load(cwd)
+	// Lifecycle hooks (user-level only; project hooks are dropped by config.Load).
+	// nil when none are configured, which disables the feature in the loop.
+	hookRunner := hooks.New(cfg.Hooks, cwd)
+	if hookRunner != nil {
+		hookRunner.Logf = func(format string, args ...any) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "hook: "+format+"\n", args...)
+		}
+	}
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err
@@ -1126,6 +1135,7 @@ func run(cmd *cobra.Command, opts *options) error {
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      turnPerm,
 				Host:            hostGate,
+				Hooks:           hookRunner,
 				Interject:       interject,
 				BeforeEdit:      beforeEdit,
 				DeferredTools:   currentDeferred(),
@@ -1168,6 +1178,7 @@ func run(cmd *cobra.Command, opts *options) error {
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      permCtx,
 				Host:            hostGate,
+				Hooks:           hookRunner,
 				Approver:        ap,
 				DeferredTools:   currentDeferred(),
 				InitialMessages: history,
@@ -1197,6 +1208,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			deferred:   deferredTools,
 			recorder:   recorder,
 			onSummary:  onSummary,
+			hooks:      hookRunner,
 			render:     r,
 		})
 	}
@@ -1227,6 +1239,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		MaxTokens:       int64(cfg.MaxTokens),
 		Permission:      permCtx,
 		Host:            hostGate,
+		Hooks:           hookRunner,
 		Approver:        approver,
 		DeferredTools:   deferredTools,
 		InitialMessages: initialMessages,

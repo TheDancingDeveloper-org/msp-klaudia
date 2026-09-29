@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 )
 
 // Provider names.
@@ -70,6 +72,10 @@ type Config struct {
 	Trust Trust `toml:"trust,omitempty"`
 	// Input configures the prompt's key handling.
 	Input Input `toml:"input,omitempty"`
+	// Hooks configures lifecycle hooks (PreToolUse/PostToolUse/UserPromptSubmit/
+	// Stop). Hooks run arbitrary shell commands, so only user-level (~/.klaudia)
+	// hooks are honored: project-level hooks are dropped by Load (see there).
+	Hooks hooks.Config `toml:"hooks,omitempty"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -244,7 +250,15 @@ func Load(cwd string) Config {
 	if home, err := os.UserHomeDir(); err == nil {
 		merge(&cfg, read(filepath.Join(home, ".klaudia", "config.toml")))
 	}
-	merge(&cfg, read(ProjectPath(cwd)))
+	projectCfg := read(ProjectPath(cwd))
+	// Hooks run arbitrary shell commands, so a checked-in project
+	// .klaudia/config.toml would be a code-execution vector for anyone who can
+	// commit to the repo — the same escalation risk the repo already gates for
+	// project-supplied executable config (issues #51/#56). Until a project-trust
+	// prompt exists for them, project hooks are dropped: only user-level
+	// (~/.klaudia) hooks are honored. See CHANGELOG / issue #147.
+	projectCfg.Hooks = hooks.Config{}
+	merge(&cfg, projectCfg)
 	return cfg
 }
 
@@ -363,6 +377,14 @@ func merge(dst *Config, src Config) {
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)
+	// Hooks accumulate per event (like permission rules), so a home config and a
+	// project config that both define hooks add their groups rather than one
+	// replacing the other. Load drops project hooks before this runs, so in
+	// practice only user-level groups accumulate here.
+	dst.Hooks.PreToolUse = append(dst.Hooks.PreToolUse, src.Hooks.PreToolUse...)
+	dst.Hooks.PostToolUse = append(dst.Hooks.PostToolUse, src.Hooks.PostToolUse...)
+	dst.Hooks.UserPromptSubmit = append(dst.Hooks.UserPromptSubmit, src.Hooks.UserPromptSubmit...)
+	dst.Hooks.Stop = append(dst.Hooks.Stop, src.Hooks.Stop...)
 }
 
 // ResolveAPIKey returns the inline key, or the value of the named env var.
