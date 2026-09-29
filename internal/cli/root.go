@@ -564,6 +564,10 @@ provider = "anthropic"
 # 8192, 16384, 32768, 128000.
 # contextWindow = 8192
 
+# Model to fall back to when the model is overloaded (retried once) or not
+# found (used for the rest of the session). --fallback-model overrides it.
+# fallbackModel = "openai/gpt-5.5-mini"
+
 # TUI theme (Markdown + chrome). /theme switches it for a session.
 # theme = "nord" # dracula | gruvbox | tokyo-night | nord | catppuccin
 
@@ -627,6 +631,7 @@ type options struct {
 	prompt           string
 	model            string
 	effort           string // --effort low|medium|high|xhigh|max
+	fallbackModel    string
 	outputFormat     string
 	inputFormat      string
 	permissionMode   string
@@ -800,6 +805,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVarP(&opts.print, "print", "p", false, "Non-interactive mode: print result to stdout and exit")
 	f.StringVar(&opts.model, "model", "", "Model alias (haiku|sonnet|opus) or full model ID")
 	f.StringVar(&opts.effort, "effort", "", "Reasoning effort: low|medium|high|xhigh|max (default: config effort, else the model's own default)")
+	f.StringVar(&opts.fallbackModel, "fallback-model", "", "Model to use when the model is overloaded (retried once) or not found (for the rest of the session); overrides config fallbackModel")
 	f.StringVar(&opts.outputFormat, "output-format", "text", "Output format: text|json|stream-json")
 	f.StringVar(&opts.inputFormat, "input-format", "text", "Input format: text|stream-json (stream-json drives a persistent agent over stdin)")
 	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|plan|bypassPermissions|dontAsk (default: config [permissions] mode, else autonomous; dontAsk runs allow-listed tools and denies the rest without prompting — for headless and embedded runs)")
@@ -975,6 +981,13 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return err
 	}
+
+	// The model enumeration is the backend's own; take it before the
+	// fallback wrapper, which does not list models.
+	listModels := modelLister(provider)
+	// --fallback-model overrides config fallbackModel; neither set leaves the
+	// provider unwrapped.
+	provider = api.WithFallback(provider, firstNonEmpty(opts.fallbackModel, cfg.FallbackModel))
 
 	// Build allow/deny rules from config (.klaudia) + CLI flags.
 	allowRules, err := permission.ParseRules(append(append([]string{}, cfg.Permissions.Allow...), opts.allowedTools...))
@@ -1378,7 +1391,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			},
 			// Nil unless the provider can enumerate its models; /model falls
 			// back to type-the-id when it is.
-			ListModels: modelLister(provider),
+			ListModels: listModels,
 			Trust:      tui.NewTrustController(hostGate),
 			Jobs:       jobStore,
 			Executor:   executor,
@@ -1513,6 +1526,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			partial = newPartialEmitter(out, sessionID, &writeMu).emit
 		}
 	}
+	emit = withNotices(emit, cmd.ErrOrStderr())
 	res, err := loop.Run(ctx, agent.Options{
 		WorkingDir:      cwd,
 		Prompt:          opts.prompt,

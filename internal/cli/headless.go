@@ -71,6 +71,19 @@ func (r *Renderer) Event(ev any) error {
 	return r.writeJSONLine(ev)
 }
 
+// withNotices also writes notice events to w (stderr) as "note: …" lines.
+// The text and json formats drop intermediate events and stream-json -p does
+// not use them, but a turn moving to the fallback model is something the
+// person running the command should hear about whatever the format.
+func withNotices(emit agent.Emitter, w io.Writer) agent.Emitter {
+	return func(ev agent.Event) {
+		if ev.Type == "notice" && ev.Content != "" {
+			_, _ = fmt.Fprintln(w, "note:", ev.Content)
+		}
+		emit(ev)
+	}
+}
+
 // Result emits the terminal result in the configured format:
 //   - text:        the result string + newline
 //   - json:        a single ResultMessage object

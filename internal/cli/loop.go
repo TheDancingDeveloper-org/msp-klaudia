@@ -108,7 +108,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 		}
 	}
 
-	emit := func(ev agent.Event) { _ = p.render.Event(ev); warnOn(errOut, FormatText, ev) }
+	emit := withNotices(func(ev agent.Event) { _ = p.render.Event(ev); warnOn(errOut, FormatText, ev) }, errOut)
 	// Each turn starts fresh (no InitialMessages): it re-reads the spec and git
 	// state, per the Ralph principle (bounded context over long runs).
 	runTurn := func(prompt string) (agent.Result, error) {

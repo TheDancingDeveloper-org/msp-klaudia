@@ -306,6 +306,16 @@ port mirrors (see `internal/version`).
   endpoints receive the effort as `reasoning_effort`, with `xhigh` and `max`
   sent as `high` — the one level every such server accepts. Sub-agents keep
   the model's defaults.
+- **Fallback model (`fallbackModel`, `--fallback-model`).** An overloaded or
+  unknown model used to end the turn. With a fallback configured, a request
+  that fails as overloaded (529, 503, or an `overloaded_error` mid-stream) is
+  retried once on the fallback, and the next request tries the primary again;
+  a model the provider reports as not found is replaced by the fallback for the
+  rest of the session. Nothing is retried once output has been shown, or after
+  an interrupt. The switch is announced in the TUI and on stderr in `-p` runs,
+  and it applies to sub-agents and compaction summaries, which share the
+  provider. When the fallback has a smaller known output cap, `max_tokens` is
+  lowered to fit.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
