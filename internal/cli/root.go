@@ -766,7 +766,13 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
-	cfg := config.Load(cwd)
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		return usageErrorf("config: %v", err)
+	}
+	for _, w := range cfg.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+	}
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err

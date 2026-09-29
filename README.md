@@ -479,6 +479,11 @@ Completions (including image tool-results → `image_url`).
 `~/.klaudia/config.toml` is the user default; a project `./.klaudia/config.toml`
 overlays it (project wins). Settings merge per field.
 
+A config file that does not parse stops Klaudia before anything runs (exit 2),
+with the file, line and column. A key Klaudia does not know — a typo, or a
+setting from a newer or older version — is skipped with a warning naming the
+file and line; the rest of the file still applies.
+
 ### Auth
 
 - `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`), or

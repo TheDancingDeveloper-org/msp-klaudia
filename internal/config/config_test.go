@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ model = "sonnet"
 baseURL = "https://x/v1"
 `)
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	if cfg.Provider != "openai" {
 		t.Errorf("provider = %q, want openai (project wins)", cfg.Provider)
 	}
@@ -49,14 +50,14 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 	writeConfig(t, home, `theme = "nord"`)
 
 	// Global-only: inherited.
-	if cfg := Load(t.TempDir()); cfg.Theme != "nord" {
+	if cfg := mustLoad(t, t.TempDir()); cfg.Theme != "nord" {
 		t.Errorf("theme = %q, want nord (from home)", cfg.Theme)
 	}
 
 	// Project overrides global.
 	cwd := t.TempDir()
 	writeConfig(t, cwd, `theme = "dracula"`)
-	if cfg := Load(cwd); cfg.Theme != "dracula" {
+	if cfg := mustLoad(t, cwd); cfg.Theme != "dracula" {
 		t.Errorf("theme = %q, want dracula (project wins)", cfg.Theme)
 	}
 }
@@ -67,13 +68,13 @@ func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	writeConfig(t, home, "[permissions]\nmode = \"acceptEdits\"\n")
 
 	// Global-only → inherited.
-	if cfg := Load(t.TempDir()); cfg.Permissions.Mode != "acceptEdits" {
+	if cfg := mustLoad(t, t.TempDir()); cfg.Permissions.Mode != "acceptEdits" {
 		t.Errorf("mode = %q, want acceptEdits (from home)", cfg.Permissions.Mode)
 	}
 	// Project overrides global.
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "[permissions]\nmode = \"plan\"\n")
-	if cfg := Load(cwd); cfg.Permissions.Mode != "plan" {
+	if cfg := mustLoad(t, cwd); cfg.Permissions.Mode != "plan" {
 		t.Errorf("mode = %q, want plan (project wins)", cfg.Permissions.Mode)
 	}
 }
@@ -102,7 +103,7 @@ headedFallback = true
 searchEngine = "ddg"
 `)
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	if cfg.Browser.Engine != "chrome" {
 		t.Errorf("browser.engine = %q, want inherited chrome", cfg.Browser.Engine)
 	}
@@ -153,7 +154,7 @@ deny = ["Bash(rm:*)"]
 allow = ["Bash(go test:*)"]
 `)
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	if len(cfg.Permissions.Allow) != 2 {
 		t.Errorf("allow = %v, want home+project merged", cfg.Permissions.Allow)
 	}
@@ -181,7 +182,7 @@ func TestAppendProjectPermission(t *testing.T) {
 		t.Fatalf("AppendProjectPermission deny = %v,%v, want true,nil", ok, err)
 	}
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	if len(cfg.Permissions.Allow) != 1 || cfg.Permissions.Allow[0] != "Edit" {
 		t.Errorf("allow = %v, want [Edit]", cfg.Permissions.Allow)
 	}
@@ -190,9 +191,92 @@ func TestAppendProjectPermission(t *testing.T) {
 	}
 }
 
+func mustLoad(t *testing.T, cwd string) Config {
+	t.Helper()
+	cfg, err := Load(cwd)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
+func TestLoadSyntaxErrorNamesFileAndLine(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "model = \"sonnet\"\n[sandbox\nmode = \"os\"\n")
+
+	_, err := Load(cwd)
+	if err == nil {
+		t.Fatal("Load accepted a file that does not parse")
+	}
+	want := ProjectPath(cwd) + ":2:"
+	if !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error %q, want it to start with %q", err, want)
+	}
+}
+
+func TestLoadHomeParseErrorFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, "model = 5\n")
+
+	_, err := Load(t.TempDir())
+	want := filepath.Join(home, ".klaudia", "config.toml") + ":1:"
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error %v, want one starting with %q", err, want)
+	}
+}
+
+func TestLoadUnpositionedErrorNamesFile(t *testing.T) {
+	// go-toml reports a duplicate key without a position; the file must
+	// still be named.
+	t.Setenv("HOME", t.TempDir())
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "model = \"a\"\nmodel = \"b\"\n")
+
+	_, err := Load(cwd)
+	if err == nil || !strings.HasPrefix(err.Error(), ProjectPath(cwd)+":") {
+		t.Errorf("error %v, want one naming %s", err, ProjectPath(cwd))
+	}
+}
+
+func TestLoadUnknownKeysWarnAndKnownKeysApply(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, "theme = \"nord\"\nfutureSetting = true\n")
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "modle = \"x\"\nmodel = \"sonnet\"\n\n[sandbox]\nmdoe = \"os\"\n")
+
+	cfg := mustLoad(t, cwd)
+	if cfg.Model != "sonnet" || cfg.Theme != "nord" {
+		t.Errorf("model %q theme %q, want the known keys applied", cfg.Model, cfg.Theme)
+	}
+	homePath := filepath.Join(home, ".klaudia", "config.toml")
+	want := []string{
+		homePath + `:2: unknown key "futureSetting", ignored`,
+		ProjectPath(cwd) + `:1: unknown key "modle", ignored`,
+		ProjectPath(cwd) + `:5: unknown key "sandbox.mdoe", ignored`,
+	}
+	if !reflect.DeepEqual(cfg.Warnings, want) {
+		t.Errorf("warnings =\n%q\nwant\n%q", cfg.Warnings, want)
+	}
+}
+
+func TestAppendProjectPermissionRefusesBrokenFile(t *testing.T) {
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "[permissions\n")
+	if _, err := AppendProjectPermission(cwd, "allow", "Edit"); err == nil {
+		t.Fatal("AppendProjectPermission rewrote a file that does not parse")
+	}
+	data, _ := os.ReadFile(ProjectPath(cwd))
+	if string(data) != "[permissions\n" {
+		t.Errorf("file changed to %q", data)
+	}
+}
+
 func TestLoadMissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	cfg := Load(t.TempDir())
+	cfg := mustLoad(t, t.TempDir())
 	if cfg.Provider != "" {
 		t.Errorf("expected empty config, got %+v", cfg)
 	}
@@ -209,7 +293,7 @@ extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_HOME", "X-Extra" = "X_HOME" }
 	writeConfig(t, cwd, `extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_PROJECT", "CF-Access-Client-Secret" = "CF_SECRET" }
 `)
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	// Project overrides the shared key; home-only key survives; project-only key is added.
 	want := map[string]string{
 		"CF-Access-Client-Id":     "CF_ID_PROJECT",

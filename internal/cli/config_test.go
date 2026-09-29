@@ -1,8 +1,13 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"io"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -96,6 +101,41 @@ func TestThemeOrWarn(t *testing.T) {
 	}
 }
 
+// Every example in the starter config, uncommented, is a key the schema
+// knows. Load warns on unknown keys, so a drifted example would otherwise
+// greet a new user with a warning about the file we wrote for them.
+func TestStarterConfigExamplesAreKnownKeys(t *testing.T) {
+	cwd := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	path, err := createConfig("local", cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	example := regexp.MustCompile(`^# ([A-Za-z]+ = |\[[A-Za-z]+\]$)`)
+	var lines []string
+	uncommented := 0
+	for _, line := range strings.Split(starterConfig, "\n") {
+		if example.MatchString(line) {
+			line = strings.TrimPrefix(line, "# ")
+			uncommented++
+		}
+		lines = append(lines, line)
+	}
+	if uncommented < 5 {
+		t.Fatalf("uncommented only %d example lines; the pattern has drifted from the starter", uncommented)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		t.Fatalf("starter with examples uncommented does not load: %v", err)
+	}
+	if len(cfg.Warnings) != 0 {
+		t.Errorf("starter examples use unknown keys: %v", cfg.Warnings)
+	}
+}
+
 func TestStarterConfigRoundtripsContextWindow(t *testing.T) {
 	// Generate the starter, uncomment the contextWindow example, parse it back
 	// through config.Load and confirm the field actually populates. Catches the
@@ -114,8 +154,59 @@ func TestStarterConfigRoundtripsContextWindow(t *testing.T) {
 	if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Load(cwd)
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if cfg.ContextWindow != 8192 {
 		t.Errorf("ContextWindow = %d, want 8192 (toml tag mismatch?)", cfg.ContextWindow)
+	}
+}
+
+// runWithConfig runs one headless stream-json launch in a folder whose
+// .klaudia/config.toml is body, and returns what went to stderr and the error.
+func runWithConfig(t *testing.T, body string) (string, error) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, ".klaudia"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ProjectPath(cwd), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	in := strings.NewReader(`{"type":"user","message":{"role":"user","content":"hi"}}` + "\n")
+	var stderr strings.Builder
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk"})
+	cmd.SetIn(in)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(&stderr)
+	err := cmd.ExecuteContext(context.Background())
+	return stderr.String(), err
+}
+
+func TestBrokenConfigIsAUsageError(t *testing.T) {
+	_, err := runWithConfig(t, "provider = \"openai\"\n[sandbox\n")
+	if !isUsageError(err) {
+		t.Fatalf("err = %v (exit %d), want a usage error (exit %d)", err, exitCodeFor(err), ExitUsage)
+	}
+	if !strings.Contains(err.Error(), "config.toml:2:") {
+		t.Errorf("error %q does not name the file and line", err)
+	}
+}
+
+func TestUnknownConfigKeyWarnsAndRuns(t *testing.T) {
+	srv := httptest.NewServer(&fakeChat{})
+	defer srv.Close()
+	stderr, err := runWithConfig(t, fmt.Sprintf(
+		"provider = \"openai\"\nbaseURL = %q\napiKey = \"test\"\nmodel = \"fake-model\"\nmodle = \"typo\"\n", srv.URL))
+	if err != nil {
+		t.Fatalf("run failed: %v", err)
+	}
+	if !strings.Contains(stderr, `config.toml:5: unknown key "modle", ignored`) {
+		t.Errorf("stderr %q does not warn about the unknown key", stderr)
 	}
 }
