@@ -117,6 +117,18 @@ port mirrors (see `internal/version`).
   nothing and lists the candidates; the timestamp on each note tells apart
   similar ones. Until now a wrong note stayed in the prompt of every later
   session unless someone edited the file by hand (#121).
+- **The stream-json embedding channel answers control requests.** A client can
+  send Claude Code's `interrupt`, `set_permission_mode`, `set_model` and
+  `initialize` control requests; each gets a `control_response` (success or
+  error) with the same `request_id`. They used to be decoded and dropped, so the
+  only way to stop a turn was to kill the process. `interrupt` cancels the
+  running turn, as Esc does in the TUI. `set_permission_mode` is held to the
+  command line's rules (no `bypassPermissions` unless launched in it), and
+  `initialize` refuses hooks and SDK MCP servers it cannot run rather than
+  ignoring them. The `result` line now carries `session_id` and `duration_ms`.
+  Stdin is also read without a bound on queued turns: a client that sent more
+  than eight turns ahead while one waited on a `can_use_tool` answer used to
+  deadlock the session.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

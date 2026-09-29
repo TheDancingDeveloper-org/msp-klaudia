@@ -310,6 +310,32 @@ An ask the client never answers is denied after `--ask-timeout` (default
 10 minutes; `0` waits forever), with a tool result that says so — a stalled or
 protocol-unaware client sees a finished turn, not a hung process.
 
+**The client can steer the session with its own control requests**, in Claude
+Code's shapes. Each is answered with a `control_response` carrying the same
+`request_id` — `"subtype":"success"` with a `response` object, or
+`"subtype":"error"` with an `error` message:
+
+```json
+{"type":"control_request","request_id":"r1","request":{"subtype":"interrupt"}}
+{"type":"control_response","response":{"subtype":"success","request_id":"r1","response":{}}}
+```
+
+- `interrupt` cancels the running turn (what Esc does in the TUI), including a
+  `can_use_tool` ask it is waiting on, and any turn sent before the interrupt
+  that has not started. Each such turn still ends with a `result` line, with
+  `"subtype":"error_during_execution"` and a result saying it was interrupted.
+- `set_permission_mode` (`"mode":"plan"`, …) applies from the next tool call,
+  sub-agents included. The rules are the command line's: `autonomous` needs the
+  host gate enforcing, and `bypassPermissions` is refused unless the session was
+  launched in it.
+- `set_model` (`"model":"opus"`; omitted or `"default"` restores the launch
+  model) applies from the next turn.
+- `initialize` is answered once. One that asks for `hooks`, `sdkMcpServers`,
+  `agents`, `jsonSchema` or a system prompt is refused — Klaudia cannot run an
+  SDK's callbacks, and saying so beats a hook that silently never fires.
+
+The `result` line carries `session_id` and `duration_ms` alongside `usage`.
+
 ### Resuming
 
 ```bash

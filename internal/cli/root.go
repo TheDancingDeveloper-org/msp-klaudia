@@ -954,9 +954,13 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 	hostGate.SetPolicy(hostPolicy)
 
-	// Headless path: the mode is fixed for the lifetime of this command.
+	// Headless path: the mode is fixed for the lifetime of this command,
+	// except that a stream-json peer may change it with a set_permission_mode
+	// control request. It is read live, not captured, so that change reaches
+	// every holder of permCtx — sub-agents included — at their next tool call.
+	liveMode := newModeVar(mode)
 	permCtx := permission.Context{
-		Mode:     permission.StaticMode(mode),
+		Mode:     liveMode.Get,
 		Allow:    allowRules,
 		Deny:     denyRules,
 		Trusting: func() bool { return hostGate.Policy() == agent.HostEnforce },
@@ -1306,11 +1310,15 @@ func run(cmd *cobra.Command, opts *options) error {
 			PermissionMode: string(mode),
 			ResumedFrom:    resumeID,
 		}
+		driver.SetPermissionMode = streamModeSetter(liveMode, mode,
+			func() bool { return hostGate.Policy() == agent.HostEnforce })
+		liveModel := newModelVar(model)
+		driver.SetModel = liveModel.Set
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, rec agent.Recorder, emit agent.Emitter) (agent.Result, error) {
 			return loop.Run(ctx, agent.Options{
 				WorkingDir:      cwd,
 				Prompt:          prompt,
-				Model:           model,
+				Model:           liveModel.Get(), // set_model applies from the next turn
 				System:          sysPrompt,
 				MaxTurns:        opts.maxTurns,
 				ContextWindow:   cfg.ContextWindow,
