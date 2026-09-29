@@ -626,9 +626,10 @@ func NewRootCommand() *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// A positional prompt is shorthand for -p "<prompt>".
+			// A positional prompt is shorthand for -p "<prompt>". Every word
+			// is the prompt, so `klaudia explain this code` needs no quotes.
 			if opts.prompt == "" && len(args) > 0 {
-				opts.prompt = args[0]
+				opts.prompt = strings.Join(args, " ")
 				opts.print = true
 			}
 			return run(cmd, &opts)

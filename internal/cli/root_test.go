@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -145,5 +147,28 @@ func TestResolveResumeIDPinnedSessionIDSkipsAutoResume(t *testing.T) {
 
 	if got, err := resolveResumeID(cwd, options{sessionID: "pinned"}, true); err != nil || got != "" {
 		t.Fatalf("resolveResumeID = %q, %v; want no auto-resume for a pinned id", got, err)
+	}
+}
+
+// TestPositionalPromptKeepsEveryWord runs `klaudia explain this code` against a
+// fake endpoint: the model must be sent the whole sentence, not just "explain".
+func TestPositionalPromptKeepsEveryWord(t *testing.T) {
+	fake := &fakeChat{}
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
+	t.Chdir(workdir(t, srv.URL))
+
+	cmd := NewRootCommand()
+	cmd.SetArgs([]string{"--permission-mode", "dontAsk", "explain", "this", "code"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if body := fake.last(); !strings.Contains(body, "explain this code") {
+		t.Fatalf("request body does not carry the whole prompt:\n%s", body)
 	}
 }

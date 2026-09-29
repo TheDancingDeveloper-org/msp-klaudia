@@ -80,6 +80,9 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **An unquoted positional prompt kept only its first word.** `klaudia explain
+  this code` sent the model `explain`; the positional words are now joined with
+  spaces, so it sends `explain this code`, the same as the quoted form.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
