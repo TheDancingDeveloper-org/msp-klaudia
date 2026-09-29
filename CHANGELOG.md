@@ -63,6 +63,18 @@ port mirrors (see `internal/version`).
   sandbox-exec — with `~/.ssh/known_hosts` and `~/.ssh/config` left visible.
   `sandbox.readCredentials = true` turns this off for sandboxes that need
   them. Upstream 2.1.187/2.1.224.
+- **Bash permission rules check every command in a line.** They matched only
+  the first command's two-word prefix, so `Bash(git status:*)` approved
+  `git status && curl … | sh`, and `ls && rm -rf x`, `sudo rm x` or `/bin/rm x`
+  got past a `Bash(rm:*)` deny; a deny with flags (`rm -rf:*`) never matched at
+  all. Every command is now checked — including `$(…)`, subshells, `bash -c`
+  and `eval` scripts (after unwrapping, so `sudo bash -c` too), and the
+  command behind `sudo`/`env`/`timeout`/`xargs` — by its full text, its short
+  "program subcommand" form, and its base name. A deny applies if any command
+  matches; an allow only if every one does. A line that cannot be fully read
+  (parse error, a program that is an expansion, over 10,000 characters) is
+  never approved by an allow rule. The TUI's session rules use the same
+  check. Upstream fixed this class across 2.1.72–2.1.282.
 
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds

@@ -187,6 +187,65 @@ type PermissionRequest struct {
 	// single Specifier", the behaviour for every other tool and for a lone
 	// command. It does not affect matching (Check reads only Specifier).
 	RuleSpecifiers []string
+
+	// Commands, when set, lists each separate command a request runs — for
+	// Bash, every command in the line, including those in $(…), subshells and
+	// `bash -c` payloads — each with the forms a rule may name it by (as
+	// written, with wrappers such as sudo stripped, and the "program
+	// subcommand" short form). Rules are then checked per command rather than
+	// against Specifier: a deny rule applies when it matches any form of any
+	// command, and allow rules apply only when every command is matched.
+	//
+	// Checking only the first command — which Specifier alone does — let
+	// `Bash(git status:*)` approve `git status && curl … | sh`, and let
+	// `ls && rm -rf x` past a `Bash(rm:*)` deny.
+	Commands [][]string
+
+	// Opaque marks a request whose commands could not all be read: a parse
+	// error, a program name that is an expansion, or a line too long to show
+	// in full. Allow rules never apply to it; deny rules still check
+	// Specifier and whatever Commands were read.
+	Opaque bool
+}
+
+// DeniedBy reports whether a deny rule in rules applies to req for tool.
+func DeniedBy(rules []Rule, tool string, req PermissionRequest) bool {
+	if anyMatch(rules, tool, req.Specifier) {
+		return true
+	}
+	for _, forms := range req.Commands {
+		for _, f := range forms {
+			if anyMatch(rules, tool, f) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AllowedBy reports whether allow rules in rules cover req for tool. With
+// Commands set, every command must be matched by some rule; an Opaque request
+// is never covered.
+func AllowedBy(rules []Rule, tool string, req PermissionRequest) bool {
+	if req.Opaque {
+		return false
+	}
+	if len(req.Commands) == 0 {
+		return anyMatch(rules, tool, req.Specifier)
+	}
+	for _, forms := range req.Commands {
+		covered := false
+		for _, f := range forms {
+			if anyMatch(rules, tool, f) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	return true
 }
 
 // matches reports whether rule r applies to tool name with the given specifier.
@@ -253,10 +312,10 @@ func MatchAny(rules []Rule, tool, specifier string) bool {
 
 // Check evaluates the full permission flow for a tool invocation:
 //
-//  1. deny rules        → deny
+//  1. deny rules        → deny (any command, for a multi-command request)
 //  2. bypassPermissions → allow
 //  3. plan mode         → the tool's own deny, if it refuses
-//  4. allow rules       → allow
+//  4. allow rules       → allow (every command, for a multi-command request)
 //  5. tool intrinsic    → its decision (may consider acceptEdits/plan)
 //
 // Step 3 exists because plan mode's read-only guarantee lives in each tool's
@@ -267,7 +326,7 @@ func MatchAny(rules []Rule, tool, specifier string) bool {
 // allow list says. Read-only tools allow themselves and fall through as before.
 func Check(pctx Context, tool IntrinsicChecker, req PermissionRequest) Decision {
 	name := tool.Name()
-	if anyMatch(pctx.Deny, name, req.Specifier) {
+	if DeniedBy(pctx.Deny, name, req) {
 		return Decision{Behavior: Deny, Message: "denied by permission rule"}
 	}
 	mode := CurrentMode(pctx)
@@ -279,7 +338,7 @@ func Check(pctx Context, tool IntrinsicChecker, req PermissionRequest) Decision 
 			return d
 		}
 	}
-	if anyMatch(pctx.Allow, name, req.Specifier) {
+	if AllowedBy(pctx.Allow, name, req) {
 		return Decision{Behavior: Allow}
 	}
 	return tool.CheckPermissions(pctx, req)
