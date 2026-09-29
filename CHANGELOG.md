@@ -80,6 +80,13 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A grep that finds nothing is not a failed command.** Every non-zero exit
+  was an error result, and error results drive the loop's repeat-failure
+  steering, so a model searching for something correctly absent was nudged
+  as if it kept making the same mistake. Exit 1 from grep, rg, ag, diff, cmp
+  and test — the last command in the line — is now an answer, marked "no
+  match / differences found". Exit 2 and above are still errors. Upstream
+  2.1.144.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
