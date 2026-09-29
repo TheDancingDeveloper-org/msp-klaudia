@@ -80,6 +80,15 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`BashOutput` is capped like Bash output.** A read returned everything a
+  background job wrote since the previous read, so a chatty dev server left
+  alone for a few turns could flood the context in one call. A read over 30,000
+  bytes now keeps its start and — with two thirds of the budget — its most
+  recent output, says how many bytes were elided, and names the job's log file
+  and the byte range of the read so the model can Read or grep the rest (a job
+  whose log is memory-only is spilled to a file instead). A job-log read that
+  returned short no longer advances the read cursor past bytes it never
+  returned.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
