@@ -5,6 +5,18 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Invisible characters are stripped from what Klaudia injects, and outside
+  text is framed.** CLAUDE.md, recalled memory and `.klaudia/KNOWLEDGE.md`
+  reached the system prompt as written, including Unicode format characters —
+  zero-width spaces, bidi overrides, and the tag characters that spell out
+  ASCII invisibly — so a file could carry instructions a person reviewing it
+  would not see. Those are now removed (ZWJ and ZWNJ are kept for emoji and
+  scripts that need them); MCP tool descriptions get the same treatment and a
+  2,048-character cap, since every request carries them; and a sub-agent's
+  result is introduced as its report, not the user's words. Upstream
+  2.1.84/2.1.277/2.1.280/2.1.284.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
