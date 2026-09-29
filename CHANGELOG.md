@@ -80,6 +80,13 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Bash refused ordinary commands as self-backgrounded services.** The
+  detector scanned the line for `&` and for service names as substrings, so
+  `go run ./cmd/gen &> gen.log` was "backgrounded", `go test ./server/... &`
+  matched `serve`, `vitest` matched `vite` and `repair.sh` matched `air`. The
+  line is now parsed: `&>` and `&>>` are redirections, names match as whole
+  words, only a command that is itself backgrounded counts, and `a & b & wait`
+  is allowed because the shell waits for both.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
