@@ -97,6 +97,12 @@ port mirrors (see `internal/version`).
   2,048-character cap, since every request carries them; and a sub-agent's
   result is introduced as its report, not the user's words. Upstream
   2.1.84/2.1.277/2.1.280/2.1.284.
+- **Secrets resolved from `${VAR}` stay out of MCP connect errors.** A token put
+  into a server's URL or arguments by `${VAR}` expansion appeared verbatim in
+  the SDK's error when the connection failed — `Post "https://…?key=<token>"`
+  — and that error goes to the terminal, the TUI and the model. Each resolved
+  value is now replaced by its `${NAME}` in connect errors, including the
+  server stderr appended to them. Upstream 2.1.234/2.1.268/2.1.274.
 
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
