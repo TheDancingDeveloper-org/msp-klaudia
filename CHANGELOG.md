@@ -528,6 +528,14 @@ port mirrors (see `internal/version`).
   `apiKeyEnv = "MY_API_KEY"` set and `$MY_API_KEY` empty, it said only "needs
   apiKey or apiKeyEnv" — pointing at a config that was already right. It now
   says `$MY_API_KEY` is unset or empty.
+- **A prompt that starts with a path is sent, not rejected as "Unknown command".**
+  Any line starting with `/` went to slash handling, so pasting
+  `/etc/nginx/nginx.conf fails to parse` answered "Unknown command"; the only
+  way round it was an undocumented leading space. Now a first word that names no
+  command or skill is a prompt when it holds a second `/` or has text after it,
+  in the idle box and when queued mid-turn. A lone unknown `/word` still errors,
+  now with a "Did you mean …?" for the nearest commands, and `//` at the start
+  sends the line as a message with one slash removed.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
