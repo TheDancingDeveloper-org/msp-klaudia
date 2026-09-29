@@ -330,6 +330,15 @@ port mirrors (see `internal/version`).
   that tag (SIGTERM, then SIGKILL after the usual grace). A command that
   finishes on its own leaves what it started alone. macOS is unchanged.
   Upstream 2.1.257.
+- **A reply cut off mid-stream is kept in the history.** When the stream stalled
+  or the user pressed `Esc` after some of the answer had been shown, the turn
+  ended with an error and the history did not include the partial text. The
+  model had no record of what the user had already read. The shown text is now
+  recorded as an assistant message and in the transcript, ending with a marker
+  that says whether the connection dropped or the user interrupted. An
+  unfinished tool call in that reply is dropped, because it never ran. The
+  OpenAI-compatible provider used to discard the partial text when the read
+  failed, and now returns it as well.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

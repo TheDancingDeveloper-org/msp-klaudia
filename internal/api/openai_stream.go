@@ -137,7 +137,13 @@ func (p *OpenAIProvider) consumeStream(body io.Reader, model string, sink Stream
 		}
 	}
 	if err := sc.Err(); err != nil {
-		return anthropic.BetaMessage{}, delivered, err
+		// Hand back the text already shown so the caller can keep it in the
+		// history. Tool calls are dropped: their arguments may be incomplete.
+		if text.Len() == 0 {
+			return anthropic.BetaMessage{}, delivered, err
+		}
+		partial, _ := assembleMessage(model, text.String(), nil, finish, inTok, outTok)
+		return partial, delivered, err
 	}
 	// A connection closed cleanly mid-reply ends the scan with no error. With
 	// neither [DONE] nor a finish_reason, the reply was cut off, not finished.
