@@ -80,6 +80,13 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Read says when it stops short of the end of a file, and no longer dumps
+  binary files.** A read that reached the 2,000-line default (or a given
+  `limit`) ended with no sign the file went on, so the model could take the
+  first window for the whole file. It now ends with
+  `(showing lines A–B of N; pass offset=B+1 to continue)`. A file with a NUL
+  byte in its first 8 KB (the test Grep uses) is reported as
+  `<binary file, N bytes; not shown as text>` instead of as lines of noise.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
