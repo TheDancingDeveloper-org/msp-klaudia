@@ -6,6 +6,18 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Attention notifications when Klaudia needs you.** When a turn finishes or a
+  permission/approval prompt is waiting, the TUI can get your attention through
+  the terminal: the bell (`\a`), an OSC 9 desktop notification (iTerm2, kitty,
+  WezTerm) and/or an OSC 777 notification (rxvt/urxvt and others). Configure it
+  with `[tui] notify` — a comma-separated list of `bell`, `osc9` and `osc777`,
+  or `all` / `off`; unset defaults to `bell`, the most portable and least
+  intrusive choice. Klaudia enables terminal focus reporting (a DECSET that,
+  unlike alt-screen or mouse capture, leaves inline scrollback and click-drag
+  selection intact), so the notification fires only while the window is
+  unfocused; a terminal that never reports focus is notified regardless. The
+  escape sequences are emitted through the render path like the OSC 52 clipboard
+  copy, keeping them ordered with the frame rather than racing it.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
