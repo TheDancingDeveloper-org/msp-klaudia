@@ -6,6 +6,13 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **`--safe-mode`.** Starts without anything the project supplies: its
+  `.klaudia/config.toml`, the servers in its `.mcp.json` files, its skills,
+  its `CLAUDE.md`, memory and knowledge. Your own config, global MCP servers
+  and skills, and `~/.claude/CLAUDE.md` still load, and the model is told it
+  is in safe mode. For opening a repository you have not reviewed, or
+  starting despite a project config that breaks startup. Upstream
+  2.1.169/2.1.248.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
