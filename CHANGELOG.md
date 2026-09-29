@@ -80,6 +80,22 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **"Always allow" on a chained Bash command saved a rule for the first
+  command only.** Choosing "always allow" for a compound line built the
+  persisted rule from `bashparser.Prefix()` — the first command's short form
+  (`git status:*`) — and saved that alone. Under the old first-command-only
+  matching that silently over-permitted whatever was chained after it; once
+  rules must match *every* command in a line (the every-command matching in
+  PR #16, which this depends on and should merge after), the same single rule
+  no longer covers the rest of the line, so the identical command is asked
+  about again next time. "Always allow" now saves one short-form rule per
+  distinct command in the line — `git status && go test ./...` saves
+  `Bash(git status)` and `Bash(go test)` — so each command is individually
+  allowed. A lone command's saved rule is unchanged. A line that cannot be
+  reduced to a clean set of named commands — a parse error, a parameter
+  expansion or command substitution, or an inline `bash -c`/`eval` script whose
+  payload is not enumerated — falls back to the single prior specifier rather
+  than guessing rules from text it could not fully read.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
