@@ -5,6 +5,14 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Files that make code run later are asked about in auto-accept modes.**
+  In `autonomous` and `acceptEdits`, writes to `.git/`, `.husky/`, `.klaudia/`,
+  `.claude/`, `.devcontainer/`, `.vscode/`, `.mcp.json`, `.envrc`, `.npmrc`,
+  `.yarnrc(.yml)`, `.pre-commit-config.yaml`, `bunfig.toml` and `.bazelrc` —
+  hooks, server and task config, rc files — now prompt, including through a
+  symlinked parent. Upstream 2.1.78/2.1.90/2.1.160.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
