@@ -80,6 +80,13 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A transcript that cannot be written is reported.** Recording errors were
+  discarded, so a full disk or a removed sessions directory lost the session
+  without a word, and `--continue` later had nothing to resume. The first
+  failure in a run now produces a warning — in the TUI, as a `warning` event
+  in stream-json, on stderr for `-p` text and json. And the stream-json
+  envelope is still written when the transcript beside it fails: the two were
+  recorded in turn and a failure stopped both.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
