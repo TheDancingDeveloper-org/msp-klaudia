@@ -5,6 +5,14 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Secrets resolved from `${VAR}` stay out of MCP connect errors.** A token put
+  into a server's URL or arguments by `${VAR}` expansion appeared verbatim in
+  the SDK's error when the connection failed — `Post "https://…?key=<token>"`
+  — and that error goes to the terminal, the TUI and the model. Each resolved
+  value is now replaced by its `${NAME}` in connect errors, including the
+  server stderr appended to them. Upstream 2.1.234/2.1.268/2.1.274.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),

@@ -187,7 +187,27 @@ func newClient() *mcpsdk.Client {
 // environment first (see expandServerConfig); an unresolvable one is this
 // server's error and leaves the others alone.
 func connectServer(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
-	cfg, err := expandServerConfig(name, cfg, os.LookupEnv)
+	// Remember what each ${VAR} resolved to, so a failure can be reported
+	// without it: a URL or argument carrying a token ends up in the SDK's
+	// error text (and a server may echo it to stderr, which is appended), and
+	// that error goes to the terminal, the TUI and the model.
+	resolved := map[string]string{}
+	lookup := func(k string) (string, bool) {
+		v, ok := os.LookupEnv(k)
+		if ok && v != "" {
+			resolved[k] = v
+		}
+		return v, ok
+	}
+	srv, err := connectExpanded(ctx, name, cfg, lookup)
+	if err != nil {
+		return nil, redactValues(err, resolved)
+	}
+	return srv, nil
+}
+
+func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup func(string) (string, bool)) (*Server, error) {
+	cfg, err := expandServerConfig(name, cfg, lookup)
 	if err != nil {
 		return nil, err
 	}
@@ -463,3 +483,38 @@ func textOf(content []mcpsdk.Content) string {
 	}
 	return out
 }
+
+// redactValues replaces, in err's message, each resolved variable value with
+// its ${NAME} reference. Values shorter than four bytes are left alone: they
+// are rarely secrets and would match ordinary text. The original error stays
+// reachable through Unwrap for errors.Is.
+func redactValues(err error, resolved map[string]string) error {
+	msg := err.Error()
+	changed := false
+	names := make([]string, 0, len(resolved))
+	for k := range resolved {
+		names = append(names, k)
+	}
+	// Longest value first, so a value containing another is replaced whole.
+	sort.Slice(names, func(i, j int) bool { return len(resolved[names[i]]) > len(resolved[names[j]]) })
+	for _, k := range names {
+		v := resolved[k]
+		if len(v) < 4 || !strings.Contains(msg, v) {
+			continue
+		}
+		msg = strings.ReplaceAll(msg, v, "${"+k+"}")
+		changed = true
+	}
+	if !changed {
+		return err
+	}
+	return &redactedError{msg: msg, err: err}
+}
+
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
