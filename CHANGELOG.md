@@ -5,6 +5,14 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Approval prompts show the whole command, with hidden characters escaped.**
+  Commands were cut at 220 characters, so a dangerous tail could be padded out
+  of view, and zero-width, bidi-override, control and look-alike space
+  characters reached the terminal as-is (a raw ESC or CR can redraw the
+  line). The full command is shown with those as `\u{XXXX}`. Upstream
+  2.1.211/2.1.223.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
