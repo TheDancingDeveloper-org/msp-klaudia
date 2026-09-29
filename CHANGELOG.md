@@ -80,6 +80,18 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Claude model aliases no longer rewrite the model for the OpenAI provider.**
+  With `provider = "openai"`, `--model sonnet` reached the endpoint as
+  `claude-sonnet-5` with Claude's 128000-token output cap. Aliases (`opus`,
+  `sonnet`, `haiku`, `fable`) and the Claude default model now resolve only for
+  the Anthropic provider; any other provider is sent the model string as written,
+  with a single warning when it is a bare Claude alias. The Claude context-window
+  and output-cap tables apply only on Anthropic too, so an OpenAI-compatible
+  model gets the unknown-model defaults (`contextWindow` / `maxTokens` still
+  override). The same holds for `/model <alias>`, which also prints its
+  confirmation again. An OpenAI provider with no `model` configured and no
+  `--model` is now a startup error instead of silently requesting Claude's
+  default model.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
