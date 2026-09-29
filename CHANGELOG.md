@@ -90,6 +90,17 @@ port mirrors (see `internal/version`).
   on the 5.0 models for now: Opus 5.5 and Fable 5.1 reject, for newer
   accounts, a conversation whose earlier turns were edited, and Klaudia's
   microcompaction and repair edit earlier turns.
+- **Project instructions follow the layouts people use.** Klaudia read three
+  fixed files — `~/.claude/CLAUDE.md`, the git root's `CLAUDE.md` and the
+  working directory's. A `CLAUDE.md` that is only `@AGENTS.md` reached the
+  model as that literal line, a workspace-level `CLAUDE.md` above the checkout
+  was never read, and neither were `AGENTS.md` or `.claude/rules`. Now every
+  directory from `/` down to the working directory contributes its
+  `CLAUDE.md` (or `AGENTS.md` when there is none) and `.claude/rules/*.md`,
+  with `~/.claude/rules` alongside `~/.claude/CLAUDE.md`; `@path` imports are
+  resolved (five deep, cycles cut, not inside code fences); HTML comments are
+  removed; each file is labelled with its path and included once. Upstream
+  2.1.72/2.1.277.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
