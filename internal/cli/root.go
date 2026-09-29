@@ -792,7 +792,11 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
-	cfg := config.LoadTrusting(cwd, opts.trustedProjectConfig || config.IsTrustedProject(cwd))
+	// A project's own config — .klaudia/config.toml and its .mcp.json files —
+	// applies in full only in a trusted folder, or when the launcher that
+	// wrote it says so.
+	projectTrusted := func() bool { return opts.trustedProjectConfig || config.IsTrustedProject(cwd) }
+	cfg := config.LoadTrusting(cwd, projectTrusted())
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 	}
@@ -924,9 +928,12 @@ func run(cmd *cobra.Command, opts *options) error {
 	// A .mcp.json that does not parse yields no servers at all. Discarding
 	// that error made the session look like one with no MCP configured — the
 	// model reports the server is down, and nothing says why.
-	mcpCfg, mcpCfgErr := mcp.LoadConfig(cwd)
+	mcpCfg, mcpHeld, mcpCfgErr := mcp.LoadConfigFor(cwd, projectTrusted())
 	if mcpCfgErr != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: mcp config:", mcpCfgErr)
+	}
+	if len(mcpHeld) > 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", mcpHeldMessage(mcpHeld))
 	}
 	// Servers log to stderr. Headless and embedded runs forward it, prefixed
 	// with the server name, to Klaudia's own stderr (which an embedder drains);
@@ -1027,12 +1034,17 @@ func run(cmd *cobra.Command, opts *options) error {
 	// working one.
 	mcpReloads := &mcpReloadNotifier{}
 	stopWatch, werr := mcp.Watch(cwd, func() {
-		cfg, lerr := mcp.LoadConfig(cwd)
+		// Trust is re-read, so `klaudia --trust-project` run elsewhere takes
+		// effect at the next edit without a restart.
+		cfg, held, lerr := mcp.LoadConfigFor(cwd, projectTrusted())
 		if lerr != nil {
 			mcpReloads.emit(tui.MCPReloadEvent{ConfigErr: lerr.Error()})
 			return
 		}
 		errs := mcpMgr.Reload(ctx, cfg)
+		if len(held) > 0 {
+			errs = append(errs, errors.New(mcpHeldMessage(held)))
+		}
 		next, deferred := buildTools()
 		base.Replace(next...)
 		registry.Replace(append(append([]tools.Tool(nil), next...), wiring.agentTool)...)
@@ -1363,4 +1375,11 @@ func ExecuteContext(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "Error:", msg)
 	}
 	return exitCodeFor(err)
+}
+
+// mcpHeldMessage says which project MCP servers were not started, and how to
+// start them.
+func mcpHeldMessage(held []string) string {
+	return fmt.Sprintf("this folder is not trusted, so the MCP servers its .mcp.json names were not started: %s. "+
+		"Review the file, then run `klaudia --trust-project` here to start them.", strings.Join(held, ", "))
 }

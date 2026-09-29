@@ -98,27 +98,53 @@ func ConfigPaths(dir string) []string {
 // project rather than in one repo — installable once. Without it the only
 // answer was to copy the same file into every checkout.
 func LoadConfig(dir string) (Config, error) {
-	cfg := Config{MCPServers: map[string]ServerConfig{}}
+	cfg, _, err := LoadConfigFor(dir, true)
+	return cfg, err
+}
+
+// LoadConfigFor is LoadConfig with the project's own files — ./.mcp.json and
+// ./.klaudia/.mcp.json — read only when trustProject is set. Those files
+// arrive with a checkout, and a stdio server in one is a command Klaudia runs
+// on startup and on every reload: opening a cloned repository used to run
+// whatever it named. Untrusted, they are skipped and the servers they would
+// have started are returned in held, so the caller can say which. The global
+// file always applies; a global server a project file would have redefined
+// keeps its global definition.
+func LoadConfigFor(dir string, trustProject bool) (cfg Config, held []string, err error) {
+	cfg = Config{MCPServers: map[string]ServerConfig{}}
+	global := filepath.Join(session.ConfigRoot(), ".mcp.json")
 	for _, p := range ConfigPaths(dir) {
+		// A FIFO or device named .mcp.json would block ReadFile forever and
+		// hang startup; only a regular file is config.
+		if st, serr := os.Stat(p); serr == nil && !st.Mode().IsRegular() {
+			return cfg, held, fmt.Errorf("%s: not a regular file", p)
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return cfg, err
+			return cfg, held, err
 		}
 		var c Config
 		if err := json.Unmarshal(stripJSONComments(data), &c); err != nil {
 			// The full path, not the base name: three files share the name
 			// ".mcp.json", and "which one is broken" is the entire question
 			// when the answer is a config in a different directory.
-			return cfg, fmt.Errorf("%s: %w", p, err)
+			return cfg, held, fmt.Errorf("%s: %w", p, err)
+		}
+		if p != global && !trustProject {
+			for name := range c.MCPServers {
+				held = append(held, name)
+			}
+			continue
 		}
 		for name, sc := range c.MCPServers {
 			cfg.MCPServers[name] = sc
 		}
 	}
-	return cfg, nil
+	sort.Strings(held)
+	return cfg, held, nil
 }
 
 // Server is a connected MCP server session and its configured name.
