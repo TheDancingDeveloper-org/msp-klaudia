@@ -6,6 +6,22 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
+  the real binary and runs it against `FakeModel`, a scripted stand-in for the
+  Anthropic Messages API reached through `KLAUDIA_CUSTOM_ENDPOINT`. It covers
+  what sat between the unit tests and the live `smoke.sh`: tool round-trips,
+  `--continue` (asserting the prior transcript is in the request, not that a
+  model recalled a word), plan mode, the host-change gate and its exit code 4,
+  exit codes 2/3/1, background jobs dying with the session, and editor commands
+  failing fast. The suite runs in about two seconds. `scripts/hermetic.sh` runs
+  the unit tests against a poisoned `$HOME`; its first run found four skill tests
+  that failed only for developers with their own skills installed (now fixed).
+  `make check` runs static checks, unit tests under the race detector, the
+  hermetic run and e2e; CI runs the same, split into three jobs. `make cover`
+  merges unit and e2e coverage per package; new tests across tools, tui, cli,
+  streamjson, lsp, browser and mcp take statement coverage from 72.0% to 88.7%.
+  The suite was stress-tested with shuffled order, `GOMAXPROCS=1`, and 2x CPU
+  oversubscription under `-race`. See `docs/testing.md`.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
@@ -80,6 +96,32 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
+  `--resume`, an unknown `--output-format`, and an unknown `--create-config`
+  target were reported as run failures. The exit-code contract says an
+  invocation mistake is a usage error (2), and nothing had run.
+- **`--allowedTools`/`--disallowedTools` no longer switch the host guardrail to
+  observe.** Starting in observe is the migration path for a *config* with
+  per-command rules; the flags counted too, so `-p x --allowedTools Read
+  --permission-mode autonomous` was refused as a usage error, and without
+  `--permission-mode` the same flags quietly dropped the run from autonomous to
+  default. Only config rules count now.
+- **A language server that crashed stayed dead for the rest of the session.**
+  The pool handed back the cached client without checking it; every later
+  Diagnostics/Definition/References call for that language failed. A dead
+  server is now reaped and replaced on the next call.
+- **LSP diagnostics: a waiter leaked per cancelled or timed-out call, and a
+  server that died mid-wait cost the full 10s.** The waiter is now always
+  unregistered, and a server exit releases waiting calls with an error.
+- **Language servers were killed before they could act on `exit`.** `Close`
+  sent the exit notification and killed the process in the same breath; it now
+  gives the server up to 2s to exit on its own. Found by the stress run, where
+  the test for it failed 2 runs in 5 under `-race`.
+- **A busy Chrome profile wasn't always retried with a temporary one.** The
+  retry keyed on Chrome's "ProcessSingleton" message, but chromedp can discard
+  Chrome's output when it exits quickly (it calls `cmd.Wait` concurrently with
+  reading the pipe). A launch that fails with no readable output is now retried
+  too, and reported as such instead of "chrome failed to start:" and nothing.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
