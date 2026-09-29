@@ -304,6 +304,18 @@ Auto-resume is an interactive convenience: headless (`-p`) and embedding
 (`--input-format stream-json`) runs stay stateless unless you pass
 `--continue` or `-r <id>`.
 
+Auto-resume always says what it did, in one line before the TUI starts:
+`Resumed <id> · 42 messages · last active 3h ago · --new-session to start
+fresh`. A session last active longer ago than the staleness cutoff is not
+auto-resumed; the launch starts fresh and names the old session and how to
+resume it (`--continue` or `-r <id>`, which ignore the cutoff). The cutoff
+defaults to 24 hours:
+
+```toml
+[session]
+autoResumeMaxAge = "24h"   # a Go duration or whole days ("7d"); "0" disables the cutoff
+```
+
 Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
 (override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
 transcripts from `~/.klaudia/projects/<encoded-cwd>/` during migration. When a
