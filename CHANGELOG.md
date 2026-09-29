@@ -5,6 +5,30 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Changed
+- **Consecutive read-only tool calls in one turn now run concurrently.** When a
+  turn emits several tool_use blocks and a run of them are read-only (Read,
+  Grep, Glob, and the LSP query tools Diagnostics/Definition/References), their
+  `Execute` calls are fired concurrently (bounded to 8 at a time) instead of
+  strictly one after another, cutting the wall-time of a turn dominated by
+  I/O-bound reads to roughly its slowest call rather than their sum. Ordering is
+  unchanged: results are stitched back in tool_use order so each tool_result
+  still pairs with its tool_use, and a mutating or side-effecting tool
+  (Edit/Write/NotebookEdit, Bash, anything not on the read-only allowlist) still
+  runs sequentially and in order — it ends the current read-only run, which is
+  fully joined before it executes, so observable side effects never reorder. A
+  single read-only call, or a read-only call not adjacent to another, takes the
+  unchanged sequential path.
+
+  Read-only is a deliberate allowlist (`readOnlyForConcurrency`), not the
+  `allowAlways` permission decision, which is also returned by tools that mutate
+  state or the loop's shared maps (TaskCreate, KillShell, Memory, TodoWrite,
+  Agent, ToolSearch). All per-call gating — loop-breakers, host gate,
+  permission/approval, validation, `BeforeEdit`, and every read/write of the
+  shared `failures`/`errStreaks` maps — stays on the loop goroutine and in
+  order; only `Execute` overlaps, so no shared state is touched concurrently
+  (verified with `go test -race`).
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
