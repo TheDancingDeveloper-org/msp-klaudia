@@ -364,6 +364,11 @@ port mirrors (see `internal/version`).
   given, Klaudia waits at most 3s for stdin to start, so a caller that leaves a
   silent pipe open is not hung; redirect `< /dev/null` to skip the wait. No
   prompt at all is a usage error (exit 2).
+- **Edit refuses an empty `old_string`.** An empty string matches between every
+  character, so with `replace_all` Edit spliced `new_string` all through the
+  file (`abc` became `XaXbXcX`) and reported success; without it the edit
+  failed as "not unique". The call is now rejected before it runs, with a
+  message pointing at Write.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
