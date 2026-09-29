@@ -208,7 +208,7 @@ func TestHostChangeDeclineAndRedirect(t *testing.T) {
 	if !strings.Contains(shown(m), "say what you'd like instead") {
 		t.Errorf("redirect echo:\n%s", shown(m))
 	}
-	if m.hostRedirect {
+	if m.redirect {
 		t.Error("the redirect flag outlived the answer it described")
 	}
 }

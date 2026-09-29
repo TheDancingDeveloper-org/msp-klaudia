@@ -898,6 +898,15 @@ port mirrors (see `internal/version`).
   the directory through one helper, `config.Root()` (`$KLAUDIA_CONFIG_DIR`,
   else `~/.klaudia`). If you set `KLAUDIA_CONFIG_DIR` and kept `config.toml` or
   `skills/` in `~/.klaudia`, move them into that directory.
+- **An unknown model surfaced as raw JSON.** A typo'd model id ended the turn
+  with `stream: openai endpoint 404: {"error":…"model_not_found"}` (or the
+  Anthropic `not_found_error` equivalent). It now reads "Model not found: X
+  isn't served by <endpoint>", suggests `/model` or `--model <id>`, and quotes
+  the provider's own message. A 404 that does not mention a model is reported
+  as a wrong path and points at the `baseURL` instead. `/model <id>` also warns
+  when the id is missing from the list an earlier `/model` fetched — it never
+  fetches the list itself, and still applies the id, since an endpoint can
+  serve ids it does not list.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
