@@ -719,6 +719,16 @@ port mirrors (see `internal/version`).
   stopped; Glob shows the 20,000 most recently modified files and says how
   many matched; and both stop when the turn is interrupted, where they used
   to run to the end. Upstream 2.1.91/2.1.98/2.1.105/2.1.275/2.1.277.
+- **A stuck MCP server no longer holds a turn or startup forever.** Tool calls
+  ran on the turn's context alone, so a server that stopped answering
+  mid-call (a dropped HTTP/SSE connection) held the turn until you pressed
+  Esc, and a headless run indefinitely. Calls now time out after ten minutes
+  (`KLAUDIA_MCP_TOOL_TIMEOUT`, or `"timeout"` in seconds per server), with an
+  error that says how to reconnect or raise it. Servers connected one after
+  another with no deadline, so one that never finished its handshake blocked
+  startup; they now connect in parallel, each with 30 seconds
+  (`KLAUDIA_MCP_CONNECT_TIMEOUT`), and a reload uses the same deadline.
+  Upstream 2.1.110/2.1.142/2.1.162/2.1.187/2.1.206/2.1.232/2.1.251.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

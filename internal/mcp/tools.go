@@ -60,6 +60,7 @@ type mcpTool struct {
 	readOnly      bool
 	// reconnect re-establishes the server's session (Manager.Reconnect).
 	reconnect func() error
+	timeout   time.Duration
 }
 
 func (t *mcpTool) Name() string                                { return t.qualifiedName }
@@ -106,8 +107,17 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 	if sess == nil {
 		return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected; reconnect it with /mcp.", t.server.Name), IsError: true}}, nil
 	}
+	// Bounded: a server that stops answering mid-call (a dropped HTTP or SSE
+	// connection) used to hold the turn until the user interrupted it, and a
+	// headless run forever.
+	timeout := t.timeout
+	if timeout <= 0 {
+		timeout = toolTimeout(ServerConfig{})
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	params := &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args}
-	res, err := sess.CallTool(ctx, params)
+	res, err := sess.CallTool(cctx, params)
 	// A session that is gone - the connection closed, or a remote server
 	// that restarted and no longer knows it - used to leave the server
 	// "connected" and every call failing until someone ran /mcp. Neither
@@ -117,11 +127,14 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 		(errors.Is(err, mcpsdk.ErrConnectionClosed) || errors.Is(err, mcpsdk.ErrSessionMissing)) {
 		if rerr := t.reconnect(); rerr == nil {
 			if fresh := t.server.sess(); fresh != nil {
-				res, err = fresh.CallTool(ctx, params)
+				res, err = fresh.CallTool(cctx, params)
 			}
 		}
 	}
 	if err != nil {
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return []tools.Result{{Content: fmt.Sprintf("MCP call to %s timed out after %s — the server may be stuck; /mcp can reconnect it. Set \"timeout\" (seconds) on the server in .mcp.json, or KLAUDIA_MCP_TOOL_TIMEOUT, if the tool is just slow.", t.qualifiedName, timeout), IsError: true}}, nil
+		}
 		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
 	}
 	// Capped like Bash output: a server can return megabytes in one call.
@@ -163,6 +176,7 @@ func (m *Manager) Tools(ctx context.Context) []tools.Tool {
 				server:        srv,
 				readOnly:      readOnly,
 				reconnect:     func() error { return m.Reconnect(srv.Name) },
+				timeout:       toolTimeout(cfg),
 			})
 		}
 	}
