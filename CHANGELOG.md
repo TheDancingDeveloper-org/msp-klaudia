@@ -80,6 +80,15 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`~/.claude/skills/synced` no longer warns at every start.** Claude Code
+  keeps the skills it syncs from claude.ai there, one level deeper
+  (`synced/<bucket>/<skill>/SKILL.md` beside a `manifest.json`), so the loader
+  read `synced` as a skill directory missing its `SKILL.md` and said so each
+  time Klaudia started. It is now skipped quietly, and the synced skills are
+  not loaded: many are claude.ai-specific. A `synced` directory anywhere else
+  still warns, and a skill actually named `synced` still loads. The skill
+  package's tests also stop reading the real home directory, which made one of
+  them fail on any machine with such a directory (#110).
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
