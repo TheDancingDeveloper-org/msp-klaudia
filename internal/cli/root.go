@@ -250,6 +250,9 @@ func buildProvider(cfg config.Config) (api.Provider, string, error) {
 			return nil, "", fmt.Errorf("provider \"openai\": extraHeadersEnv references unset environment variable(s): %s — export them before running", strings.Join(missing, ", "))
 		}
 		if key == "" && len(cfg.ExtraHeadersEnv) == 0 {
+			if cfg.APIKey == "" && cfg.APIKeyEnv != "" {
+				return nil, "", fmt.Errorf("provider \"openai\" needs apiKey or apiKeyEnv: apiKeyEnv names $%s, which is unset or empty — export it before running", cfg.APIKeyEnv)
+			}
 			return nil, "", fmt.Errorf("provider \"openai\" needs apiKey or apiKeyEnv (or extraHeadersEnv for a header-authenticated endpoint) in ~/.klaudia/config.toml or ./.klaudia/config.toml; if using apiKeyEnv, export that variable before running")
 		}
 		return api.NewOpenAIProvider(cfg.BaseURL, key, cfg.Temperature, extraHeaders), cfg.Model, nil
@@ -521,7 +524,8 @@ func createConfig(scope, cwd string) (string, error) {
 }
 
 // options holds parsed CLI flags, mirroring the JS commander surface
-// (08-entry.js setupCommander). Only the Phase 0 subset is wired so far.
+// (08-entry.js setupCommander). Flags the reference has and Klaudia does not
+// are simply absent, not accepted and ignored.
 type options struct {
 	print            bool
 	prompt           string
@@ -620,6 +624,13 @@ func NewRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "klaudia [prompt]",
 		Short: "Klaudia — a locally-buildable, extensible agentic coding tool",
+		Long: `Klaudia — a locally-buildable, extensible agentic coding tool.
+
+With no prompt it opens the interactive TUI. A positional prompt is shorthand
+for -p: it runs headless, prints the result and exits.
+
+Shell completion: klaudia completion bash|zsh|fish|powershell
+(each prints its install steps with --help).`,
 		// We render our own version string to match the JS reference exactly.
 		Version:       fmt.Sprintf("%s (%s)", version.Version, version.Name),
 		SilenceUsage:  true,
@@ -655,7 +666,7 @@ func NewRootCommand() *cobra.Command {
 	f.BoolVar(&opts.verbose, "verbose", false, "Verbose output (required for stream-json)")
 	f.IntVar(&opts.maxTurns, "max-turns", 0, "Limit the number of agentic loop turns (0 = unlimited)")
 	f.StringVarP(&opts.resume, "resume", "r", "", "Resume a session by ID")
-	f.BoolVar(&opts.continueSession, "continue", false, "Resume the most recent session in this directory (default when available)")
+	f.BoolVarP(&opts.continueSession, "continue", "c", false, "Resume the most recent session in this directory (interactive runs already do this unless --new-session; headless runs only with this flag)")
 	f.BoolVar(&opts.newSession, "new-session", false, "Start a fresh session instead of auto-resuming the most recent session in this directory")
 	f.BoolVar(&opts.forkSession, "fork-session", false, "When resuming, start a new session ID (preserves the original)")
 	f.BoolVar(&opts.fullResume, "full", false, "When resuming, replay the entire transcript instead of the compacted summary")
@@ -670,9 +681,8 @@ func NewRootCommand() *cobra.Command {
 	return cmd
 }
 
-// run dispatches to headless or interactive mode. Phase 0 only implements a
-// headless stub that emits a well-formed result so the output renderers and
-// differential harness can be exercised end-to-end before the agent loop lands.
+// run dispatches to --create-config, the --loop goal loop, stream-json
+// embedding, headless (-p) or the interactive TUI.
 func run(cmd *cobra.Command, opts *options) error {
 	format, err := ParseOutputFormat(opts.outputFormat)
 	if err != nil {
@@ -702,6 +712,9 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 	if opts.print && format == FormatStreamJSON && !opts.verbose {
 		return usageErrorf("--output-format stream-json requires --verbose")
+	}
+	if opts.maxTurns < 0 {
+		return usageErrorf("--max-turns %d: must be 0 (unlimited) or a positive number of turns", opts.maxTurns)
 	}
 	if opts.partialMessages && (!opts.print || format != FormatStreamJSON) {
 		return usageErrorf("--include-partial-messages only works with --print and --output-format=stream-json")
@@ -1305,7 +1318,6 @@ func usageErrorf(format string, args ...any) error {
 // output, so Execute exits non-zero without re-printing it.
 var errRendered = fmt.Errorf("run failed")
 
-// Execute runs the root command, returning the process exit code.
 // hostChangeWasBlocked reports whether the guardrail stopped anything this run.
 func hostChangeWasBlocked(g *agent.HostGate) bool {
 	for _, r := range g.Reports() {
@@ -1316,6 +1328,7 @@ func hostChangeWasBlocked(g *agent.HostGate) bool {
 	return false
 }
 
+// Execute runs the root command, returning the process exit code.
 func Execute() int { return ExecuteContext(context.Background()) }
 
 // ExecuteContext runs the root command against ctx. Cancelling ctx (SIGINT /

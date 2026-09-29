@@ -40,7 +40,8 @@ type exitError struct{ code int }
 
 func (e exitError) Error() string { return "" }
 
-// exitCodeFor maps an error to the code to exit with.
+// exitCodeFor maps an error to the code to exit with. Anything that is not an
+// exitError — errRendered included — is a plain failure.
 func exitCodeFor(err error) int {
 	if err == nil {
 		return ExitOK
@@ -48,9 +49,6 @@ func exitCodeFor(err error) int {
 	var ee exitError
 	if errors.As(err, &ee) {
 		return ee.code
-	}
-	if errors.Is(err, errRendered) {
-		return ExitError
 	}
 	return ExitError
 }
