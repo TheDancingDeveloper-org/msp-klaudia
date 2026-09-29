@@ -517,6 +517,14 @@ func createConfig(scope, cwd string) (string, error) {
 	if err := os.WriteFile(path, []byte(starterConfig), 0o644); err != nil {
 		return "", err
 	}
+	if scope == "local" {
+		// The user is writing this file themselves, so the folder is theirs to
+		// trust; without this the starter's provider and permission keys would
+		// be ignored the first time it is used.
+		if _, err := config.TrustProject(cwd); err != nil {
+			return "", fmt.Errorf("trust project: %w", err)
+		}
+	}
 	return path, nil
 }
 
@@ -544,8 +552,12 @@ type options struct {
 	disallowedTools []string
 	partialMessages bool   // --include-partial-messages
 	createConfig    string // --create-config global|local
-	loop            bool   // --loop: autonomous goal-spec iteration
-	maxIterations   int    // --max-iterations: outer-loop cap for --loop
+	trustProject    bool   // --trust-project: apply this folder's .klaudia/config.toml in full
+	// trustedProjectConfig applies ./.klaudia/config.toml in full for this run
+	// only: for a launcher that wrote the file itself.
+	trustedProjectConfig bool
+	loop                 bool // --loop: autonomous goal-spec iteration
+	maxIterations        int  // --max-iterations: outer-loop cap for --loop
 
 	askTimeout time.Duration // --ask-timeout: bound on a stream-json can_use_tool wait
 }
@@ -663,6 +675,8 @@ func NewRootCommand() *cobra.Command {
 	f.StringSliceVar(&opts.allowedTools, "allowedTools", nil, "Auto-allow tool rules, e.g. 'Edit' or 'Bash(git status:*)' (repeatable, comma-separated)")
 	f.StringSliceVar(&opts.disallowedTools, "disallowedTools", nil, "Deny tool rules (same format as --allowedTools)")
 	f.BoolVar(&opts.partialMessages, "include-partial-messages", false, "Include partial message chunks as they arrive (only with --print and --output-format=stream-json)")
+	f.BoolVar(&opts.trustedProjectConfig, "trusted-project-config", false, "Apply ./.klaudia/config.toml in full for this run without adding the folder to the trust list — for a launcher that wrote that file itself")
+	f.BoolVar(&opts.trustProject, "trust-project", false, "Trust the current folder so its .klaudia/config.toml applies in full (permission mode and rules, trust, sandbox, provider endpoint and keys), and exit")
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
@@ -686,6 +700,18 @@ func run(cmd *cobra.Command, opts *options) error {
 			return err
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Created %s\n\nEdit it with your provider/baseURL/model/apiKeyEnv, then export the named API key env var and run klaudia.\n", path)
+		return nil
+	}
+	if opts.trustProject {
+		added, err := config.TrustProject(cwd)
+		if err != nil {
+			return err
+		}
+		if added {
+			fmt.Fprintf(cmd.OutOrStdout(), "Trusted %s: its .klaudia/config.toml now applies in full.\n", cwd)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s is already trusted.\n", cwd)
+		}
 		return nil
 	}
 
@@ -766,7 +792,10 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	// Select the model provider (.klaudia/config.toml: anthropic | openai).
-	cfg := config.Load(cwd)
+	cfg := config.LoadTrusting(cwd, opts.trustedProjectConfig || config.IsTrustedProject(cwd))
+	for _, w := range cfg.Warnings {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
+	}
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err

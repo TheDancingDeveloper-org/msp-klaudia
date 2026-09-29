@@ -5,6 +5,22 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **A project's `.klaudia/config.toml` no longer raises its own privileges.**
+  Every key in it used to overlay the user's config, so starting Klaudia in a
+  cloned repository let that repository pick `bypassPermissions`, turn the host
+  gate off, widen the sandbox, choose the Chrome binary, and point the
+  OpenAI-compatible provider at its own server with `apiKeyEnv` naming any
+  variable in the user's environment. In a folder not on
+  `~/.klaudia/trusted-projects`, those keys are now ignored with a warning that
+  names each one; preferences and deny rules still apply. `--trust-project`
+  adds the folder, and `--create-config=local` trusts the folder it writes to.
+  A launcher that renders the file itself, such as msp-agent's per-session
+  config, passes `--trusted-project-config` to apply it for that run.
+  An "always allow" saved from the TUI in an untrusted folder says it will not
+  load until the folder is trusted. Upstream Claude Code closed the same class
+  in 2.1.251/2.1.257.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),

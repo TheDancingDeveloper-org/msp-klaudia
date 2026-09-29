@@ -2708,6 +2708,11 @@ func (m *Model) rememberPermission(kind string, rule permission.Rule) {
 		msg += "; config save failed: " + err.Error()
 	} else if persisted {
 		msg += "; saved to .klaudia/config.toml"
+		// Deny rules load from any project file; allow rules only from a
+		// trusted one, so say so rather than let the rule vanish next session.
+		if kind != "deny" && !config.IsTrustedProject(m.sess.CWD) {
+			msg += " (not loaded until you run `klaudia --trust-project` here)"
+		}
 	}
 	m.appendLine(toolStyle.Render(msg))
 }
