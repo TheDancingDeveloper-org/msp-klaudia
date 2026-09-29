@@ -397,6 +397,16 @@ port mirrors (see `internal/version`).
 
   Other models behave as before. The `opus` and `fable` aliases still point at
   5.0.
+- **`git commit -am "msg"` was refused as having no message.** The check that
+  stops a commit from opening an editor looked for the substring `-m`, which a
+  short-flag cluster (`-am`, `-sm`, `-asm`) does not contain, so the model was
+  told to "pass the message with -m" when it had, and retried in a loop. The
+  arguments are now parsed as git parses them: clusters, attached values
+  (`-mfix`, `-F/tmp/msg`, `-CHEAD`), `--opt=value`, and `--`. The same parse
+  stops the opposite mistake, where `-m` inside a path (`src/my-module`),
+  another option's value, or a later command in the line let a commit through
+  to an editor that hung the turn. `-c`/`--reedit-message` no longer counts as
+  supplying a message: git opens the editor on it.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
