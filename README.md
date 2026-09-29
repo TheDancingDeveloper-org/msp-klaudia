@@ -231,6 +231,14 @@ watcher and keep working. Jobs get a name, a port and a log file; see
 ./klaudia -p "…" --output-format stream-json --verbose --include-partial-messages
 ```
 
+With `--output-format json` or `stream-json`, stdout always ends with a
+`result` line, even when the run cannot start (no credential, an incomplete
+provider config, a bad flag combination): `is_error` is `true` and `result`
+carries the reason, which is also printed to stderr. `duration_api_ms` is the
+time spent waiting on the model, `duration_ms` the whole run. `total_cost_usd`
+is not computed yet and reads `0`. The exit code says what kind of failure it
+was — see [Exit codes](docs/jobs.md#exit-codes).
+
 ### Embedding (stream-json over stdin)
 
 A persistent agent driven by newline-delimited JSON over stdin/stdout — the

@@ -504,7 +504,7 @@ func createConfig(scope, cwd string) (string, error) {
 	case "local":
 		path = config.ProjectPath(cwd)
 	default:
-		return "", fmt.Errorf("--create-config must be global or local")
+		return "", usageErrorf("--create-config must be global or local, not %q", scope)
 	}
 	if _, err := os.Stat(path); err == nil {
 		return "", fmt.Errorf("config already exists: %s", path)
@@ -556,7 +556,7 @@ type options struct {
 // and embedding (stream-json) runs stay stateless unless asked.
 func resolveResumeID(cwd string, opts options, interactive bool) (string, error) {
 	if opts.newSession && (opts.resume != "" || opts.continueSession) {
-		return "", fmt.Errorf("--new-session cannot be combined with --resume or --continue")
+		return "", usageErrorf("--new-session cannot be combined with --resume or --continue")
 	}
 	if opts.resume != "" {
 		return opts.resume, nil
@@ -670,15 +670,68 @@ func NewRootCommand() *cobra.Command {
 	return cmd
 }
 
-// run dispatches to headless or interactive mode. Phase 0 only implements a
-// headless stub that emits a well-formed result so the output renderers and
-// differential harness can be exercised end-to-end before the agent loop lands.
+// runState is what run needs to know about a run that failed: whether it got
+// as far as the agent (after which the frontend reports its own failures), and
+// what there is to put in a result line if it did not.
+type runState struct {
+	start     time.Time
+	sessionID string // set once chosen; empty for a failure before that
+	started   bool   // the agent loop, TUI or embedding driver has taken over
+}
+
+// run dispatches to headless or interactive mode.
+//
+// In the JSON output modes, a failure before the agent starts — no
+// credential, an incomplete provider config, a bad flag combination — is also
+// reported as an is_error result line on stdout. A script parsing stdout
+// otherwise got nothing at all: the reason went to stderr as plain text. The
+// stderr message is kept, for the person at the terminal and for anything
+// that already reads it.
 func run(cmd *cobra.Command, opts *options) error {
 	format, err := ParseOutputFormat(opts.outputFormat)
 	if err != nil {
-		return err
+		// No format to report in, so this one stays stderr-only.
+		return usageErrorf("%s", err)
 	}
+	st := &runState{start: time.Now()}
+	err = runFormat(cmd, opts, format, st)
+	if err != nil && !st.started && reportsPreRunJSON(opts, format) {
+		_ = NewRenderer(format, cmd.OutOrStdout()).Result(preRunFailure(st, err))
+	}
+	return err
+}
 
+// reportsPreRunJSON reports whether a failure before the run starts belongs on
+// stdout as a result line: a non-interactive run whose output is JSON. The TUI
+// owns the terminal, and --loop only renders text.
+func reportsPreRunJSON(opts *options, format OutputFormat) bool {
+	if format == FormatText || opts.loop {
+		return false
+	}
+	return opts.print || opts.inputFormat == "stream-json"
+}
+
+// preRunFailure is the result line for a run that failed before the agent
+// started. The subtype is the one a run failure already uses, so a consumer
+// switching on the known subtypes needs nothing new; the exit code still tells
+// a usage error (2) from any other failure (1). No request was made, so the API
+// time and turn count are zero — and nothing was spent, so total_cost_usd's
+// zero is true here, unlike on a completed run (#150).
+func preRunFailure(st *runState, err error) ResultMessage {
+	return ResultMessage{
+		Type:       "result",
+		Subtype:    "error_during_execution",
+		IsError:    true,
+		DurationMS: time.Since(st.start).Milliseconds(),
+		Result:     "Error: " + strings.TrimSpace(err.Error()),
+		SessionID:  st.sessionID,
+		UUID:       uuid.NewString(),
+	}
+}
+
+// runFormat is run once the output format is known. It sets st.sessionID when
+// the session is chosen and st.started when a frontend takes over.
+func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runState) error {
 	cwd, _ := os.Getwd()
 	if opts.createConfig != "" {
 		path, err := createConfig(opts.createConfig, cwd)
@@ -707,7 +760,6 @@ func run(cmd *cobra.Command, opts *options) error {
 		return usageErrorf("--include-partial-messages only works with --print and --output-format=stream-json")
 	}
 
-	start := time.Now()
 	ctx := cmd.Context()
 	r := NewRenderer(format, cmd.OutOrStdout())
 
@@ -743,6 +795,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	if err != nil {
 		return err
 	}
+	st.sessionID = sessionID
 	if resumeID != "" {
 		// Token-saving resume: if a persisted compaction summary exists and the
 		// user didn't ask for a --full replay, seed from the summary instead of
@@ -1039,6 +1092,8 @@ func run(cmd *cobra.Command, opts *options) error {
 	}
 
 	loop := agent.New(provider, registry)
+	// From here each frontend reports its own failures in its own format.
+	st.started = true
 
 	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
 	onSummary := func(summary string) {
@@ -1240,13 +1295,13 @@ func run(cmd *cobra.Command, opts *options) error {
 		Type:          "result",
 		Subtype:       "success",
 		IsError:       err != nil,
-		DurationMS:    time.Since(start).Milliseconds(),
-		DurationAPIMS: time.Since(start).Milliseconds(),
+		DurationMS:    time.Since(st.start).Milliseconds(),
+		DurationAPIMS: res.APIDuration.Milliseconds(),
 		NumTurns:      res.NumTurns,
 		Result:        res.Text,
 		StopReason:    res.StopReason,
 		SessionID:     sessionID,
-		TotalCostUSD:  0, // Phase 3: derive from usage + pricing.
+		TotalCostUSD:  0, // not computed yet: cost tracking is #150.
 		Usage: map[string]any{
 			"input_tokens":                res.InputTokens,
 			"output_tokens":               res.OutputTokens,

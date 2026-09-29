@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
@@ -138,6 +139,12 @@ type Result struct {
 	// across the run: tokens served from cache (cheap) vs. tokens written to it.
 	CacheReadInputTokens     int64
 	CacheCreationInputTokens int64
+	// APIDuration is the time spent waiting on the provider across this Run's
+	// requests, including autocompact summaries and requests that failed or
+	// were retried after a context overflow. Tool execution is not in it, so
+	// against wall time it separates "the model was slow" from "the tools
+	// were". Sub-agents' requests are theirs, as their token counts are.
+	APIDuration time.Duration
 	// Messages is the full conversation after the run (initial + this turn's
 	// exchanges), so a caller can carry it forward as InitialMessages for the
 	// next turn (used by the stream-json embedding frontend).
@@ -220,7 +227,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Compaction runs at the top of every turn (docs/compaction.md):
 		// microcompact first (cheap, local), then autocompact (model-based) if
 		// near the context limit.
-		messages = l.compact(ctx, messages, opts, emit, &calib, false)
+		messages = l.compact(ctx, messages, opts, emit, &calib, false, &res.APIDuration)
 
 		// Build the tool list for this turn: eager tools plus any deferred tools
 		// revealed so far (via ToolSearch). Rebuilt per turn so reveals take
@@ -247,7 +254,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		}
 
 		estimateAtSend := compaction.EstimateTokens(messages)
+		sent := time.Now()
 		assistant, finalText, err := l.streamTurn(ctx, params, emit, opts.PartialMessages)
+		res.APIDuration += time.Since(sent)
 		if err != nil && api.IsContextOverflow(err) && !overflowRecovered {
 			// Every resend of an over-limit conversation fails identically, so
 			// without this the session is finished. Summarise and re-send once;
@@ -256,7 +265,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			if emit != nil {
 				emit(Event{Type: "compaction"})
 			}
-			messages = l.compact(ctx, messages, opts, emit, &calib, true)
+			messages = l.compact(ctx, messages, opts, emit, &calib, true, &res.APIDuration)
 			if emit != nil {
 				emit(Event{Type: "compaction", Content: "context overflowed the model's window — summarised and retried"})
 			}
@@ -395,8 +404,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 
 // compact applies microcompact then (if near the limit) autocompact to the
 // message list. Honors DISABLE_COMPACT / DISABLE_MICROCOMPACT /
-// DISABLE_AUTO_COMPACT, matching the JS env switches.
-func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessageParam, opts Options, emit Emitter, calib *compaction.Calibration, force bool) []anthropic.BetaMessageParam {
+// DISABLE_AUTO_COMPACT, matching the JS env switches. The autocompact request's
+// duration is added to apiTime.
+func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessageParam, opts Options, emit Emitter, calib *compaction.Calibration, force bool, apiTime *time.Duration) []anthropic.BetaMessageParam {
 	if os.Getenv("DISABLE_COMPACT") != "" {
 		return messages
 	}
@@ -424,7 +434,10 @@ func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessagePara
 		if emit != nil {
 			emit(Event{Type: "compaction"})
 		}
-		if out, ok := l.autocompact(ctx, messages, opts); ok {
+		sent := time.Now()
+		out, ok := l.autocompact(ctx, messages, opts)
+		*apiTime += time.Since(sent)
+		if ok {
 			messages = out
 			if emit != nil {
 				emit(Event{Type: "compaction", Content: "autocompact: summarized prior conversation"})
