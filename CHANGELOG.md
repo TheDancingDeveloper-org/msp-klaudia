@@ -138,6 +138,21 @@ port mirrors (see `internal/version`).
   its description on the next line instead of pushing it out of line, and the
   subcommands that existed without being listed are named: `/goal clear`,
   `/logs stop`, `/trust revoke all`, `/last ls`.
+- **LSP `Hover`, `DocumentSymbols`, `Rename`, and `Implementation` tools, and
+  source lines in code-intel results.** The language-server client only spoke
+  diagnostics, definition, and references; it now also does `textDocument/hover`
+  (type/signature/docs), `textDocument/documentSymbol` (a file's outline,
+  flattening both the hierarchical `DocumentSymbol[]` and the flat
+  `SymbolInformation[]` server replies), `textDocument/rename`, and
+  `textDocument/implementation`. `Definition`, `References`, `Implementation`,
+  `DocumentSymbols`, and `Hover` results now print the actual source line next
+  to each `file:line:col`, so the model sees the code without a follow-up read.
+  `Rename` returns a *preview* — the workspace edit grouped by file, with each
+  replacement's location, source line, and new text — and does **not** apply the
+  edits; the model reviews it and applies with `Edit`. Requests for a capability
+  a server did not advertise at initialize now fail fast as "not supported"
+  (recorded from the initialize result) rather than erroring or hanging, reusing
+  the existing per-request timeout (see #109).
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
