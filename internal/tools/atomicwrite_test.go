@@ -1,24 +1,10 @@
 package tools
 
 import (
-	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
-
-func runTool(t *testing.T, tool interface {
-	Execute(context.Context, Context, json.RawMessage) ([]Result, error)
-}, dir string, input map[string]any) Result {
-	t.Helper()
-	raw, _ := json.Marshal(input)
-	res, err := tool.Execute(context.Background(), Context{WorkingDir: dir}, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return res[0]
-}
 
 // Write replaced a CRLF file's line endings with the model's LF.
 func TestWriteKeepsCRLF(t *testing.T) {
@@ -26,7 +12,7 @@ func TestWriteKeepsCRLF(t *testing.T) {
 	path := filepath.Join(dir, "win.txt")
 	os.WriteFile(path, []byte("one\r\ntwo\r\n"), 0o644)
 	w, _ := NewWrite()
-	if r := runTool(t, w, dir, map[string]any{"file_path": path, "content": "one\ntwo\nthree\n"}); r.IsError {
+	if r := runTool(t, w, Context{WorkingDir: dir}, map[string]any{"file_path": path, "content": "one\ntwo\nthree\n"}); r.IsError {
 		t.Fatal(r.Content)
 	}
 	if got, _ := os.ReadFile(path); string(got) != "one\r\ntwo\r\nthree\r\n" {
@@ -35,7 +21,7 @@ func TestWriteKeepsCRLF(t *testing.T) {
 	// An LF file, and a new file, are written as given.
 	lf := filepath.Join(dir, "unix.txt")
 	os.WriteFile(lf, []byte("a\n"), 0o644)
-	runTool(t, w, dir, map[string]any{"file_path": lf, "content": "b\n"})
+	runTool(t, w, Context{WorkingDir: dir}, map[string]any{"file_path": lf, "content": "b\n"})
 	if got, _ := os.ReadFile(lf); string(got) != "b\n" {
 		t.Errorf("LF file = %q", got)
 	}
@@ -52,7 +38,7 @@ func TestWritesAreAtomic(t *testing.T) {
 	os.Symlink(script, link)
 
 	e, _ := NewEdit()
-	if r := runTool(t, e, dir, map[string]any{"file_path": link, "old_string": "old", "new_string": "new"}); r.IsError {
+	if r := runTool(t, e, Context{WorkingDir: dir}, map[string]any{"file_path": link, "old_string": "old", "new_string": "new"}); r.IsError {
 		t.Fatal(r.Content)
 	}
 	if got, _ := os.ReadFile(script); string(got) != "echo new\n" {
