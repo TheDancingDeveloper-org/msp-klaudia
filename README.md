@@ -755,6 +755,11 @@ agent real code intelligence:
   interface.
 - `Hover` — the type, signature, and docs a server shows on hover.
 - `DocumentSymbols` — an outline of the functions, types, and methods in a file.
+- `WorkspaceSymbol` — find a symbol by name anywhere in the project, when the
+  agent knows what it's called but not which file declares it. Given a `file`,
+  that file's language server answers; without one, every language whose
+  project file (`go.mod`, `Cargo.toml`, `package.json`, …) is at the workspace
+  root is searched.
 - `Rename` — a preview of the edits a symbol rename would make across the
   workspace (it returns the edits; it does not apply them).
 
@@ -978,7 +983,7 @@ variable that has no row here, or a row names one no code reads.
 | `api` | provider abstraction (Anthropic client + OpenAI-compatible shim) |
 | `tools` | local tool implementations |
 | `browser` | lazy headless-Chrome engine + web search |
-| `lsp` | language-server client for code intelligence (Diagnostics/Definition/References) |
+| `lsp` | language-server client for code intelligence (Diagnostics/Definition/References/WorkspaceSymbol) |
 | `permission` | the three permission modes + the deprecated allow/deny rules (a leaf package) |
 | `trust` | zones, command/tool classification, session-scoped grants |
 | `session` | JSONL transcripts, resume, persisted summaries |
@@ -1038,7 +1043,7 @@ tools.
 - Config and sessions live under `~/.klaudia` (`KLAUDIA_CONFIG_DIR`), not
   `~/.claude`.
 - New capabilities with no reference analogue: language-server code intelligence
-  (Diagnostics/Definition/References), OS/container Bash sandboxing, persisted
+  (Diagnostics/Definition/References/WorkspaceSymbol), OS/container Bash sandboxing, persisted
   resume summaries, project `KNOWLEDGE.md`, an index→detail memory store,
   standing goals (`/goal`), chrome-wide themes, managed background jobs with
   logs, working-tree change ownership (`/changes`, `/undo`), and an autonomy

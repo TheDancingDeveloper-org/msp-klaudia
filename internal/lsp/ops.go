@@ -38,6 +38,9 @@ func (c *Client) Initialize(ctx context.Context, root string) error {
 				"rename":             map[string]any{},
 				"implementation":     map[string]any{},
 			},
+			"workspace": map[string]any{
+				"symbol": map[string]any{},
+			},
 		},
 	}
 	var res struct {
@@ -250,7 +253,7 @@ func (c *Client) DocumentSymbols(ctx context.Context, path, languageID string) (
 	}, &raw); err != nil {
 		return nil, err
 	}
-	return parseSymbols(raw, uri), nil
+	return parseDocumentSymbols(raw, uri), nil
 }
 
 // Rename computes the workspace edit for renaming the symbol at pos to newName.
@@ -334,7 +337,7 @@ func markupText(raw json.RawMessage) string {
 // parseSymbols decodes a textDocument/documentSymbol result into a flat list.
 // A DocumentSymbol[] carries selectionRange/range and children (hierarchical);
 // a SymbolInformation[] carries a Location and containerName (flat).
-func parseSymbols(raw json.RawMessage, uri string) []Symbol {
+func parseDocumentSymbols(raw json.RawMessage, uri string) []Symbol {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
@@ -357,7 +360,7 @@ func parseSymbols(raw json.RawMessage, uri string) []Symbol {
 	if json.Unmarshal(raw, &flat) == nil {
 		var out []Symbol
 		for _, s := range flat {
-			out = append(out, Symbol{Name: s.Name, Kind: s.Kind, Location: s.Location, Container: s.ContainerName})
+			out = append(out, Symbol{Name: s.Name, Kind: s.Kind, Location: s.Location, ContainerName: s.ContainerName})
 		}
 		return out
 	}
@@ -380,7 +383,7 @@ func flattenSymbol(d documentSymbol, uri, container string, out *[]Symbol) {
 	if d.SelectionRange != nil {
 		loc.Range = *d.SelectionRange
 	}
-	*out = append(*out, Symbol{Name: d.Name, Kind: d.Kind, Detail: d.Detail, Location: loc, Container: container})
+	*out = append(*out, Symbol{Name: d.Name, Kind: d.Kind, Detail: d.Detail, Location: loc, ContainerName: container})
 	for i := range d.Children {
 		flattenSymbol(d.Children[i], uri, d.Name, out)
 	}
@@ -411,6 +414,38 @@ func parseWorkspaceEdit(raw json.RawMessage) []FileEdits {
 	for _, dc := range we.DocumentChanges {
 		if dc.TextDocument.URI != "" {
 			out = append(out, FileEdits{URI: dc.TextDocument.URI, Edits: dc.Edits})
+		}
+	}
+	return out
+}
+
+// WorkspaceSymbol asks the server for symbols matching query across the whole
+// workspace. It opens no document: the server answers from its own index.
+func (c *Client) WorkspaceSymbol(ctx context.Context, query string) ([]Symbol, error) {
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	var raw json.RawMessage
+	if err := c.call(ctx, "workspace/symbol", map[string]any{"query": query}, &raw); err != nil {
+		return nil, err
+	}
+	return parseSymbols(raw), nil
+}
+
+// parseSymbols decodes a workspace/symbol result: an array of
+// SymbolInformation or WorkspaceSymbol, or null. Entries without a URI are
+// dropped, since they cannot be pointed at.
+func parseSymbols(raw json.RawMessage) []Symbol {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var arr []Symbol
+	if json.Unmarshal(raw, &arr) != nil {
+		return nil
+	}
+	out := arr[:0]
+	for _, s := range arr {
+		if s.Location.URI != "" {
+			out = append(out, s)
 		}
 	}
 	return out

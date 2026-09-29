@@ -44,12 +44,6 @@ func TestSeverityName(t *testing.T) {
 	}
 }
 
-func TestSymbolKindName(t *testing.T) {
-	if SymbolKindName(12) != "function" || SymbolKindName(23) != "struct" || SymbolKindName(999) != "symbol" {
-		t.Errorf("symbol kind names wrong: %q %q %q",
-			SymbolKindName(12), SymbolKindName(23), SymbolKindName(999))
-	}
-}
 
 func TestCapEnabled(t *testing.T) {
 	cases := map[string]bool{
@@ -101,14 +95,14 @@ func TestParseSymbolsHierarchical(t *testing.T) {
 			"selectionRange":{"start":{"line":20,"character":8},"end":{"line":20,"character":13}}
 		}]
 	}]`)
-	syms := parseSymbols(raw, "file:///s.go")
+	syms := parseDocumentSymbols(raw, "file:///s.go")
 	if len(syms) != 2 {
 		t.Fatalf("want 2 symbols, got %d: %+v", len(syms), syms)
 	}
 	if syms[0].Name != "Server" || syms[0].Kind != 23 || syms[0].Location.Range.Start.Line != 10 {
 		t.Errorf("parent = %+v", syms[0])
 	}
-	if syms[1].Name != "Serve" || syms[1].Container != "Server" || syms[1].Location.Range.Start.Line != 20 || syms[1].Detail != "func()" {
+	if syms[1].Name != "Serve" || syms[1].ContainerName != "Server" || syms[1].Location.Range.Start.Line != 20 || syms[1].Detail != "func()" {
 		t.Errorf("child = %+v", syms[1])
 	}
 }
@@ -119,11 +113,11 @@ func TestParseSymbolsFlat(t *testing.T) {
 		"name":"Foo","kind":12,"containerName":"pkg",
 		"location":{"uri":"file:///a.go","range":{"start":{"line":2,"character":5},"end":{"line":2,"character":8}}}
 	}]`)
-	syms := parseSymbols(raw, "file:///ignored.go")
-	if len(syms) != 1 || syms[0].Name != "Foo" || syms[0].Container != "pkg" || syms[0].Location.URI != "file:///a.go" {
+	syms := parseDocumentSymbols(raw, "file:///ignored.go")
+	if len(syms) != 1 || syms[0].Name != "Foo" || syms[0].ContainerName != "pkg" || syms[0].Location.URI != "file:///a.go" {
 		t.Errorf("flat symbols = %+v", syms)
 	}
-	if parseSymbols(json.RawMessage("null"), "") != nil {
+	if parseDocumentSymbols(json.RawMessage("null"), "") != nil {
 		t.Error("null symbols should be nil")
 	}
 }

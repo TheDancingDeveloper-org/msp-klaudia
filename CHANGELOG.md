@@ -275,6 +275,14 @@ port mirrors (see `internal/version`).
   true` offers a server's tools to the model from the start instead of behind
   ToolSearch, for a server used in nearly every session. Upstream
   2.1.119/2.1.121.
+- **`WorkspaceSymbol` LSP tool.** Finds a symbol by name across the project
+  through the language server's `workspace/symbol` request, so the agent can go
+  from a name to its declaration without grepping first — the gap alongside
+  `Diagnostics`, `Definition` and `References` (upstream 2.1.162). Each match is
+  listed as `name  kind  path:line:col`, with its container when the server
+  gives one, capped at 100. A `file` picks the language; without one, every
+  language whose project file sits at the workspace root is asked, and a server
+  that fails is noted beside the others' matches rather than hiding them.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

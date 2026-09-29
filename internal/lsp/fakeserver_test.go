@@ -29,6 +29,10 @@ func TestMain(m *testing.M) {
 	if script := os.Getenv(fakeLSPEnv); script != "" {
 		os.Exit(runFakeLSP(script, os.Stdin, os.Stdout))
 	}
+	if mode := os.Getenv(fakeServerEnv); mode != "" {
+		runFakeServer(mode, os.Stdin, os.Stdout)
+		os.Exit(0)
+	}
 	os.Exit(m.Run())
 }
 
@@ -151,7 +155,14 @@ func runFakeLSP(script string, in io.Reader, out io.Writer) int {
 			fmt.Fprint(out, "Content-Length: 0\r\n\r\n")
 			c.sendRaw("not json")
 			c.send(map[string]any{"jsonrpc": "2.0", "id": 900, "method": "workspace/configuration", "params": map[string]any{}})
-			c.result(msg.ID, map[string]any{"capabilities": map[string]any{}})
+			c.result(msg.ID, map[string]any{"capabilities": map[string]any{
+				"definitionProvider":     true,
+				"referencesProvider":     true,
+				"implementationProvider": true,
+				"hoverProvider":          true,
+				"documentSymbolProvider": true,
+				"renameProvider":         true,
+			}})
 		case "initialized":
 			c.event("initialized")
 		case "textDocument/didOpen":

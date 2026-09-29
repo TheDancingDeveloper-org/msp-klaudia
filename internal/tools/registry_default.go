@@ -31,8 +31,8 @@ func WithBrowserEngine(e *browser.Engine) RegOption { return func(o *regOptions)
 func WithJobStore(s *JobStore) RegOption { return func(o *regOptions) { o.shells = s } }
 
 // WithLSP supplies the language-server pool backing Diagnostics/Definition/
-// References. The caller Close()s it at session end. When omitted, the LSP tools
-// are not registered.
+// References/WorkspaceSymbol. The caller Close()s it at session end. When
+// omitted, the LSP tools are not registered.
 func WithLSP(p *lsp.Pool) RegOption { return func(o *regOptions) { o.lsp = p } }
 
 // WithoutFrontend declares that no interactive frontend exists for this run
@@ -114,6 +114,7 @@ func DefaultRegistry(executor sandbox.Executor, opts ...RegOption) (*Registry, e
 			ctor{"Diagnostics", func() (Tool, error) { return NewDiagnostics(pool) }},
 			ctor{"Definition", func() (Tool, error) { return NewDefinition(pool) }},
 			ctor{"References", func() (Tool, error) { return NewReferences(pool) }},
+			ctor{"WorkspaceSymbol", func() (Tool, error) { return NewWorkspaceSymbol(pool) }},
 			ctor{"Implementation", func() (Tool, error) { return NewImplementation(pool) }},
 			ctor{"Hover", func() (Tool, error) { return NewHover(pool) }},
 			ctor{"DocumentSymbols", func() (Tool, error) { return NewDocumentSymbols(pool) }},
