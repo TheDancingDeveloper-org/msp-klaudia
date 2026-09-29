@@ -80,6 +80,18 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Grep and Glob honour `.gitignore` and can see dot-directories.** Only a
+  fixed list of directories (`node_modules`, `vendor`, `.git`, …) was skipped,
+  so searches walked `target/`, `dist/`, `build/` and `coverage/`; and every
+  hidden entry was skipped, so `Glob(".github/**/*.yml")` found nothing and
+  `.eslintrc` was never searched. The walks now follow ripgrep: `.gitignore`
+  and `.git/info/exclude` inside a git repository, `.ignore` anywhere, ignore
+  files between the repository root and the search root included. A hidden
+  or ignored entry is still searched when the search names it — as the path,
+  as a pattern's literal leading segments (`.github/…`, `dist/*.js`), or as a
+  dot-name in the pattern (`.env*`, `**/.eslintrc`). The `@` file completion
+  shares the walk, so ignored build output no longer crowds it. Not read: the
+  global `core.excludesFile`.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
