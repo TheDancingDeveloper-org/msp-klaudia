@@ -580,7 +580,11 @@ increasing precedence: **global** `~/.klaudia/.mcp.json` (honours
 `.klaudia/.mcp.json`. Per server name, the narrower scope wins — a project can
 point a globally configured server at a different binary without disturbing it
 elsewhere. Put personal servers you want everywhere in the global file, and
-servers belonging to a repo in the project's. A server is **stdio** (`command` +
+servers belonging to a repo in the project's. The two project files come with
+the checkout and a stdio server in one is a command Klaudia runs, so their
+servers start only in a folder you have trusted (`klaudia --trust-project`, or
+`--trusted-project-config` from a launcher that wrote the file); elsewhere they
+are listed in a warning and not started. A server is **stdio** (`command` +
 `args`) or **HTTP** (`url`, with `type:"sse"` for the legacy SSE transport).
 `//` and `/* */` comments are allowed; a file that still doesn't parse is
 reported — naming the file, since all three share a base name — rather than

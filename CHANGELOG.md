@@ -13,6 +13,15 @@ port mirrors (see `internal/version`).
   now refused whatever the allow list says. One consequence: MCP tools, which
   refuse in plan mode, are refused even when their server is allow-listed.
   Upstream 2.1.136.
+- **A project's `.mcp.json` servers start only in a trusted folder.** Both
+  `./.mcp.json` and `./.klaudia/.mcp.json` arrive with the checkout, and every
+  stdio server in them was started at launch and on each reload, so opening a
+  cloned repository ran whatever command it named. In a folder that is not
+  trusted (`klaudia --trust-project`, or `--trusted-project-config` from a
+  launcher that wrote the file), those servers are not started and a warning
+  names them; the global `~/.klaudia/.mcp.json` always applies. Trust is
+  re-read on each reload. A `.mcp.json` that is not a regular file (a FIFO
+  blocked startup forever) is now an error. Upstream 2.1.69/2.1.238/2.1.257.
 - **A project's `.klaudia/config.toml` no longer raises its own privileges.**
   Every key in it used to overlay the user's config, so starting Klaudia in a
   cloned repository let that repository pick `bypassPermissions`, turn the host
