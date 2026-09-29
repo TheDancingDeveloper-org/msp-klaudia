@@ -163,6 +163,18 @@ port mirrors (see `internal/version`).
   agent loop's dispatch. It never fails the edit: no server, an unsupported or
   disabled language, or a timeout appends nothing, and — matching the #109 fix
   intent — silence is never reported as a false "clean".
+- **`/rewind [N]` drops the last N exchanges from the conversation** (default 1)
+  so recent turns can be backed out without clearing everything. An *exchange* is
+  a user prompt plus the assistant turn(s) and tool results it triggered, running
+  up to the message before the next prompt; rewind cuts the history at a
+  user-prompt boundary, which is by construction a message carrying no
+  tool_result, so a dropped exchange is always removed whole and no tool_use is
+  ever left without its tool_result (the corruption `sanitizeMessages` would
+  otherwise have to repair). A user-role message that carries a tool_result is
+  never treated as a boundary. The persisted transcript is truncated in place to
+  match, so a later `--resume` sees the same conversation as the screen; N beyond
+  the exchanges present rewinds all of them and says so, and N≤0 or non-numeric is
+  a no-op with an error.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
