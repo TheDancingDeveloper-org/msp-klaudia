@@ -6,6 +6,15 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Input history survives a restart, and `Ctrl+R` searches it.** ↑ used to
+  recall nothing after quitting or `--continue`: history lived in memory only.
+  The last 200 prompts are now kept per project in the sessions dir
+  (`~/.klaudia/sessions/<project>/prompt-history.ndjson`, not the project's
+  `.klaudia/`, which is committed), and a resumed conversation's prompts are put
+  back under ↑ as well. A `!` command is stored as the typed line, never its
+  output; prompts carrying a paste chip or over 8 KiB are not written to disk.
+  `Ctrl+R` opens a reverse incremental search (`Ctrl+R` again for older
+  matches, `Enter` to edit the match, `Esc`/`Ctrl+G` to cancel).
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
@@ -80,6 +89,12 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **↑/↓ got stuck after recalling a multi-line prompt.** History was browsed
+  only while the box held a single line, so once a multi-line entry was
+  recalled the arrows moved inside it and could not get past. ↑ now browses
+  history from the first line and ↓ from the last (readline's
+  up-line-or-history), elsewhere they move the cursor. A long line that wraps
+  counts by its displayed rows, so ↑ at the end of one first walks up it.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
