@@ -293,6 +293,16 @@ port mirrors (see `internal/version`).
   in stream-json, on stderr for `-p` text and json. And the stream-json
   envelope is still written when the transcript beside it fails: the two were
   recorded in turn and a failure stopped both.
+- **MCP recovers from the common connection failures on its own.** A server
+  configured with a `url` and no `type` that speaks only legacy SSE failed
+  with an HTTP error; Klaudia now falls back to SSE. A remote server that
+  restarted left its tools failing on a lost session until someone ran
+  `/mcp`; a call that finds its session gone now reconnects once and is
+  sent again (the call had not run). `/mcp` offers "Reconnect all
+  disconnected" when more than one is down. And servers that failed at
+  startup are named in the system prompt, so the model tells you one is down
+  instead of concluding its tools never existed. Upstream
+  2.1.247/2.1.265/2.1.273/2.1.274/2.1.283/2.1.284.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
