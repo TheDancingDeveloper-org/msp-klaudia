@@ -81,7 +81,13 @@ func (s Skill) Render(args string) string {
 // project ones (a later layer wins on name collision). Malformed files are
 // skipped, reporting the reason to warn (warn may be nil). The result is sorted
 // by name.
-func Load(cwd string, warn func(string)) []Skill {
+func Load(cwd string, warn func(string)) []Skill { return load(cwd, true, warn) }
+
+// LoadUser is Load without the project's skill directories. Used by
+// --safe-mode.
+func LoadUser(warn func(string)) []Skill { return load("", false, warn) }
+
+func load(cwd string, project bool, warn func(string)) []Skill {
 	byName := map[string]Skill{}
 	for _, sk := range Bundled() {
 		byName[sk.Name] = sk
@@ -99,10 +105,12 @@ func Load(cwd string, warn func(string)) []Skill {
 			filepath.Join(home, ".klaudia", "skills"),
 		)
 	}
-	dirs = append(dirs,
-		filepath.Join(cwd, ".claude", "skills"),
-		filepath.Join(cwd, ".klaudia", "skills"),
-	)
+	if project {
+		dirs = append(dirs,
+			filepath.Join(cwd, ".claude", "skills"),
+			filepath.Join(cwd, ".klaudia", "skills"),
+		)
+	}
 
 	for _, dir := range dirs {
 		for _, sk := range loadDir(dir, warn) {

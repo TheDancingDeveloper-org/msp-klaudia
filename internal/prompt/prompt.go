@@ -54,7 +54,14 @@ If the user declines, do not look for another route to the same change. Carry on
 
 // System builds the full system prompt for a run in the given working directory.
 // model is the model ID/alias (may be empty).
-func System(cwd, model string) string {
+func System(cwd, model string) string { return build(cwd, model, true) }
+
+// SafeSystem is System without anything the project supplies: no project
+// CLAUDE.md, memory or knowledge. The user's own ~/.claude/CLAUDE.md stays.
+// Used by --safe-mode.
+func SafeSystem(cwd, model string) string { return build(cwd, model, false) }
+
+func build(cwd, model string, project bool) string {
 	var b strings.Builder
 	b.WriteString(base)
 	if model != "" {
@@ -65,9 +72,21 @@ func System(cwd, model string) string {
 	// Instructions, memory and knowledge are files a checkout or an earlier
 	// session wrote; invisible characters in them are stripped, so the model
 	// reads what a person reviewing the file would see.
-	if instr := textsafe.StripInvisible(loadProjectInstructions(cwd)); instr != "" {
+	instr := ""
+	if project {
+		instr = loadProjectInstructions(cwd)
+	} else if home, err := os.UserHomeDir(); err == nil {
+		if data, err := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md")); err == nil {
+			instr = strings.TrimSpace(string(data))
+		}
+	}
+	if instr = textsafe.StripInvisible(instr); instr != "" {
 		b.WriteString("\n\n# Project instructions (from CLAUDE.md)\n")
 		b.WriteString(instr)
+	}
+	if !project {
+		b.WriteString("\n\n(Started in safe mode: this project's own instructions, memory, config, skills and MCP servers were not loaded.)")
+		return b.String()
 	}
 	if mem := textsafe.StripInvisible(recalledMemory(cwd)); mem != "" {
 		b.WriteString("\n\n# Recalled memory\n")

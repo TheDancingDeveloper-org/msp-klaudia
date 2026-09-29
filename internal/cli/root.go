@@ -601,6 +601,7 @@ type options struct {
 	// trustedProjectConfig applies ./.klaudia/config.toml in full for this run
 	// only: for a launcher that wrote the file itself.
 	trustedProjectConfig bool
+	safeMode             bool // --safe-mode: load nothing the project supplies
 	loop                 bool // --loop: autonomous goal-spec iteration
 	maxIterations        int  // --max-iterations: outer-loop cap for --loop
 
@@ -769,6 +770,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.partialMessages, "include-partial-messages", false, "Include partial message chunks as they arrive (only with --print and --output-format=stream-json)")
 	f.BoolVar(&opts.trustedProjectConfig, "trusted-project-config", false, "Apply ./.klaudia/config.toml in full for this run without adding the folder to the trust list — for a launcher that wrote that file itself")
 	f.BoolVar(&opts.trustProject, "trust-project", false, "Trust the current folder so its .klaudia/config.toml applies in full (permission mode and rules, trust, sandbox, provider endpoint and keys), and exit")
+	f.BoolVar(&opts.safeMode, "safe-mode", false, "Start without anything this project supplies: its .klaudia/config.toml, .mcp.json servers, skills, CLAUDE.md, memory and knowledge. For opening an unfamiliar repository or getting past a broken project config")
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
@@ -892,6 +894,19 @@ func run(cmd *cobra.Command, opts *options) error {
 	// wrote it says so.
 	projectTrusted := func() bool { return opts.trustedProjectConfig || config.IsTrustedProject(cwd) }
 	cfg := config.LoadTrusting(cwd, projectTrusted())
+	if opts.safeMode {
+		cfg = config.LoadHome()
+		fmt.Fprintln(cmd.ErrOrStderr(), "safe mode: this project's .klaudia/config.toml, .mcp.json, skills, CLAUDE.md and memory are not loaded")
+	}
+	// safeMode loads only the home config, so a project cannot supply MCP
+	// servers, skills, CLAUDE.md or memory either.
+	loadMCP := func() (mcp.Config, []string, error) {
+		if opts.safeMode {
+			cfg, err := mcp.LoadGlobalConfig()
+			return cfg, nil, err
+		}
+		return mcp.LoadConfigFor(cwd, projectTrusted())
+	}
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", w)
 	}
@@ -993,6 +1008,9 @@ func run(cmd *cobra.Command, opts *options) error {
 	// Assemble the full system prompt (base instructions + env context +
 	// CLAUDE.md) once for this run.
 	sysPrompt := prompt.System(cwd, string(model))
+	if opts.safeMode {
+		sysPrompt = prompt.SafeSystem(cwd, string(model))
+	}
 
 	// Build the tool registry. Sub-agents draw from the base tools (incl. any
 	// MCP tools); the top-level registry adds the Agent tool.
@@ -1033,7 +1051,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	// A .mcp.json that does not parse yields no servers at all. Discarding
 	// that error made the session look like one with no MCP configured — the
 	// model reports the server is down, and nothing says why.
-	mcpCfg, mcpHeld, mcpCfgErr := mcp.LoadConfigFor(cwd, projectTrusted())
+	mcpCfg, mcpHeld, mcpCfgErr := loadMCP()
 	if mcpCfgErr != nil {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: mcp config:", mcpCfgErr)
 	}
@@ -1077,8 +1095,12 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Skills (bundled, overlaid by the user's skill directories and then the
 	// project's) become a single Skill tool the model can invoke; the TUI also
-	// dispatches /<skill>.
-	skills := skill.Load(cwd, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
+	// dispatches /<skill>. In safe mode the project's skills are left out.
+	skillWarn := func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }
+	skills := skill.Load(cwd, skillWarn)
+	if opts.safeMode {
+		skills = skill.LoadUser(skillWarn)
+	}
 	skillInfos := skillToolInfos(skills)
 	if skillTool, serr := tools.NewSkill(skillInfos); serr == nil && skillTool != nil {
 		staticTools = append(staticTools, skillTool)
@@ -1173,7 +1195,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	stopWatch, werr := mcp.Watch(cwd, func() {
 		// Trust is re-read, so `klaudia --trust-project` run elsewhere takes
 		// effect at the next edit without a restart.
-		cfg, held, lerr := mcp.LoadConfigFor(cwd, projectTrusted())
+		cfg, held, lerr := loadMCP()
 		if lerr != nil {
 			mcpReloads.emit(tui.MCPReloadEvent{ConfigErr: lerr.Error()})
 			return

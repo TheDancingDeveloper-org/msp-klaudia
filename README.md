@@ -68,6 +68,11 @@ The list is `~/.klaudia/trusted-projects`, one directory per line. A launcher
 that renders `./.klaudia/config.toml` itself (an embedder writing a per-session
 config) passes `--trusted-project-config` to apply it in full for that run.
 
+`klaudia --safe-mode` starts without anything the project supplies — its
+`.klaudia/config.toml`, `.mcp.json` servers, skills, `CLAUDE.md`, memory and
+knowledge — for opening an unfamiliar repository or getting past a broken
+project config. Your own config, global MCP servers and skills still load.
+
 ### Authentication
 
 Pick one of these paths:
