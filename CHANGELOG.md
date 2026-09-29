@@ -5,6 +5,14 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Klaudia's own git lookups no longer run programs a repository names.** The
+  startup status, `/diff` and branch lookups ran `core.fsmonitor` and
+  external diff/textconv drivers from the repository's config — present in
+  archives, vendored and nested repositories. They now run through
+  `internal/gitprobe`, which switches those off; `/commit` and the goal loop
+  still run plain git. Clean/smudge filters are not covered. Upstream 2.1.265.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
