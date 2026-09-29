@@ -21,20 +21,21 @@ const loopStallLimit = 3
 // loopRun bundles the already-built run state the goal loop reuses (set up once
 // in run() like the single-shot headless path).
 type loopRun struct {
-	loop       *agent.Loop
-	cwd        string
-	mode       permission.Mode
-	model      anthropic.Model
-	system     string
-	maxTurns   int
-	iterations int
-	permCtx    permission.Context
-	hostGate   *agent.HostGate
-	approver   agent.Approver
-	deferred   map[string]bool
-	recorder   agent.Recorder
-	onSummary  func(string)
-	render     *Renderer
+	loop         *agent.Loop
+	cwd          string
+	mode         permission.Mode
+	model        anthropic.Model
+	system       string
+	maxTurns     int
+	maxBudgetUSD float64
+	iterations   int
+	permCtx      permission.Context
+	hostGate     *agent.HostGate
+	approver     agent.Approver
+	deferred     map[string]bool
+	recorder     agent.Recorder
+	onSummary    func(string)
+	render       *Renderer
 }
 
 // runGoalLoop drives the headless Ralph loop: it iterates against the goal spec,
@@ -87,6 +88,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			Model:         p.model,
 			System:        p.system,
 			MaxTurns:      p.maxTurns,
+			MaxBudgetUSD:  p.maxBudgetUSD,
 			Permission:    p.permCtx,
 			Host:          p.hostGate,
 			Approver:      p.approver,

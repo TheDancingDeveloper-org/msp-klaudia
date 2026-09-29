@@ -6,6 +6,31 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Cost tracking: a per-model price table, `total_cost_usd`, a status-bar cost
+  segment, `/stats` cost breakdown, and `--max-budget-usd`.** A new
+  `internal/api/pricing.go` holds first-party Anthropic Messages API list prices
+  (USD per 1M tokens: input, output, cache-read, cache-write) for the current
+  Claude lineup — opus/sonnet/haiku/fable — plus a `CostUSD(model, usage)` helper
+  that resolves CLI aliases the same way `MaxOutputTokens`/`ContextWindow` do. A
+  model with no listed rate (an OpenAI-compatible endpoint, or one added since)
+  is reported unknown and costs 0, so cost is never fabricated and a budget stop
+  cannot fire on it.
+
+  Rates are list prices captured **as of 2026-06-24** and **will drift** — update
+  the table when Anthropic reprices or ships a model. Cache columns follow
+  Anthropic's standard multipliers of the input rate (read 0.10×, write 1.25× for
+  the 5-minute TTL), stored explicitly for auditability.
+
+  The cumulative cost is computed once in the agent loop from the token totals it
+  already tracks and surfaced as `total_cost_usd` in both the headless JSON result
+  (previously a hardcoded `0` placeholder) and the stream-json result line. The
+  TUI shows a compact running cost (e.g. `$0.0123`) in the status bar and a cost
+  breakdown under `/stats`. `--max-budget-usd <n>` stops the run gracefully at the
+  next turn boundary once cumulative cost reaches the limit — the same shape as
+  `--max-turns`, with stop reason `max_budget`, a new exit code (`5`), and an
+  explanatory turn note. Budget is enforced per `loop.Run` (main headless/TUI run
+  and each `--loop` iteration); sub-agent spend is not folded into the parent
+  budget.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

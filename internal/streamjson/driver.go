@@ -352,12 +352,13 @@ func decodeUserContent(raw json.RawMessage) string {
 // 0→0 tokens for every turn.
 func resultEvent(res agent.Result, err error) map[string]any {
 	m := map[string]any{
-		"type":        "result",
-		"subtype":     "success",
-		"is_error":    err != nil,
-		"num_turns":   res.NumTurns,
-		"result":      res.Text,
-		"stop_reason": res.StopReason,
+		"type":           "result",
+		"subtype":        "success",
+		"is_error":       err != nil,
+		"num_turns":      res.NumTurns,
+		"result":         res.Text,
+		"stop_reason":    res.StopReason,
+		"total_cost_usd": res.CostUSD,
 		"usage": map[string]any{
 			"input_tokens":                res.InputTokens,
 			"output_tokens":               res.OutputTokens,

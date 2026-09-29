@@ -270,6 +270,11 @@ func (m *Model) statusLine() string {
 	segments = append(segments,
 		hintStyle.Render(fmt.Sprintf("%d turns", m.statTurns)),
 		hintStyle.Render(fmt.Sprintf("%s tokens", humanTokens(m.statIn+m.statOut))))
+	// Running cost, when the model has a known price. Lowest priority (appended
+	// last) so fitSegments drops it first on a narrow terminal.
+	if seg := m.costSegment(); seg != "" {
+		segments = append(segments, hintStyle.Render(seg))
+	}
 
 	// width-3: two columns for the caption indent, and one for the reserved
 	// last column the live region never writes to (see promptBox).
