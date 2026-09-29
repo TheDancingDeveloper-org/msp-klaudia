@@ -100,7 +100,7 @@ func skillToolInfos(skills []skill.Skill) []tools.SkillInfo {
 // switch handles them before the /<skill> default branch).
 var builtinSlashCommands = map[string]bool{
 	"help": true, "?": true, "quit": true, "exit": true, "clear": true,
-	"model": true, "mode": true, "goal": true,
+	"model": true, "effort": true, "mode": true, "goal": true,
 	"memory": true, "mcp": true, "stats": true,
 	"allow": true, "deny": true, "status": true,
 	"config": true, "agents": true, "context": true,
@@ -626,6 +626,7 @@ type options struct {
 	print            bool
 	prompt           string
 	model            string
+	effort           string // --effort low|medium|high|xhigh|max
 	outputFormat     string
 	inputFormat      string
 	permissionMode   string
@@ -798,6 +799,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f := cmd.Flags()
 	f.BoolVarP(&opts.print, "print", "p", false, "Non-interactive mode: print result to stdout and exit")
 	f.StringVar(&opts.model, "model", "", "Model alias (haiku|sonnet|opus) or full model ID")
+	f.StringVar(&opts.effort, "effort", "", "Reasoning effort: low|medium|high|xhigh|max (default: config effort, else the model's own default)")
 	f.StringVar(&opts.outputFormat, "output-format", "text", "Output format: text|json|stream-json")
 	f.StringVar(&opts.inputFormat, "input-format", "text", "Input format: text|stream-json (stream-json drives a persistent agent over stdin)")
 	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|plan|bypassPermissions|dontAsk (default: config [permissions] mode, else autonomous; dontAsk runs allow-listed tools and denies the rest without prompting — for headless and embedded runs)")
@@ -968,6 +970,11 @@ func run(cmd *cobra.Command, opts *options) error {
 		modelStr = providerModel
 	}
 	model := api.ResolveModel(modelStr)
+
+	effort, thinking, err := resolveReasoning(opts.effort, cfg, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
+	if err != nil {
+		return err
+	}
 
 	// Build allow/deny rules from config (.klaudia) + CLI flags.
 	allowRules, err := permission.ParseRules(append(append([]string{}, cfg.Permissions.Allow...), opts.allowedTools...))
@@ -1342,6 +1349,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			SessionID:           sessionID,
 			Model:               modelStr,
 			ResolvedModel:       string(model),
+			Effort:              effort,
 			Theme:               themeOrWarn(cfg.Theme, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }), // user default (~/.klaudia) overlaid by project; /theme overrides per session
 			PermissionMode:      string(mode),
 			EnterInserts:        tui.EnterInserts(cfg.Input.Enter, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
@@ -1395,6 +1403,8 @@ func run(cmd *cobra.Command, opts *options) error {
 				WorkingDir:      cwd,
 				Prompt:          prompt,
 				Model:           api.ResolveModel(sess.Model), // resolved fresh each turn
+				Effort:          sess.Effort,                  // read per turn, like the model
+				Thinking:        thinking,
 				System:          withExtraDirs(sysPrompt, sess.ExtraDirs),
 				MaxTurns:        opts.maxTurns,
 				ContextWindow:   cfg.ContextWindow,
@@ -1442,6 +1452,8 @@ func run(cmd *cobra.Command, opts *options) error {
 				WorkingDir:      cwd,
 				Prompt:          prompt,
 				Model:           liveModel.Get(), // set_model applies from the next turn
+				Effort:          effort,
+				Thinking:        thinking,
 				System:          sysPrompt,
 				MaxTurns:        opts.maxTurns,
 				ContextWindow:   cfg.ContextWindow,
@@ -1469,6 +1481,8 @@ func run(cmd *cobra.Command, opts *options) error {
 			cwd:         cwd,
 			mode:        mode,
 			model:       model,
+			effort:      effort,
+			thinking:    thinking,
 			system:      sysPrompt,
 			maxTurns:    opts.maxTurns,
 			iterations:  opts.maxIterations,
@@ -1503,6 +1517,8 @@ func run(cmd *cobra.Command, opts *options) error {
 		WorkingDir:      cwd,
 		Prompt:          opts.prompt,
 		Model:           model,
+		Effort:          effort,
+		Thinking:        thinking,
 		System:          sysPrompt,
 		MaxTurns:        opts.maxTurns,
 		ContextWindow:   cfg.ContextWindow,
@@ -1634,4 +1650,24 @@ func mcpServerOf(name string) (string, bool) {
 	}
 	server, _, found := strings.Cut(rest, "__")
 	return server, found
+}
+
+// resolveReasoning settles the effort and thinking settings for the run.
+// --effort wins over the config; a bad --effort is a usage error, while a bad
+// value in a config file is warned about and ignored, as a bad theme is, so a
+// typo there does not stop Klaudia starting.
+func resolveReasoning(flagEffort string, cfg config.Config, warn func(string)) (effort, thinking string, err error) {
+	if flagEffort != "" {
+		if effort, err = api.ParseEffort(flagEffort); err != nil {
+			return "", "", usageErrorf("--effort: %v", err)
+		}
+	} else if effort, err = api.ParseEffort(cfg.Effort); err != nil {
+		warn("config effort: " + err.Error() + "; using the model's default")
+		effort = ""
+	}
+	if thinking, err = api.ParseThinking(cfg.Thinking); err != nil {
+		warn("config thinking: " + err.Error() + "; using the model's default")
+		thinking = ""
+	}
+	return effort, thinking, nil
 }
