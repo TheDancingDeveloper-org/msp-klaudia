@@ -78,6 +78,14 @@ port mirrors (see `internal/version`).
   that fail to launch are named, capped at three with a count of the rest, and
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
+- **An "Environment variables" table in the README.** It lists all 16
+  `KLAUDIA_*` and `ANTHROPIC_*` variables with their defaults; the README used to
+  mention 8, so `KLAUDIA_MAX_RETRIES` — which the 429 error tells you to set —
+  was documented nowhere. `cmd/klaudia/envdocs_test.go` fails when non-test code
+  names such a variable the table lacks, or the table lists one no code reads.
+  It collects every string literal that is exactly a variable name, not only
+  `os.Getenv` arguments, because the browser package reads through its own
+  `getenv`/`envBool` helpers.
 
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
