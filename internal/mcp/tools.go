@@ -124,7 +124,8 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 	if err != nil {
 		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
 	}
-	return []tools.Result{resultOf(res)}, nil
+	// Capped like Bash output: a server can return megabytes in one call.
+	return []tools.Result{tools.CapResult(resultOf(res))}, nil
 }
 
 // Tools lists every connected server's tools and wraps them. Servers that fail
