@@ -237,6 +237,15 @@ port mirrors (see `internal/version`).
   provider now honours `Retry-After`, which its comment always claimed and
   its code never read; a wait over 60 seconds is surfaced instead of sat
   through. Upstream 2.1.94/2.1.98/2.1.199/2.1.281/2.1.284.
+- **Skills with prose descriptions load.** Frontmatter was parsed as strict
+  YAML, and a description such as `Use for slides. Triggers include: deck`
+  is not valid YAML, so the skill was turned away with a warning. When YAML
+  parsing fails, the known keys are now read as `key: rest of line` (with
+  indented continuation lines and `[a, b]` tool lists); only frontmatter with
+  no recognisable key is still an error. A file starting with a UTF-8
+  byte-order mark had its frontmatter read as body; the mark is now skipped.
+  `${CLAUDE_SKILL_DIR}` and `${KLAUDIA_SKILL_DIR}` in a skill body become the
+  skill file's directory. Upstream 2.1.69/2.1.239.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
