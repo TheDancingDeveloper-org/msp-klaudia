@@ -6,6 +6,15 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Ctrl+Z, Ctrl+L and Ctrl+D do what a shell user expects.** Ctrl+Z suspends
+  Klaudia to the shell (`fg` returns), Ctrl+L clears the screen while keeping
+  scrollback, and Ctrl+D on an empty idle prompt quits. In raw mode none of them
+  reached the terminal's own handling, so all three did nothing. `/help` lists
+  them, along with Ctrl+W and Alt+←/→, which already worked but were unlisted.
+- **`/help` is aligned and complete.** A usage too long for the column now gets
+  its description on the next line instead of pushing it out of line, and the
+  subcommands that existed without being listed are named: `/goal clear`,
+  `/logs stop`, `/trust revoke all`, `/last ls`.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
@@ -80,6 +89,11 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Slash commands no longer ignore arguments they don't understand.** `/plan xyz`
+  entered plan mode and `/errors foo` listed ten errors; both now print their
+  usage and do nothing. `/add-dir` expands `~`, resolves a relative path from the
+  project, and refuses a path that doesn't exist or isn't a directory — before,
+  a typo went into the prompt as a directory no tool could read.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
