@@ -5,6 +5,17 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **OS confinement hides your credentials.** The bubblewrap sandbox mounted
+  the whole filesystem read-only, and the macOS profile restricted only
+  writes, so a command under `sandbox.mode = "os"` could read `~/.ssh`,
+  `~/.aws`, `~/.kube/config`, `~/.netrc` and every other credential the host
+  gate protects. Those are now hidden — an empty tmpfs over each directory and
+  `/dev/null` over each file under bubblewrap, `deny file-read*` under
+  sandbox-exec — with `~/.ssh/known_hosts` and `~/.ssh/config` left visible.
+  `sandbox.readCredentials = true` turns this off for sandboxes that need
+  them. Upstream 2.1.187/2.1.224.
+
 ### Added
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
