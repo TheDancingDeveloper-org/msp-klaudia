@@ -80,6 +80,11 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A sub-agent that fails keeps what it found.** An error part-way through a
+  sub-agent's run — an overloaded service, a dropped stream — returned only
+  "Sub-agent failed", and everything it had worked out was lost. Its last
+  completed reply now comes back with the error, marked as possibly
+  incomplete. Upstream 2.1.199/2.1.200/2.1.246.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
