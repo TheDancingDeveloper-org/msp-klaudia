@@ -268,6 +268,13 @@ port mirrors (see `internal/version`).
   is in safe mode. For opening a repository you have not reviewed, or
   starting despite a project config that breaks startup. Upstream
   2.1.169/2.1.248.
+- **MCP `headers` and `alwaysLoad`.** An HTTP or SSE server behind a bearer
+  token or an access proxy could not be used: there was nowhere to put the
+  header. `"headers"` on a server are sent with every request, with `${VAR}`
+  expanded as in `url`, so the secret stays out of the file. `"alwaysLoad":
+  true` offers a server's tools to the model from the start instead of behind
+  ToolSearch, for a server used in nearly every session. Upstream
+  2.1.119/2.1.121.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

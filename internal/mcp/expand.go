@@ -52,6 +52,13 @@ func expandServerConfig(name string, cfg ServerConfig, lookup func(string) (stri
 		}
 		cfg.Args = args
 	}
+	if len(cfg.Headers) > 0 {
+		headers := make(map[string]string, len(cfg.Headers))
+		for k, v := range cfg.Headers {
+			headers[k] = expand("headers "+k, v)
+		}
+		cfg.Headers = headers
+	}
 	if len(cfg.Env) > 0 {
 		env := make(map[string]string, len(cfg.Env))
 		for k, v := range cfg.Env {

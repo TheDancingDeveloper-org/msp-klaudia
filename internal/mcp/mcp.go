@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,14 @@ type ServerConfig struct {
 	// HTTP transport
 	Type string `json:"type,omitempty"` // "http" (default when URL set) | "sse"
 	URL  string `json:"url,omitempty"`
+	// Headers are sent with every HTTP request to the server, values
+	// ${VAR}-expanded like url - for a server behind a bearer token or an
+	// access proxy, without writing the secret into the file.
+	Headers map[string]string `json:"headers,omitempty"`
+	// AlwaysLoad offers this server's tools to the model from the start
+	// rather than behind ToolSearch, for a server whose tools are used in
+	// almost every session.
+	AlwaysLoad bool `json:"alwaysLoad,omitempty"`
 	// ReadOnly overrides what this server's tools claim about themselves, in
 	// either direction. Unset trusts the server's readOnlyHint annotations.
 	//
@@ -283,21 +292,25 @@ func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup 
 		return nil, err
 	}
 	if url := strings.TrimSpace(cfg.URL); url != "" {
+		var client *http.Client
+		if len(cfg.Headers) > 0 {
+			client = &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: cfg.Headers}}
+		}
 		switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 		case "sse":
-			return ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url})
+			return ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: client})
 		case "http", "streamable":
-			return ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url})
+			return ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: client})
 		}
 		// Type unset: try streamable HTTP, and if the server does not speak
 		// it, the legacy SSE transport. Plenty of deployed servers are
 		// SSE-only, and a config written for another client often gives no
 		// type; they used to fail here with an HTTP error and no hint.
-		srv, err := ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url})
+		srv, err := ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: client})
 		if err == nil || ctx.Err() != nil {
 			return srv, err
 		}
-		if sseSrv, sseErr := ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url}); sseErr == nil {
+		if sseSrv, sseErr := ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: client}); sseErr == nil {
 			return sseSrv, nil
 		}
 		return nil, fmt.Errorf("%w (legacy SSE was tried too; set \"type\" to choose one)", err)
@@ -644,3 +657,23 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
+
+// headerTransport adds a server's configured headers to each request.
+type headerTransport struct {
+	base    http.RoundTripper
+	headers map[string]string
+}
+
+func (h headerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	for k, v := range h.headers {
+		r.Header.Set(k, v)
+	}
+	return h.base.RoundTrip(r)
+}
+
+// AlwaysLoad reports whether the named server's tools skip ToolSearch.
+func (m *Manager) AlwaysLoad(server string) bool {
+	cfg, ok := m.serverConfig(server)
+	return ok && cfg.AlwaysLoad
+}

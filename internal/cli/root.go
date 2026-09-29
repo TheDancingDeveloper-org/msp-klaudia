@@ -1123,7 +1123,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		present := map[string]bool{}
 		for _, t := range all {
 			present[t.Name()] = true
-			if strings.HasPrefix(t.Name(), "mcp__") {
+			if server, ok := mcpServerOf(t.Name()); ok && !mcpMgr.AlwaysLoad(server) {
 				deferred[t.Name()] = true
 			}
 		}
@@ -1572,4 +1572,14 @@ func ExecuteContext(ctx context.Context) int {
 func mcpHeldMessage(held []string) string {
 	return fmt.Sprintf("this folder is not trusted, so the MCP servers its .mcp.json names were not started: %s. "+
 		"Review the file, then run `klaudia --trust-project` here to start them.", strings.Join(held, ", "))
+}
+
+// mcpServerOf returns the server an "mcp__<server>__<tool>" name belongs to.
+func mcpServerOf(name string) (string, bool) {
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
+		return "", false
+	}
+	server, _, found := strings.Cut(rest, "__")
+	return server, found
 }
