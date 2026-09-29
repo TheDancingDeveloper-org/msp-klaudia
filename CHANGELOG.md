@@ -80,6 +80,14 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Edits can no longer leave a truncated file, and Write keeps CRLF.** Write,
+  Edit and NotebookEdit truncated the file and then wrote it, so a crash, a
+  full disk or a killed process in between left it empty or cut short. An
+  existing file is now replaced through a synced temporary file and a rename,
+  keeping its permissions and writing through a symlink to its target; a new
+  file is created as before, under the umask. Write also sent the model's LF
+  line endings over a CRLF file, turning every line into a diff; it now
+  matches the file it replaces, as Edit already did. Upstream 2.1.77/2.1.181.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
