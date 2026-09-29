@@ -280,6 +280,12 @@ port mirrors (see `internal/version`).
   "Sub-agent failed", and everything it had worked out was lost. Its last
   completed reply now comes back with the error, marked as possibly
   incomplete. Upstream 2.1.199/2.1.200/2.1.246.
+- **One transient API error no longer ends a `--loop` goal run.** The loop
+  returned on the first error from an iteration, so an overloaded response or
+  a stalled stream hours into a run stopped it. An iteration that fails
+  transiently (rate limit, 5xx or overload, stalled stream, network error) is
+  now retried after 30 s, 1 min and 2 min, reporting each retry; other errors
+  still stop the run at once. Upstream 2.1.269.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
