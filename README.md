@@ -574,7 +574,9 @@ silently loading nothing:
 ```jsonc
 { "mcpServers": {
   "local":  { "command": "my-server", "args": ["--stdio"] },
-  "remote": { "type": "http", "url": "https://mcp.example.com/v1" }
+  "remote": { "type": "http", "url": "https://mcp.example.com/v1",
+              "headers": { "Authorization": "Bearer ${EXAMPLE_TOKEN}" },
+              "alwaysLoad": true }
 } }
 ```
 

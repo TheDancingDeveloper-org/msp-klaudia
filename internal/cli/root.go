@@ -943,7 +943,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		}
 		deferred := map[string]bool{}
 		for _, t := range all {
-			if strings.HasPrefix(t.Name(), "mcp__") {
+			if server, ok := mcpServerOf(t.Name()); ok && !mcpMgr.AlwaysLoad(server) {
 				deferred[t.Name()] = true
 			}
 		}
@@ -1334,4 +1334,14 @@ func ExecuteContext(ctx context.Context) int {
 		fmt.Fprintln(os.Stderr, "Error:", msg)
 	}
 	return exitCodeFor(err)
+}
+
+// mcpServerOf returns the server an "mcp__<server>__<tool>" name belongs to.
+func mcpServerOf(name string) (string, bool) {
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
+		return "", false
+	}
+	server, _, found := strings.Cut(rest, "__")
+	return server, found
 }
