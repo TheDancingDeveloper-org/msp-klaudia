@@ -80,6 +80,18 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A conversation that outgrows the window can be compacted again.** When a
+  request was refused as too long, compaction sent the same over-limit history
+  as its summary request, which was refused too; the failure was silent, the
+  retry overflowed, and so did every later prompt. The summary request is now
+  sanitized and, if refused as too long, shrunk and retried up to three times
+  — the older half dropped at a real user turn, or, with nothing to drop, the
+  longest text halved head-and-tail — and the summary says when the oldest
+  part is missing. Automatic compaction failures are reported rather than
+  silent, and after three in a row the threshold-driven attempt pauses until
+  `/compact` succeeds (an overflow still forces one). Summaries get the
+  model's output budget, 4k–16k tokens, instead of a fixed 4096. Upstream
+  2.1.69/2.1.76/2.1.85/2.1.89/2.1.269/2.1.281/2.1.284.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
