@@ -110,6 +110,8 @@ type MCPServerInfo struct {
 	Name      string
 	Connected bool
 	Tools     int
+	// ListErr is why a connected server's tool list could not be read.
+	ListErr string
 }
 
 // MCPReloadEvent reports the outcome of one hot reload of the MCP config.
@@ -1991,6 +1993,9 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 				status = "○ disconnected"
 			}
 			fmt.Fprintf(&b, "\n  %s  %s (%d tools)", status, s.Name, s.Tools)
+			if s.ListErr != "" {
+				fmt.Fprintf(&b, " — tool list failed: %s", s.ListErr)
+			}
 			if s.Connected {
 				items = append(items, choiceItem{label: "Disconnect " + s.Name, apply: func() string {
 					if err := m.sess.MCP.Disconnect(s.Name); err != nil {

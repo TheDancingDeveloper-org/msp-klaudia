@@ -254,6 +254,12 @@ port mirrors (see `internal/version`).
   or a line naming the binary; audio, resource links and other image types
   are named; structuredContent is shown as JSON when there is no text; and
   an empty result says so. Upstream 2.1.113/2.1.128/2.1.136/2.1.268/2.1.283.
+- **Every page of an MCP server's tool list is read, and a failed list is
+  reported.** One `tools/list` call read only the first page, so a server that
+  paginates lost every tool after it; a failed list was skipped, which looked
+  exactly like a server with no tools. All pages are now read, a failure is
+  retried once, and one that persists is shown at startup and in `/mcp`
+  against the server. Upstream 2.1.132/2.1.144/2.1.147/2.1.181/2.1.191.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
