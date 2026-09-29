@@ -354,6 +354,9 @@ port mirrors (see `internal/version`).
   which the refresh after the add then rebuilt without it. Every note added
   after the first was silently dropped. New bullets now go above the linked
   section, and the add is a single write (#97).
+- **An unquoted positional prompt kept only its first word.** `klaudia explain
+  this code` sent the model `explain`; the positional words are now joined with
+  spaces, so it sends `explain this code`, the same as the quoted form.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
