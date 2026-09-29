@@ -6,6 +6,19 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Reasoning effort and thinking settings.** `effort = "low" | "medium" | "high"
+  | "xhigh" | "max"` in `.klaudia/config.toml`, `--effort` per run and `/effort`
+  in the TUI set `output_config.effort`; `thinking = "adaptive" | "disabled"`
+  sets the thinking parameter. Unset, Klaudia sends neither — the request is
+  unchanged and each model runs its own defaults. The settings follow the
+  session rather than the model, so they are adjusted to what the model is
+  known to accept: effort is dropped on Haiku 4.5 and Sonnet 4.5, which reject
+  it; a level the model lacks (`xhigh` before Opus 4.7, `max` on Opus 4.5) is
+  lowered to its highest; and `disabled` is dropped where thinking cannot be
+  turned off (Fable, Opus 5.5, Opus 5 at `xhigh`/`max`). OpenAI-compatible
+  endpoints receive the effort as `reasoning_effort`, with `xhigh` and `max`
+  sent as `high` — the one level every such server accepts. Sub-agents keep
+  the model's defaults.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
