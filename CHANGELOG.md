@@ -80,6 +80,16 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A picker opened during a turn could start a second, concurrent turn.**
+  `/mode`, `/mcp` and `/model` open their pickers while Klaudia works, but
+  choosing an item set the UI idle with the turn still running, so the next
+  Enter started another agent alongside it. Esc in such a picker cancelled the
+  turn instead of the picker. `/logs --errors` started its turn without the
+  running state, with the same result. A picker now returns to the state it
+  opened over (and stays open if the turn ends under it), Esc closes the picker
+  and leaves the turn alone, a prompt from the turn (approval, question, plan)
+  takes over from an open picker, and a turn refuses to start while another is
+  still in flight.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
