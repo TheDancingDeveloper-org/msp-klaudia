@@ -172,6 +172,10 @@ port mirrors (see `internal/version`).
 - **Resume no longer stops at a transcript line over 16 MB.** One large line —
   an image tool result is enough — ended the read, and the resumed history
   silently lost everything after it. Upstream 2.1.257/2.1.267.
+- **Blank text blocks and orphan tool results are repaired before sending.** An
+  empty or whitespace-only text block, or a `tool_result` whose `tool_use` was
+  lost, made the API reject every later request, leaving a resumed session
+  unusable. Both are dropped. Upstream 2.1.69/2.1.92/2.1.274/2.1.277.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
