@@ -80,6 +80,18 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Read copes with very long lines and checks images before sending them.**
+  One line over 1 MB (minified JavaScript, a data dump) failed the whole read
+  with "token too long", and the 2,000-byte cut on long lines could split a
+  UTF-8 character. Lines of any length are now read, kept to 2,000 bytes on
+  a character boundary, and marked with how much was cut. Images were typed
+  by their extension and sent unchecked; an empty file, a mislabelled one, or
+  one over the API's limits was rejected, and because it stayed in the
+  conversation, rejected on every later request. The type now comes from the
+  file's content (a PNG named `.jpg` is sent as a PNG), and empty files,
+  non-images, and images over 5 MB or 8,000 pixels on a side are refused with
+  a message saying why. Upstream 2.1.122/2.1.126/2.1.144/2.1.145/2.1.157/
+  2.1.166.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
