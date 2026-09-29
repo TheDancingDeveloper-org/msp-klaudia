@@ -81,6 +81,15 @@ port mirrors (see `internal/version`).
   streamjson, lsp, browser and mcp take statement coverage from 72.0% to 88.7%.
   The suite was stress-tested with shuffled order, `GOMAXPROCS=1`, and 2x CPU
   oversubscription under `-race`. See `docs/testing.md`.
+- **Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 in the model table.** Their
+  context windows (1M) and output caps (128k) are known, so compaction and
+  the status bar's context gauge are right when you pick one with
+  `--model claude-opus-5-5` (or `claude-sonnet-5-5`, `claude-fable-5-1`).
+  Before, they fell back to the unknown-model defaults: no context window,
+  and an 8,192-token output cap. The `opus`/`sonnet`/`fable` aliases stay
+  on the 5.0 models for now: Opus 5.5 and Fable 5.1 reject, for newer
+  accounts, a conversation whose earlier turns were edited, and Klaudia's
+  microcompaction and repair edit earlier turns.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
