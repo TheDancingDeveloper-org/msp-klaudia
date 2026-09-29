@@ -31,6 +31,7 @@ func trust(t *testing.T, dir string) {
 func TestLoadProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `provider = "anthropic"
 model = "sonnet"
 `)
@@ -72,6 +73,7 @@ func TestLoadFallbackModelProjectOverridesHome(t *testing.T) {
 func TestLoadThemeProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `theme = "nord"`)
 
 	// Global-only: inherited.
@@ -91,6 +93,7 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, "[permissions]\nmode = \"acceptEdits\"\n")
 
 	// Global-only → inherited.
@@ -109,6 +112,7 @@ func TestLoadPermissionModeOverridesHome(t *testing.T) {
 func TestLoadBrowserProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `
 [browser]
 engine = "chrome"
@@ -171,6 +175,7 @@ func TestResolveAPIKey(t *testing.T) {
 func TestLoadPermissionsAccumulate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `
 [permissions]
 allow = ["Edit"]
@@ -334,6 +339,7 @@ func TestAppendProjectPermissionRefusesBrokenFile(t *testing.T) {
 
 func TestLoadMissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	cfg := mustLoad(t, t.TempDir())
 	if cfg.Provider != "" {
 		t.Errorf("expected empty config, got %+v", cfg)
@@ -343,6 +349,7 @@ func TestLoadMissingIsEmpty(t *testing.T) {
 func TestExtraHeadersEnvMergeOverlaysPerKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	writeConfig(t, home, `provider = "openai"
 baseURL = "https://x/v1"
 extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID_HOME", "X-Extra" = "X_HOME" }
@@ -414,12 +421,12 @@ func TestLoadSessionProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeConfig(t, home, "[session]\nautoResumeMaxAge = \"12h\"\n")
-	if cfg := Load(t.TempDir()); cfg.Session.AutoResumeMaxAge != "12h" {
+	if cfg := mustLoad(t, t.TempDir()); cfg.Session.AutoResumeMaxAge != "12h" {
 		t.Errorf("autoResumeMaxAge = %q, want 12h (from home)", cfg.Session.AutoResumeMaxAge)
 	}
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "[session]\nautoResumeMaxAge = \"0\"\n")
-	if cfg := Load(cwd); cfg.Session.AutoResumeMaxAge != "0" {
+	if cfg := mustLoad(t, cwd); cfg.Session.AutoResumeMaxAge != "0" {
 		t.Errorf("autoResumeMaxAge = %q, want 0 (project wins)", cfg.Session.AutoResumeMaxAge)
 	}
 }

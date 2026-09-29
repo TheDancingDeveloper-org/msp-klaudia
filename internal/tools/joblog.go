@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/greenthread-ai/klaudia/internal/session"
 )
 
 // A job's output goes to a file, not a slice.
@@ -19,16 +21,11 @@ import (
 // `/logs` able to hand the user's own $PAGER something real.
 
 // jobLogDir is where job logs live, alongside the existing output spills.
-func jobLogDir(session string) string {
-	base := os.Getenv("KLAUDIA_CONFIG_DIR")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".klaudia")
+func jobLogDir(sess string) string {
+	if sess == "" {
+		sess = "default"
 	}
-	if session == "" {
-		session = "default"
-	}
-	return filepath.Join(base, "jobs", session)
+	return filepath.Join(session.ConfigRoot(), "jobs", sess)
 }
 
 // jobLog is an append-only log file with a byte cursor for incremental reads.

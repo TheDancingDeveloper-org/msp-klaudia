@@ -1,5 +1,6 @@
 // Package config loads Klaudia settings from .klaudia/config.toml — a project
-// .klaudia/ (in the working directory) overlaid on the user's ~/.klaudia/.
+// .klaudia/ (in the working directory) overlaid on the user's ~/.klaudia/
+// (or $KLAUDIA_CONFIG_DIR; see Root).
 // This selects the model provider/endpoint, e.g. an OpenAI-compatible cloud.
 package config
 
@@ -231,7 +232,7 @@ type Browser struct {
 	ChromePath string `toml:"chromePath,omitempty"`
 	// RemoteURL attaches to an existing Chrome DevTools endpoint instead of launching.
 	RemoteURL string `toml:"remoteUrl,omitempty"`
-	// UserDataDir stores Chrome profile state/cookies. Defaults to ~/.klaudia/browser/chrome-profile.
+	// UserDataDir stores Chrome profile state/cookies. Defaults to browser/chrome-profile under Root (~/.klaudia).
 	UserDataDir string `toml:"userDataDir,omitempty"`
 	// HeadedFallback relaunches headed Chrome for user-assisted search challenge handling.
 	HeadedFallback *bool `toml:"headedFallback,omitempty"`
@@ -312,12 +313,13 @@ func contains(ss []string, s string) bool {
 	return false
 }
 
-// LoadHome reads only ~/.klaudia/config.toml: the project's file is not read
-// at all. Used by --safe-mode.
+// LoadHome reads only the global config (GlobalPath: ~/.klaudia/config.toml,
+// or $KLAUDIA_CONFIG_DIR/config.toml): the project's file is not read at all.
+// Used by --safe-mode.
 func LoadHome() (Config, error) {
 	var cfg Config
-	if home, err := os.UserHomeDir(); err == nil {
-		c, warn, err := read(filepath.Join(home, ".klaudia", "config.toml"))
+	if p := GlobalPath(); p != "" {
+		c, warn, err := read(p)
 		if err != nil {
 			return Config{}, err
 		}

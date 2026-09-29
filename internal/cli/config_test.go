@@ -42,6 +42,7 @@ func TestCreateConfig(t *testing.T) {
 			home := t.TempDir()
 			cwd := t.TempDir()
 			t.Setenv("HOME", home)
+			t.Setenv("KLAUDIA_CONFIG_DIR", "")
 
 			path, err := createConfig(tt.scope, cwd)
 			if err != nil {
@@ -145,6 +146,7 @@ func TestStarterConfigRoundtripsContextWindow(t *testing.T) {
 	// case where the toml tag drifts from the example line.
 	cwd := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	path, err := createConfig("local", cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -228,5 +230,39 @@ func TestUnknownConfigKeyWarnsAndRuns(t *testing.T) {
 	}
 	if !strings.Contains(stderr, `config.toml:5: unknown key "modle", ignored`) {
 		t.Errorf("stderr %q does not warn about the unknown key", stderr)
+	}
+}
+
+// --create-config=global and /doctor's config check must use the same file
+// config.Load reads: $KLAUDIA_CONFIG_DIR/config.toml when the variable is set.
+func TestCreateConfigGlobalHonoursKlaudiaConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(t.TempDir(), "klaudia-config")
+	t.Setenv("KLAUDIA_CONFIG_DIR", dir)
+	cwd := t.TempDir()
+
+	if configFileExists(cwd) {
+		t.Fatal("configFileExists = true before any config was written")
+	}
+	path, err := createConfig("global", cwd)
+	if err != nil {
+		t.Fatalf("createConfig() error = %v", err)
+	}
+	if want := filepath.Join(dir, "config.toml"); path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".klaudia", "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("~/.klaudia/config.toml was written despite KLAUDIA_CONFIG_DIR (stat err = %v)", err)
+	}
+	if !configFileExists(cwd) {
+		t.Error("configFileExists = false after writing $KLAUDIA_CONFIG_DIR/config.toml")
+	}
+	cfg, lerr := config.Load(cwd)
+	if lerr != nil {
+		t.Fatalf("config.Load: %v", lerr)
+	}
+	if cfg.Provider != "openai" {
+		t.Errorf("config.Load provider = %q, want openai from the starter it just wrote", cfg.Provider)
 	}
 }

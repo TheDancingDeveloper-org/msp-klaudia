@@ -889,6 +889,15 @@ port mirrors (see `internal/version`).
   and sessions are still read, after the root's, so nothing recorded under the
   old key is orphaned; new writes go to the root. Tools, config and the
   `Working directory` the model sees still use the launch directory.
+- **`KLAUDIA_CONFIG_DIR` now moves `config.toml` and user skills too.** Sessions,
+  the global `.mcp.json`, job logs and the browser profile already followed it,
+  but the global `config.toml` was still read from `~/.klaudia`,
+  `--create-config=global` wrote there, `/doctor` looked there for "config
+  found", and user skills were read from `~/.klaudia/skills` — so a relocated
+  config dir silently ran on another file's settings. Every caller now resolves
+  the directory through one helper, `config.Root()` (`$KLAUDIA_CONFIG_DIR`,
+  else `~/.klaudia`). If you set `KLAUDIA_CONFIG_DIR` and kept `config.toml` or
+  `skills/` in `~/.klaudia`, move them into that directory.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

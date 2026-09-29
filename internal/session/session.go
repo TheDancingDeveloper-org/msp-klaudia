@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/greenthread-ai/klaudia/internal/config"
 )
 
 // maxDirLen is the project-dir name length cap before truncation+hash (q0A=200).
@@ -21,14 +23,14 @@ const maxDirLen = 200
 
 var nonAlnum = regexp.MustCompile(`[^a-zA-Z0-9]`)
 
-// ConfigRoot returns ~/.klaudia (honoring KLAUDIA_CONFIG_DIR).
+// ConfigRoot returns config.Root() — ~/.klaudia, honouring KLAUDIA_CONFIG_DIR.
+// When neither can be resolved it falls back to a relative ".klaudia", as it
+// always has, so callers that join paths under it never get a bare "sessions".
 func ConfigRoot() string {
-	base := os.Getenv("KLAUDIA_CONFIG_DIR")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, ".klaudia")
+	if root := config.Root(); root != "" {
+		return root
 	}
-	return base
+	return ".klaudia"
 }
 
 // SessionsRoot returns ~/.klaudia/sessions (honoring KLAUDIA_CONFIG_DIR).

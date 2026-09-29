@@ -1,9 +1,9 @@
 // Package skill loads reusable prompt/command skills from Markdown files with
 // YAML frontmatter. The skills bundled into the binary come first, then
-// ~/.claude/skills, ~/.klaudia/skills, <root>/.claude/skills and
-// <root>/.klaudia/skills (root being the project root, the git top-level), then
-// the same two under cwd when it is a subdirectory, in that order of increasing
-// precedence — the same
+// ~/.claude/skills, ~/.klaudia/skills (under config.Root, so KLAUDIA_CONFIG_DIR
+// moves it), <root>/.claude/skills and <root>/.klaudia/skills (root being the
+// project root, the git top-level), then the same two under cwd when it is a
+// subdirectory, in that order of increasing precedence — the same
 // user-then-project overlay as config.Load and mcp.LoadConfig, extended to the
 // directories the wider ecosystem installs into.
 //
@@ -30,6 +30,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/greenthread-ai/klaudia/internal/config"
 )
 
 // Skill types.
@@ -111,10 +113,10 @@ func load(root, cwd string, project bool, warn func(string)) []Skill {
 	// each level, so a project can override an installed skill by name.
 	dirs := make([]string, 0, 4)
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs,
-			filepath.Join(home, ".claude", "skills"),
-			filepath.Join(home, ".klaudia", "skills"),
-		)
+		dirs = append(dirs, filepath.Join(home, ".claude", "skills"))
+	}
+	if cfgRoot := config.Root(); cfgRoot != "" {
+		dirs = append(dirs, filepath.Join(cfgRoot, "skills"))
 	}
 	if project {
 		for _, d := range projectDirs(root, cwd) {

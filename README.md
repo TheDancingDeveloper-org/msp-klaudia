@@ -43,10 +43,12 @@ Prefer to build from a checkout? See [Build](#build).
 ### Create a config (optional but recommended)
 
 Klaudia reads `~/.klaudia/config.toml` automatically for every run; a project
-`./.klaudia/config.toml` overlays it when present. Generate a commented starter:
+`./.klaudia/config.toml` overlays it when present. `KLAUDIA_CONFIG_DIR` replaces
+`~/.klaudia` as the user directory — config, `.mcp.json`, skills, sessions, job
+logs and the browser profile all move with it. Generate a commented starter:
 
 ```bash
-klaudia --create-config=global   # ~/.klaudia/config.toml  (your default)
+klaudia --create-config=global   # ~/.klaudia/config.toml  (your default; honours KLAUDIA_CONFIG_DIR)
 # or:
 klaudia --create-config=local    # ./.klaudia/config.toml  (project override)
 ```
@@ -603,9 +605,10 @@ too, since they go through the same provider. The
 OpenAI-compatible provider translates the Anthropic message shape to Chat
 Completions (including image tool-results → `image_url`).
 
-`~/.klaudia/config.toml` is the user default; a project `./.klaudia/config.toml`
-overlays it (project wins). Settings merge per field. The provider, endpoint and
-key settings apply from a project file only once the folder is trusted (see
+`~/.klaudia/config.toml` (or `$KLAUDIA_CONFIG_DIR/config.toml`) is the user
+default; a project `./.klaudia/config.toml` overlays it (project wins). Settings
+merge per field. The provider, endpoint and key settings apply from a project
+file only once the folder is trusted (see
 [Create a config](#create-a-config-optional-but-recommended)).
 
 A config file that does not parse stops Klaudia before anything runs (exit 2),
@@ -896,7 +899,8 @@ launch directory is a subdirectory, its own `.claude/skills/` and
 
 `.claude` is included because that is where the ecosystem's skill installers
 put things (`anthropics/skills` and friends), for the same reason Klaudia reads
-`~/.claude/CLAUDE.md`. Either layout works in any of them:
+`~/.claude/CLAUDE.md`. `~/.klaudia/skills/` follows `KLAUDIA_CONFIG_DIR` when it
+is set; `~/.claude/skills/` does not. Either layout works in any of them:
 
 ```
 skills/review.md            # one file per skill
@@ -1116,8 +1120,8 @@ tools.
   tools of their own (the reference was Anthropic-only, and used its server-side
   `web_search`/`web_fetch` — which Klaudia still prefers on Claude models,
   because their results come back cited).
-- Config and sessions live under `~/.klaudia` (`KLAUDIA_CONFIG_DIR`), not
-  `~/.claude`.
+- Config, skills and sessions live under `~/.klaudia` (or wherever
+  `KLAUDIA_CONFIG_DIR` points), not `~/.claude`.
 - New capabilities with no reference analogue: language-server code intelligence
   (Diagnostics/Definition/References/WorkspaceSymbol), OS/container Bash sandboxing, persisted
   resume summaries, project `KNOWLEDGE.md`, an index→detail memory store,
