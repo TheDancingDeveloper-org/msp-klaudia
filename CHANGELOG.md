@@ -268,6 +268,13 @@ port mirrors (see `internal/version`).
   file is created as before, under the umask. Write also sent the model's LF
   line endings over a CRLF file, turning every line into a diff; it now
   matches the file it replaces, as Edit already did. Upstream 2.1.77/2.1.181.
+- **A command that prints without end no longer grows Klaudia's memory
+  without end.** Bash output was collected whole in memory and trimmed only
+  afterwards, so `yes`, a verbose build or a runaway log could exhaust memory
+  before the trim ran. Each of stdout and stderr now keeps its first and last
+  8 MiB while the command runs, counting what it drops between them, and says
+  so in the output. The model still sees the usual head and tail. Upstream
+  2.1.247/2.1.252/2.1.265.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
