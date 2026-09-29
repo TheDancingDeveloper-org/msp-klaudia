@@ -246,6 +246,14 @@ port mirrors (see `internal/version`).
   byte-order mark had its frontmatter read as body; the mark is now skipped.
   `${CLAUDE_SKILL_DIR}` and `${KLAUDIA_SKILL_DIR}` in a skill body become the
   skill file's directory. Upstream 2.1.69/2.1.239.
+- **MCP results other than text reach the model.** Only text content was
+  kept: an image, an embedded resource or a structuredContent-only result
+  arrived as an empty string, so a screenshot tool that worked looked like
+  one that returned nothing. PNG, JPEG, GIF and WebP images now become image
+  blocks (as Read's do); embedded resources contribute their text or image,
+  or a line naming the binary; audio, resource links and other image types
+  are named; structuredContent is shown as JSON when there is no text; and
+  an empty result says so. Upstream 2.1.113/2.1.128/2.1.136/2.1.268/2.1.283.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
