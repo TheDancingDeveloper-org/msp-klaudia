@@ -231,6 +231,23 @@ port mirrors (see `internal/version`).
   next lands before Klaudia's next step. Both prompts end with `(esc cancels
   turn)`, because Esc is not "no" — it ends the whole turn.
 
+### Changed
+- **The always-loaded toolset is trimmed: the Browser and Task tools are now
+  deferred.** They join the MCP tools behind `ToolSearch` — withheld from every
+  request's standing tool list and revealed on demand — instead of riding in
+  eagerly. This removes eight tools (`BrowserSearch`, `BrowserFetch`,
+  `BrowserNavigate`, `BrowserSnapshot`, `TaskCreate`, `TaskList`, `TaskGet`,
+  `TaskUpdate`) from the request every turn carries, and its cached prompt
+  prefix, on the many turns that never touch them. The Browser tools' own
+  descriptions already tell the model to prefer the server-side
+  `web_search`/`web_fetch` on Claude models, so they were fallbacks the request
+  paid for on every turn regardless; the four-tool Task store is distinct from
+  the `TodoWrite` planning checklist, which stays eager because nearly every
+  non-trivial turn uses it. The tools stay registered and work the instant
+  `ToolSearch` reveals them; a session with no MCP servers now trims its
+  toolset too (previously `ToolSearch` was registered only when MCP tools were
+  present). The common edit/read/bash/search core is untouched.
+
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
   `--resume`, an unknown `--output-format`, and an unknown `--create-config`
