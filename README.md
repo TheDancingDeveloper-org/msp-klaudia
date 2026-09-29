@@ -390,6 +390,10 @@ defaults to 24 hours:
 autoResumeMaxAge = "24h"   # a Go duration or whole days ("7d"); "0" disables the cutoff
 ```
 
+`/clear` starts a new session id. The cleared conversation stays on disk as its
+own session (`/clear` prints the `-r <id>` that reopens it) and is not what the
+next launch auto-resumes — not even when you clear and quit straight away.
+
 Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
 (override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
 transcripts from `~/.klaudia/projects/<encoded-cwd>/` during migration. When a

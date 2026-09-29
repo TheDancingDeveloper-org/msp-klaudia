@@ -103,6 +103,11 @@ type Session struct {
 	// and what the classifier has found. Nil when there is no gate, which
 	// /trust reports rather than hiding.
 	Trust TrustController
+	// Rotate, if set, ends the session being recorded and starts a new one,
+	// returning the new id and the one it ended ("" when that recorded
+	// nothing). Backs /clear, so a cleared conversation stays behind as its own
+	// session instead of being auto-resumed. Nil only clears memory.
+	Rotate func() (newID, prevID string)
 }
 
 // MCPController lets the TUI manage MCP servers without owning the manager.
@@ -2025,11 +2030,21 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		m.pastes.reset()
 		m.results.reset()
 		m.nav = nil
+		// A new session from here on: the cleared conversation keeps its own
+		// transcript (and summary) and is no longer what auto-resume picks.
+		msg := "Cleared conversation. Earlier output remains in terminal scrollback."
+		if m.sess.Rotate != nil {
+			newID, prevID := m.sess.Rotate()
+			m.sess.SessionID = newID
+			if prevID != "" {
+				msg += "\nThe cleared conversation is saved: klaudia --resume " + prevID
+			}
+		}
 		// Erase the visible screen, but deliberately not the scrollback: ESC[3J
 		// would destroy whatever the user had in the terminal before Klaudia
 		// started, and in tmux it wipes the whole pane's history. Earlier output
 		// stays scrollable, which is the point of rendering inline.
-		m.appendLine(bannerStyle.Render("Cleared conversation. Earlier output remains in terminal scrollback."))
+		m.appendLine(bannerStyle.Render(msg))
 		return m, tea.Sequence(tea.ClearScreen, m.out.drainCmd())
 	case "/search":
 		return m, m.searchConversation(args)

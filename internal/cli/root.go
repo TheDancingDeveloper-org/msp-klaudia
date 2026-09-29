@@ -760,16 +760,34 @@ func vetAutoResume(cwd, id string, maxAge time.Duration, now time.Time) (string,
 		return "", fmt.Sprintf("Last session %s was active %s, past autoResumeMaxAge (%s) — starting fresh. --continue or -r %s resumes it.",
 			id, humanAgo(age), configDuration(maxAge), id)
 	}
-	entries, err := session.Read(path)
-	if err == nil && session.LastTurnRefused(entries) {
-		return "", "Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume " + id + " to see it."
+	if why := autoResumeVeto(cwd, id); why != "" {
+		return "", why
 	}
+	entries, _ := session.Read(path)
 	messages := fmt.Sprintf("%d messages", len(entries))
 	if len(entries) == 1 {
 		messages = "1 message"
 	}
 	return id, fmt.Sprintf("Resumed %s · %s · last active %s · --new-session to start fresh",
 		id, messages, humanAgo(age))
+}
+
+// autoResumeVeto says why auto-resume should start fresh instead of reviving
+// session id, or returns "" when it may resume it.
+//
+//   - It ended in a model refusal: its context keeps tripping the refusal, so
+//     every prompt in the resumed session — even an unrelated one — refuses too.
+//   - Its last act was /clear, with nothing said after it (so it is still the
+//     newest transcript): reviving it would undo the clear.
+func autoResumeVeto(cwd, id string) string {
+	path := resumeTranscript(cwd, id)
+	if entries, err := session.Read(path); err == nil && session.LastTurnRefused(entries) {
+		return "Last session ended in a model refusal — starting fresh. Its history is left on disk; --resume " + id + " to see it."
+	}
+	if session.EndsCleared(path) {
+		return "Last session was cleared — starting fresh. --resume " + id + " to reopen it."
+	}
+	return ""
 }
 
 // humanAgo renders an age as "just now" or "3d ago".
@@ -1375,48 +1393,39 @@ func run(cmd *cobra.Command, opts *options) error {
 
 	// Open the transcript for this session (best effort: a transcript failure
 	// should not abort the run).
-	var recorder agent.Recorder
-	var transcript *session.Transcript
-	if tr, terr := session.NewTranscript(session.Meta{
+	// The TUI's /clear rotates it to a new session id, so what records or names
+	// the session mid-run reads it from here rather than from sessionID.
+	sessRec := newSessionRecorder(session.Meta{
 		SessionID:      sessionID,
 		CWD:            cwd,
 		Version:        version.Version,
 		GitBranch:      gitBranch(cwd),
 		PermissionMode: string(mode),
 		Path:           transcriptPath,
-	}); terr == nil {
-		defer func() { _ = tr.Close() }()
-		recorder = tr
-		transcript = tr
-	}
+	})
+	defer func() { _ = sessRec.Close() }()
+	recorder := agent.Recorder(sessRec)
 
 	loop := agent.New(provider, registry)
 
-	// rewindFn is defined inline so the closure is nil when no transcript was
-	// opened, which is how tui.Session.Rewind signals "in-memory only".
-	rewindFn := func(tr *session.Transcript) func(int) error {
-		if tr == nil {
-			return nil
-		}
-		return func(dropMessages int) error {
-			_, err := tr.DropLastMessages(dropMessages)
+	// rewindFn is nil when no transcript was opened, which is how
+	// tui.Session.Rewind signals "in-memory only". It drops through the
+	// recorder so a rewind after /clear acts on the current transcript.
+	var rewindFn func(int) error
+	if sessRec.HasTranscript() {
+		rewindFn = func(dropMessages int) error {
+			_, err := sessRec.DropLastMessages(dropMessages)
 			return err
 		}
 	}
 
-	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
-	// The boundary marks where in the transcript this summary was taken, so a
-	// resume can seed from it and still replay the messages recorded after it.
-	// Every caller runs this before the loop records its next message.
+	// Persist compaction summaries for token-saving resume (a Klaudia divergence),
+	// under whichever session is current: after /clear, the new one. The
+	// boundary marks where in the transcript this summary was taken, so a resume
+	// can seed from it and still replay the messages recorded after it.
 	onSummary := func(summary string) {
-		if transcript != nil {
-			_ = transcript.MarkCompaction()
-		}
-		if transcriptPath != "" {
-			_ = session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
-			return
-		}
-		_ = session.WriteSummary(cwd, sessionID, summary, gitCommit(cwd))
+		_ = sessRec.MarkCompaction()
+		_ = session.WriteSummaryAt(sessRec.SummaryPath(), sessRec.ID(), summary, gitCommit(cwd))
 	}
 
 	// Interactive TUI: the default when not headless and not stream-json input.
@@ -1462,7 +1471,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			},
 			// Nil unless a transcript was opened; /rewind then edits only the
 			// in-memory conversation.
-			Rewind: rewindFn(transcript),
+			Rewind: rewindFn,
 
 			Doctor: func() string {
 				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, len(mcpCfg.MCPServers))))
@@ -1473,6 +1482,7 @@ func run(cmd *cobra.Command, opts *options) error {
 			Trust:      tui.NewTrustController(hostGate),
 			Jobs:       jobStore,
 			Executor:   executor,
+			Rotate:     sessRec.Rotate,
 		}
 		extraDirs = func() []string { return sess.ExtraDirs }
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
