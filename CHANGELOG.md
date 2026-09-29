@@ -5,6 +5,15 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Security
+- **Plan mode is no longer bypassed by allow rules.** `permission.Check`
+  consulted allow rules before a tool's intrinsic decision, which is where plan
+  mode's read-only refusal lives, so with `Bash(git:*)` or `Edit` allowed, plan
+  mode ran the command or wrote the file. A tool that refuses in plan mode is
+  now refused whatever the allow list says. One consequence: MCP tools, which
+  refuse in plan mode, are refused even when their server is allow-listed.
+  Upstream 2.1.136.
+
 ### Added
 - **Layered testing, and an e2e layer that needs no credential.** `e2e/` builds
   the real binary and runs it against `FakeModel`, a scripted stand-in for the
