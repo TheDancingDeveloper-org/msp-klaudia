@@ -78,6 +78,17 @@ port mirrors (see `internal/version`).
   that fail to launch are named, capped at three with a count of the rest, and
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
+- **Tab completes slash-command arguments.** Tab after `/<cmd> ` used to fall
+  through to `@path` completion. It now offers what the command takes: `/theme`
+  themes, `/mode` modes, `/logs`, `/restart` and `/stopjob` jobs (and the
+  `/logs` flags after a `-`), `/last` result numbers and `list`, `/unpin` pinned
+  files, and `/trust` subcommands and, after `revoke`, the live approval ids.
+  `/model` completes from the list the last `/model` fetched and never fetches
+  on Tab; before any fetch it says how to get one. One match is filled in with a
+  space so the next Tab moves on; several are listed and extended to their
+  common prefix, then cycled. Commands without a completer, and an argument
+  typed as `@…`, keep `@path` completion. Each completer lives on its entry in
+  the command table.
 
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
