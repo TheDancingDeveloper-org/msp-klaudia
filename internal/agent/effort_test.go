@@ -4,21 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
-
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
-
-// paramsProvider records each full request.
-type paramsProvider struct {
-	sent []anthropic.BetaMessageNewParams
-}
-
-func (p *paramsProvider) StreamTurn(_ context.Context, params anthropic.BetaMessageNewParams, _ api.StreamSink) (anthropic.BetaMessage, error) {
-	p.sent = append(p.sent, params)
-	return anthropic.BetaMessage{StopReason: "end_turn"}, nil
-}
 
 func TestRunSendsConfiguredEffortAndThinking(t *testing.T) {
 	p := &paramsProvider{}

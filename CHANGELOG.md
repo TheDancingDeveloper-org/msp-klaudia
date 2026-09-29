@@ -825,6 +825,13 @@ port mirrors (see `internal/version`).
   accepted without a word; it is now a `warning:` on stderr naming the file,
   line and key, and the rest of the file still applies, so a config written for
   a newer or older Klaudia still starts.
+- **Compaction no longer pays full price for the whole conversation.** The
+  summary request, for both autocompact and `/compact`, left out the system
+  prompt and tools, so it shared no prefix with the conversation's cached
+  requests and every token of the history — the session's largest request —
+  was billed uncached. It now carries the same system prompt and tools, which
+  also define the `tool_use` blocks in the history it sends, and the summary
+  instruction tells the model not to call them.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
