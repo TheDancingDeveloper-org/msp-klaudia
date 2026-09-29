@@ -80,6 +80,12 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Memory notes were lost once any detail note existed.** With a file under
+  `.klaudia/memory/`, MEMORY.md ends with its `## Linked memory` section, and
+  each new bullet was appended to the end of the file — inside that section —
+  which the refresh after the add then rebuilt without it. Every note added
+  after the first was silently dropped. New bullets now go above the linked
+  section, and the add is a single write (#97).
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
