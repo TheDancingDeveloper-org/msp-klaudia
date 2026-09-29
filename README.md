@@ -790,7 +790,8 @@ Klaudia talks to **language servers you already have installed** to give the
 agent real code intelligence:
 
 - `Diagnostics` — compiler/linter errors for a file (the edit → check → fix
-  loop).
+  loop). A server that doesn't report within 10s (still starting or indexing)
+  is returned as an error, not as a clean file.
 - `Definition` / `References` / `Implementation` — jump to a symbol's
   definition, find its uses, or find the concrete implementations of an
   interface.

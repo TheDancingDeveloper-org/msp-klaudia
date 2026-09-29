@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -13,8 +15,16 @@ import (
 const (
 	initializeTimeout = 30 * time.Second // servers like gopls index on init
 	requestTimeout    = 15 * time.Second
-	diagnosticsWait   = 10 * time.Second // wait for the server to push diagnostics
 )
+
+// diagnosticsWait bounds the wait for the server to push diagnostics for an
+// opened file. A variable so tests can shorten it.
+var diagnosticsWait = 10 * time.Second
+
+// ErrNoDiagnosticsReport means the server published nothing for the file
+// within diagnosticsWait. It is not "no problems": a server still starting or
+// indexing (a cold gopls or rust-analyzer) is silent, not clean.
+var ErrNoDiagnosticsReport = errors.New("did not report diagnostics")
 
 // Initialize performs the LSP handshake for a workspace root.
 func (c *Client) Initialize(ctx context.Context, root string) error {
@@ -95,7 +105,9 @@ func (c *Client) didClose(uri string) {
 }
 
 // Diagnostics opens path, waits for the server to publish diagnostics for it
-// (or a short timeout), and returns them. An empty slice means "no problems".
+// (or a short timeout), and returns them. An empty slice with a nil error means
+// the server reported no problems; if it reports nothing in time the error is
+// ErrNoDiagnosticsReport, never an empty "clean" answer.
 func (c *Client) Diagnostics(ctx context.Context, path, languageID string) ([]Diagnostic, error) {
 	uri := pathToURI(path)
 	// Register the waiter BEFORE opening, so a fast server push isn't missed
@@ -117,7 +129,14 @@ func (c *Client) Diagnostics(ctx context.Context, path, languageID string) ([]Di
 	select {
 	case <-wait:
 	case <-time.After(diagnosticsWait):
+		c.dropDiagWaiter(uri, wait)
+		// Whatever is stored predates this open (an earlier report, before
+		// the latest edit hit disk), so it is not an answer either.
+		return nil, fmt.Errorf("%s %w for %s within %s (it may still be starting or indexing the workspace); "+
+			"this is not an all-clear — run Diagnostics again shortly",
+			filepath.Base(c.cmd.Path), ErrNoDiagnosticsReport, path, diagnosticsWait)
 	case <-ctx.Done():
+		c.dropDiagWaiter(uri, wait)
 		return nil, ctx.Err()
 	}
 	c.mu.Lock()
@@ -128,8 +147,9 @@ func (c *Client) Diagnostics(ctx context.Context, path, languageID string) ([]Di
 	return c.diags[uri], nil
 }
 
-// dropDiagWaiter unregisters one Diagnostics waiter. A no-op if a publish (or
-// failAll) already consumed it.
+// dropDiagWaiter unregisters a waiter that gave up, so a server that never
+// publishes for uri doesn't accumulate one per Diagnostics call. A no-op if a
+// publish (or failAll) already consumed it.
 func (c *Client) dropDiagWaiter(uri string, wait chan struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
