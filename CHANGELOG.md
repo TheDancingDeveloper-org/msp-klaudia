@@ -6,6 +6,17 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Sub-agents defined in markdown.** Only the three built-in sub-agents
+  existed, so agent definitions written for Claude Code — including those in
+  its own plugins — could not be used. Files in `~/.claude/agents`,
+  `~/.klaudia/agents`, `.claude/agents` and `.klaudia/agents` now define
+  sub-agents (name, description, tools, model; the body is the system
+  prompt), a later one replacing an earlier or a built-in of the same name.
+  The frontmatter is read leniently, as those files are written with prose
+  that is not YAML: all 15 agents in the upstream `claude-code` plugins
+  parse. `subagent_type` matching ignores case and separators (`explore`,
+  `general_purpose`), and an agent's Claude `model` is ignored on an
+  OpenAI-compatible provider. Upstream 2.1.140 and the plugins directory.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
