@@ -69,8 +69,18 @@ type Session struct {
 	ContextWindowSource string
 
 	// Compact, if set, runs a model-based compaction of the given history and
-	// returns the replacement history plus the summary. Backs /compact.
+	// returns the replacement history plus the summary. The focus is optional
+	// free text the user typed after /compact; it is empty for a plain /compact.
+	// Backs /compact.
 	Compact CompactFunc
+	// ReadSummary, if set, returns the current/last persisted compaction summary
+	// for this session and whether one exists. Backs /summary. Nil when no
+	// summary store is wired (e.g. tests), which /summary reports rather than
+	// pretending there is nothing to show.
+	ReadSummary func() (summary string, ok bool)
+	// SaveSummary, if set, persists an edited compaction summary, replacing the
+	// stored one. Backs /summary edit. Nil disables editing.
+	SaveSummary func(summary string) error
 	// Doctor, if set, returns a rendered environment diagnostic. Backs /doctor.
 	Doctor func() string
 	// ListModels, if set, enumerates the models the configured provider serves,
@@ -130,8 +140,10 @@ type MCPReloadEvent struct {
 func (e MCPReloadEvent) Failed() bool { return e.ConfigErr != "" || len(e.ServerErrs) > 0 }
 
 // CompactFunc summarizes the conversation history via the model, returning the
-// replacement history and the summary text.
-type CompactFunc func(ctx context.Context, history []anthropic.BetaMessageParam) (newHistory []anthropic.BetaMessageParam, summary string, err error)
+// replacement history and the summary text. A non-empty focus is threaded into
+// the summary request so it emphasizes what the user named; an empty focus is
+// the default compaction.
+type CompactFunc func(ctx context.Context, history []anthropic.BetaMessageParam, focus string) (newHistory []anthropic.BetaMessageParam, summary string, err error)
 
 // AgentInfo is the model-facing summary of a sub-agent type, shown by /agents.
 type AgentInfo struct {
@@ -350,6 +362,11 @@ type Model struct {
 	// so they survive compaction, which is the only way "keep this in mind"
 	// still means something forty turns later.
 	pinned []string
+	// lastSummary is the most recent compaction summary produced this session,
+	// kept so /summary can show it without a disk read. Empty until the first
+	// /compact (or autocompact) of the session; /summary falls back to the
+	// persisted summary when this is empty.
+	lastSummary string
 	// checkpoints is the undo stack: the contents of files, as git blobs, from
 	// just before Klaudia changed them.
 	checkpoints checkpointStack
@@ -1010,12 +1027,16 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case summaryEditDoneMsg:
+		return m.onSummaryEditDone(msg)
+
 	case compactDoneMsg:
 		if msg.err != nil {
 			m.appendLine(errStyle.Render("compact: " + api.FriendlyError(msg.err)))
 		} else {
 			m.history = msg.history
-			m.appendLine(bannerStyle.Render("Compacted conversation. Summary:\n" + strings.TrimSpace(msg.summary)))
+			m.lastSummary = strings.TrimSpace(msg.summary)
+			m.appendLine(bannerStyle.Render("Compacted conversation. Summary:\n" + m.lastSummary))
 		}
 		m.setState(stateIdle)
 		m.input.Focus()
@@ -1473,7 +1494,8 @@ var commandList = []cmdInfo{
 	{"/pin", "[path]", "Keep a file in context every turn (survives compaction)"},
 	{"/unpin", "<path>", "Stop pinning a file"},
 	{"/forget", "<path>", "Drop a file from the tracked context"},
-	{"/compact", "", "Summarize and compact the conversation history now"},
+	{"/compact", "[focus]", "Summarize and compact history now (focus text emphasizes what to keep)"},
+	{"/summary", "[edit]", "Show the last compaction summary; 'edit' opens it in $EDITOR to revise"},
 	{"/add-dir", "<path>", "Add a directory to the prompt context"},
 	{"/plan", "[off]", "Enter (or leave) read-only plan mode"},
 	{"/doctor", "", "Run environment diagnostics"},
@@ -2124,13 +2146,20 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 			m.appendLine(bannerStyle.Render("Nothing to compact yet."))
 			break
 		}
-		m.appendLine(bannerStyle.Render("Compacting conversation…"))
+		focus := strings.TrimSpace(strings.Join(args, " "))
+		if focus != "" {
+			m.appendLine(bannerStyle.Render("Compacting conversation, focusing on: " + focus + "…"))
+		} else {
+			m.appendLine(bannerStyle.Render("Compacting conversation…"))
+		}
 		m.setState(stateRunning)
-		go func(hist []anthropic.BetaMessageParam) {
-			newHist, summary, err := m.sess.Compact(m.ctx, hist)
+		go func(hist []anthropic.BetaMessageParam, focus string) {
+			newHist, summary, err := m.sess.Compact(m.ctx, hist, focus)
 			m.events <- compactDoneMsg{history: newHist, summary: summary, err: err}
-		}(m.history)
+		}(m.history, focus)
 		return m, m.spin.Tick
+	case "/summary":
+		return m.summaryCommand(args)
 	case "/plan":
 		if len(args) > 0 && strings.ToLower(args[0]) == "off" {
 			m.sess.PermissionMode = string(permission.ModeDefault)

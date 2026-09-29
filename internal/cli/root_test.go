@@ -107,7 +107,9 @@ func TestResolveResumeIDHeadlessDoesNotAutoResume(t *testing.T) {
 }
 func TestCompactAndPersistWritesSummaryOnSuccess(t *testing.T) {
 	called := false
-	_, summary, err := compactAndPersist(context.Background(), nil, func(context.Context, []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
+	gotFocus := ""
+	_, summary, err := compactAndPersist(context.Background(), nil, "auth flow", func(_ context.Context, _ []anthropic.BetaMessageParam, focus string) ([]anthropic.BetaMessageParam, string, error) {
+		gotFocus = focus
 		return []anthropic.BetaMessageParam{anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock("summary"))}, "summary", nil
 	}, func(got string) {
 		called = true
@@ -121,6 +123,9 @@ func TestCompactAndPersistWritesSummaryOnSuccess(t *testing.T) {
 	if summary != "summary" {
 		t.Errorf("summary = %q, want summary", summary)
 	}
+	if gotFocus != "auth flow" {
+		t.Errorf("focus = %q, want it threaded through to the compact func", gotFocus)
+	}
 	if !called {
 		t.Fatal("onSummary was not called")
 	}
@@ -128,7 +133,7 @@ func TestCompactAndPersistWritesSummaryOnSuccess(t *testing.T) {
 
 func TestCompactAndPersistSkipsSummaryOnError(t *testing.T) {
 	boom := errors.New("boom")
-	_, _, err := compactAndPersist(context.Background(), nil, func(context.Context, []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
+	_, _, err := compactAndPersist(context.Background(), nil, "", func(context.Context, []anthropic.BetaMessageParam, string) ([]anthropic.BetaMessageParam, string, error) {
 		return nil, "summary", boom
 	}, func(string) {
 		t.Fatal("onSummary should not be called")

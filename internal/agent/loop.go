@@ -437,9 +437,11 @@ func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessagePara
 // Compact unconditionally summarizes the conversation via the model and returns
 // the replacement history plus the summary text. Used by the TUI's /compact
 // command (the loop's own autocompact runs automatically near the context
-// limit). Returns an error if the summary call fails or yields no text.
-func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model) ([]anthropic.BetaMessageParam, string, error) {
-	req := compaction.BuildSummaryRequest(messages, model, 4096)
+// limit). A non-empty focus is passed through to the summary request so the
+// summary emphasizes what the user named; an empty focus is the default prompt.
+// Returns an error if the summary call fails or yields no text.
+func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model, focus string) ([]anthropic.BetaMessageParam, string, error) {
+	req := compaction.BuildSummaryRequest(messages, model, 4096, focus)
 	req.Betas = api.DefaultBetas
 	assistant, _, err := l.streamTurn(ctx, req, nil, nil)
 	if err != nil {
@@ -455,7 +457,9 @@ func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessagePara
 // autocompact summarizes the conversation via the model and replaces history
 // with the summary. Returns (messages, false) if the summary call fails.
 func (l *Loop) autocompact(ctx context.Context, messages []anthropic.BetaMessageParam, opts Options) ([]anthropic.BetaMessageParam, bool) {
-	req := compaction.BuildSummaryRequest(messages, opts.Model, 4096)
+	// Automatic compaction has no user focus: it summarizes the whole
+	// conversation with the default prompt.
+	req := compaction.BuildSummaryRequest(messages, opts.Model, 4096, "")
 	req.Betas = api.DefaultBetas
 	assistant, _, err := l.streamTurn(ctx, req, nil, nil)
 	if err != nil {

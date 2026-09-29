@@ -37,8 +37,8 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/version"
 )
 
-func compactAndPersist(ctx context.Context, history []anthropic.BetaMessageParam, compact tui.CompactFunc, onSummary func(string)) ([]anthropic.BetaMessageParam, string, error) {
-	newHistory, summary, err := compact(ctx, history)
+func compactAndPersist(ctx context.Context, history []anthropic.BetaMessageParam, focus string, compact tui.CompactFunc, onSummary func(string)) ([]anthropic.BetaMessageParam, string, error) {
+	newHistory, summary, err := compact(ctx, history, focus)
 	if err == nil && onSummary != nil {
 		onSummary(summary)
 	}
@@ -1041,13 +1041,16 @@ func run(cmd *cobra.Command, opts *options) error {
 	loop := agent.New(provider, registry)
 
 	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
-	onSummary := func(summary string) {
+	persistSummary := func(summary string) error {
 		if transcriptPath != "" {
-			_ = session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
-			return
+			return session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
 		}
-		_ = session.WriteSummary(cwd, sessionID, summary, gitCommit(cwd))
+		return session.WriteSummary(cwd, sessionID, summary, gitCommit(cwd))
 	}
+	// onSummary is the fire-and-forget persist used by autocompact and after a
+	// /compact; write failures were already swallowed here before, and a lost
+	// summary only costs a token-saving resume, not correctness.
+	onSummary := func(summary string) { _ = persistSummary(summary) }
 
 	// Interactive TUI: the default when not headless and not stream-json input.
 	// It drives the same loop, prompting the user to resolve permission asks.
@@ -1084,11 +1087,6 @@ func run(cmd *cobra.Command, opts *options) error {
 			Agents:              tuiAgents(),
 			ContextWindow:       ctxLimit,
 			ContextWindowSource: ctxSource,
-			Compact: func(ctx context.Context, history []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
-				return compactAndPersist(ctx, history, func(ctx context.Context, history []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
-					return loop.Compact(ctx, history, api.ResolveModel(modelStr))
-				}, onSummary)
-			},
 
 			Doctor: func() string {
 				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, len(mcpCfg.MCPServers))))
@@ -1100,6 +1098,17 @@ func run(cmd *cobra.Command, opts *options) error {
 			Jobs:       jobStore,
 			Executor:   executor,
 		}
+		// Assigned after the literal so the closures can read sess.Model live:
+		// /model updates sess.Model, and compaction must summarize with whatever
+		// model is selected now, not the one captured when the session was built.
+		sess.Compact = func(ctx context.Context, history []anthropic.BetaMessageParam, focus string) ([]anthropic.BetaMessageParam, string, error) {
+			return compactAndPersist(ctx, history, focus, func(ctx context.Context, history []anthropic.BetaMessageParam, focus string) ([]anthropic.BetaMessageParam, string, error) {
+				return loop.Compact(ctx, history, api.ResolveModel(sess.Model), focus)
+			}, onSummary)
+		}
+		// /summary reads the persisted summary and, on edit, writes it back.
+		sess.ReadSummary = func() (string, bool) { return session.ReadSummary(cwd, sessionID) }
+		sess.SaveSummary = persistSummary
 		extraDirs = func() []string { return sess.ExtraDirs }
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
 			// Permission mode reads live from the session every check, so a
