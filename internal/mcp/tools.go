@@ -11,6 +11,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/textsafe"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
@@ -156,7 +157,7 @@ func (m *Manager) Tools(ctx context.Context) []tools.Tool {
 			out = append(out, &mcpTool{
 				qualifiedName: fmt.Sprintf("mcp__%s__%s", srv.Name, rt.Name),
 				remoteName:    rt.Name,
-				description:   rt.Description,
+				description:   toolDescription(rt.Description),
 				inputSchema:   schema,
 				server:        srv,
 				readOnly:      readOnly,
@@ -240,3 +241,14 @@ func listTools(ctx context.Context, sess *mcpsdk.ClientSession) ([]*mcpsdk.Tool,
 
 // listRetryDelay is the pause before a failed tools/list is tried again.
 var listRetryDelay = 500 * time.Millisecond
+
+// maxToolDescription caps an MCP tool's description. A server writes it and
+// every request carries it: an uncapped one costs context on every turn, and
+// is the easiest place for a server to put instructions for the model.
+const maxToolDescription = 2048
+
+// toolDescription is a server's tool description with invisible characters
+// removed and its length capped.
+func toolDescription(d string) string {
+	return textsafe.Truncate(textsafe.StripInvisible(d), maxToolDescription, " […description truncated]")
+}
