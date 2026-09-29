@@ -6,6 +6,31 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **Claude Code credentials on Linux, `klaudia login`, and `ANTHROPIC_BASE_URL`.**
+  Three additions to the native Anthropic provider's auth.
+
+  Credential resolution now runs, first hit wins: `ANTHROPIC_API_KEY`
+  (`x-api-key`) → `ANTHROPIC_AUTH_TOKEN` (Bearer) → the `klaudia login` store
+  (`~/.klaudia/credentials.json`) → a borrowed Claude Code session. The last of
+  these was previously the macOS Keychain only; on Linux (and other non-darwin
+  platforms) Klaudia now also reads `~/.claude/.credentials.json`, so a user
+  already signed in to Claude Code need not re-enter a key. That file is parsed
+  defensively (missing file/keys/shapes tolerated): an OAuth access token under
+  `claudeAiOauth.accessToken` is used as a Bearer token — the header the SDK
+  already uses for a Keychain OAuth session — and is refreshed and written back
+  (0600, preserving unknown fields) when expired with a refresh token present;
+  a top-level `apiKey` is used as `x-api-key` when no OAuth token is present.
+
+  `klaudia login` stores an Anthropic API key to `~/.klaudia/credentials.json`
+  (0600), which the resolution chain reads as a fallback below the env vars.
+  It prompts without echo on a terminal, reads a piped line otherwise, and
+  takes `--api-key <k>` for scripts. A full interactive OAuth device flow is not
+  implemented (follow-up); Klaudia still reuses an existing Claude Code OAuth
+  session automatically.
+
+  `ANTHROPIC_BASE_URL` is now honoured for the Anthropic API base URL. Precedence:
+  explicit config `baseURL` wins, then `KLAUDIA_CUSTOM_ENDPOINT`
+  (`--custom-endpoint`), then `ANTHROPIC_BASE_URL`, then the production API.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
