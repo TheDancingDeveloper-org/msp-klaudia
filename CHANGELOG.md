@@ -80,6 +80,12 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **One transient API error no longer ends a `--loop` goal run.** The loop
+  returned on the first error from an iteration, so an overloaded response or
+  a stalled stream hours into a run stopped it. An iteration that fails
+  transiently (rate limit, 5xx or overload, stalled stream, network error) is
+  now retried after 30 s, 1 min and 2 min, reporting each retry; other errors
+  still stop the run at once. Upstream 2.1.269.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
