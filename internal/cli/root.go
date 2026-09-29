@@ -948,9 +948,15 @@ func run(cmd *cobra.Command, opts *options) error {
 	// applies in full only in a trusted folder, or when the launcher that
 	// wrote it says so.
 	projectTrusted := func() bool { return opts.trustedProjectConfig || config.IsTrustedProject(cwd) }
-	cfg := config.LoadTrusting(cwd, projectTrusted())
+	cfg, err := config.LoadTrusting(cwd, projectTrusted())
+	if err != nil {
+		return usageErrorf("config: %v", err)
+	}
 	if opts.safeMode {
-		cfg = config.LoadHome()
+		cfg, err = config.LoadHome()
+		if err != nil {
+			return usageErrorf("config: %v", err)
+		}
 		fmt.Fprintln(cmd.ErrOrStderr(), "safe mode: this project's .klaudia/config.toml, .mcp.json, skills, CLAUDE.md and memory are not loaded")
 	}
 	// safeMode loads only the home config, so a project cannot supply MCP

@@ -817,6 +817,14 @@ port mirrors (see `internal/version`).
   missing tool, bwrap that cannot run, a container mode with no image — an
   error at startup instead of a silent drop to unconfined execution.
   Upstream 2.1.83.
+- **A config that did not parse was silently ignored.** A TOML syntax error in
+  `~/.klaudia/config.toml` or `./.klaudia/config.toml` dropped the whole file and
+  the session started on defaults — another provider, another permission mode.
+  It is now a usage error (exit 2, as `exitcode.go` already documented) naming
+  the file, line and column. A key the schema does not know (`modle = "x"`) was
+  accepted without a word; it is now a `warning:` on stderr naming the file,
+  line and key, and the rest of the file still applies, so a config written for
+  a newer or older Klaudia still starts.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

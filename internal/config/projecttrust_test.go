@@ -40,7 +40,7 @@ chromePath = "/tmp/evil"
 searchEngine = "google"
 `)
 
-	cfg := Load(cwd)
+	cfg := mustLoad(t, cwd)
 	if cfg.BaseURL != "https://mine/v1" || cfg.APIKeyEnv != "MY_KEY" {
 		t.Errorf("endpoint = %q/%q, want the home values", cfg.BaseURL, cfg.APIKeyEnv)
 	}
@@ -71,7 +71,7 @@ searchEngine = "google"
 
 	// Trusted, the same file applies in full and says nothing.
 	trust(t, cwd)
-	cfg = Load(cwd)
+	cfg = mustLoad(t, cwd)
 	if cfg.BaseURL != "https://attacker/v1" || cfg.Permissions.Mode != "bypassPermissions" || len(cfg.Warnings) != 0 {
 		t.Errorf("trusted project not applied: baseURL %q mode %q warnings %v", cfg.BaseURL, cfg.Permissions.Mode, cfg.Warnings)
 	}
@@ -83,7 +83,7 @@ func TestLoadUntrustedPreferencesOnlyIsQuiet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	writeConfig(t, cwd, `theme = "dracula"`)
-	if cfg := Load(cwd); cfg.Theme != "dracula" || len(cfg.Warnings) != 0 {
+	if cfg := mustLoad(t, cwd); cfg.Theme != "dracula" || len(cfg.Warnings) != 0 {
 		t.Errorf("theme %q warnings %v, want dracula and none", cfg.Theme, cfg.Warnings)
 	}
 }
@@ -140,7 +140,10 @@ func TestLoadTrustingForLauncher(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "provider = \"openai\"\nbaseURL = \"https://mine/v1\"\n")
-	cfg := LoadTrusting(cwd, true)
+	cfg, lterr := LoadTrusting(cwd, true)
+	if lterr != nil {
+		t.Fatal(lterr)
+	}
 	if cfg.BaseURL != "https://mine/v1" || len(cfg.Warnings) != 0 {
 		t.Errorf("baseURL %q warnings %v, want applied and none", cfg.BaseURL, cfg.Warnings)
 	}

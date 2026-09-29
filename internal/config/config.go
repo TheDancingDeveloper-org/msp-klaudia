@@ -4,6 +4,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -236,7 +237,7 @@ func AppendProjectPermission(cwd, kind, rule string) (bool, error) {
 		return false, nil
 	}
 	path := ProjectPath(cwd)
-	cfg, err := readProject(path)
+	cfg, _, err := read(path)
 	if err != nil {
 		return false, err
 	}
@@ -272,19 +273,30 @@ func contains(ss []string, s string) bool {
 
 // LoadHome reads only ~/.klaudia/config.toml: the project's file is not read
 // at all. Used by --safe-mode.
-func LoadHome() Config {
+func LoadHome() (Config, error) {
 	var cfg Config
 	if home, err := os.UserHomeDir(); err == nil {
-		merge(&cfg, read(filepath.Join(home, ".klaudia", "config.toml")))
+		c, warn, err := read(filepath.Join(home, ".klaudia", "config.toml"))
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Warnings = append(cfg.Warnings, warn...)
+		merge(&cfg, c)
 	}
-	return cfg
+	return cfg, nil
 }
 
 // Load reads ~/.klaudia/config.toml then overlays ./.klaudia/config.toml
 // (project settings win). Missing files are ignored. In a folder that is not
 // on the trust list, the project file's security-relevant keys are withheld
 // (see withholdUntrusted) and named in Warnings.
-func Load(cwd string) Config {
+//
+// A file that cannot be read or does not parse is an error naming the file and,
+// where the parser knows it, the line and column: a broken config must not
+// start a session on some other configuration. A key the schema does not know
+// is not an error — it is skipped and named, with its file and line, in
+// Warnings.
+func Load(cwd string) (Config, error) {
 	return LoadTrusting(cwd, IsTrustedProject(cwd))
 }
 
@@ -292,12 +304,16 @@ func Load(cwd string) Config {
 // launcher that writes ./.klaudia/config.toml itself — an embedder rendering
 // a per-session config — passes true (--trusted-project-config), since the
 // file is its own and not the checkout's.
-func LoadTrusting(cwd string, trusted bool) Config {
-	var cfg Config
-	if home, err := os.UserHomeDir(); err == nil {
-		merge(&cfg, read(filepath.Join(home, ".klaudia", "config.toml")))
+func LoadTrusting(cwd string, trusted bool) (Config, error) {
+	cfg, err := LoadHome()
+	if err != nil {
+		return Config{}, err
 	}
-	proj := read(ProjectPath(cwd))
+	proj, warn, err := read(ProjectPath(cwd))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Warnings = append(cfg.Warnings, warn...)
 	if !trusted {
 		if held := withholdUntrusted(&proj); len(held) > 0 {
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
@@ -307,30 +323,53 @@ func LoadTrusting(cwd string, trusted bool) Config {
 		}
 	}
 	merge(&cfg, proj)
-	return cfg
+	return cfg, nil
 }
 
-func read(path string) Config {
-	c, _ := readProject(path)
-	return c
-}
-
-func readProject(path string) (Config, error) {
+// read decodes the config file at path. A missing or blank file is an empty
+// Config. Unknown keys come back as warnings; the known keys still apply.
+func read(path string) (Config, []string, error) {
 	var c Config
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return c, nil
+			return c, nil, nil
 		}
-		return c, err
+		return c, nil, fmt.Errorf("read config: %w", err)
 	}
 	if strings.TrimSpace(string(data)) == "" {
-		return c, nil
+		return c, nil, nil
 	}
-	if err := toml.Unmarshal(data, &c); err != nil {
-		return c, err
+	err = toml.NewDecoder(bytes.NewReader(data)).DisallowUnknownFields().Decode(&c)
+	var strict *toml.StrictMissingError
+	if errors.As(err, &strict) {
+		// Strict mode still decodes every known key; it only reports the rest.
+		warn := make([]string, 0, len(strict.Errors))
+		for i := range strict.Errors {
+			e := &strict.Errors[i]
+			line, _ := e.Position()
+			warn = append(warn, fmt.Sprintf("%s:%d: unknown key %q, ignored",
+				path, line, strings.Join(e.Key(), ".")))
+		}
+		return c, warn, nil
 	}
-	return c, nil
+	if err != nil {
+		return Config{}, nil, parseError(path, err)
+	}
+	return c, nil, nil
+}
+
+// parseError names the file, and the line and column when the decoder
+// reports them. Some go-toml errors (a duplicate key, an array where a string
+// belongs) carry no position; those name the file alone.
+func parseError(path string, err error) error {
+	msg := strings.TrimPrefix(err.Error(), "toml: ")
+	var de *toml.DecodeError
+	if errors.As(err, &de) {
+		line, col := de.Position()
+		return fmt.Errorf("%s:%d:%d: %s", path, line, col, msg)
+	}
+	return fmt.Errorf("%s: %s", path, msg)
 }
 
 // merge overlays non-empty fields of src onto dst.

@@ -6,9 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -21,6 +19,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/mcp"
 	"github.com/greenthread-ai/klaudia/internal/sandbox"
 	"github.com/greenthread-ai/klaudia/internal/skill"
+	"github.com/greenthread-ai/klaudia/internal/subagent"
 )
 
 // /doctor reports the provider, sandbox, config, auth and skills it actually
@@ -141,25 +140,31 @@ func TestBuildExecutorFallsBackWithAWarning(t *testing.T) {
 	var warned []string
 	warn := func(m string) { warned = append(warned, m) }
 
-	if _, ok := buildExecutor(config.Sandbox{}, warn).(*sandbox.Local); !ok || len(warned) != 0 {
+	exDefault, _ := buildExecutor(config.Sandbox{}, warn)
+	if _, ok := exDefault.(*sandbox.Local); !ok || len(warned) != 0 {
 		t.Errorf("default mode: want local and no warning, got %v", warned)
 	}
 
 	warned = nil
-	buildExecutor(config.Sandbox{Mode: config.SandboxContainer, Image: "img", Runtime: "no-such-runtime-unit"}, warn)
+	if _, err := buildExecutor(config.Sandbox{Mode: config.SandboxContainer, Image: "img", Runtime: "no-such-runtime-unit"}, warn); err != nil {
+		t.Fatalf("container fallback returned an error: %v", err)
+	}
 	if len(warned) != 1 || !strings.Contains(warned[0], "no-such-runtime-unit is not installed") {
 		t.Errorf("missing runtime warnings = %v", warned)
 	}
 
 	warned = nil
-	ex := buildExecutor(config.Sandbox{Mode: config.SandboxOS}, warn)
-	tool := map[string]string{"linux": "bwrap", "darwin": "sandbox-exec"}[goruntime.GOOS]
-	if _, err := exec.LookPath(tool); tool == "" || err != nil {
-		if _, ok := ex.(*sandbox.Local); !ok || len(warned) != 1 || !strings.Contains(warned[0], "falling back to local") {
-			t.Errorf("os mode without %q: executor %T, warnings %v", tool, ex, warned)
+	ex, _ := buildExecutor(config.Sandbox{Mode: config.SandboxOS}, warn)
+	// The OS backend is used only when its tool is both present and actually
+	// runnable (bwrap needs unprivileged user namespaces, probed at startup).
+	// Assert the fallback contract either way: a fall back to local comes with
+	// exactly one warning, and using confinement comes with none.
+	if _, isLocal := ex.(*sandbox.Local); isLocal {
+		if len(warned) != 1 || !strings.Contains(warned[0], "falling back to local") {
+			t.Errorf("os mode fell back to local but warnings = %v", warned)
 		}
-	} else if _, ok := ex.(*sandbox.Local); ok || len(warned) != 0 {
-		t.Errorf("os mode with %s available fell back: %v", tool, warned)
+	} else if len(warned) != 0 {
+		t.Errorf("os mode used confinement but warned: %v", warned)
 	}
 }
 
@@ -182,7 +187,7 @@ func TestTUISkillsWarnsOnShadowedBuiltin(t *testing.T) {
 }
 
 func TestTUIAgentsListsBuiltins(t *testing.T) {
-	agents := tuiAgents()
+	agents := tuiAgents(subagent.Builtin())
 	if len(agents) == 0 {
 		t.Fatal("no built-in agents offered to /agents")
 	}

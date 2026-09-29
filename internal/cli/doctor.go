@@ -29,7 +29,10 @@ func newDoctorCommand() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cwd, _ := os.Getwd()
-			cfg := config.Load(cwd)
+			cfg, err := config.Load(cwd)
+			if err != nil {
+				return err
+			}
 			// The model drives only the context-window line; resolve it from
 			// config (—model is a run flag, not a doctor flag) so the report
 			// reflects what an unflagged `klaudia` would use.

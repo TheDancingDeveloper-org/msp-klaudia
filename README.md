@@ -587,6 +587,11 @@ overlays it (project wins). Settings merge per field. The provider, endpoint and
 key settings apply from a project file only once the folder is trusted (see
 [Create a config](#create-a-config-optional-but-recommended)).
 
+A config file that does not parse stops Klaudia before anything runs (exit 2),
+with the file, line and column. A key Klaudia does not know — a typo, or a
+setting from a newer or older version — is skipped with a warning naming the
+file and line; the rest of the file still applies.
+
 ### Auth
 
 - `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`), or

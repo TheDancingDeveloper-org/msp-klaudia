@@ -37,7 +37,11 @@ func loadStarter(t *testing.T, path, cwd string) config.Config {
 	if err := dec.Decode(&strict); err != nil {
 		t.Fatalf("starter does not decode strictly: %v", err)
 	}
-	return config.Load(cwd)
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		t.Fatalf("load starter config: %v", err)
+	}
+	return cfg
 }
 
 // validateStarter runs the checks run() applies to a loaded config before a

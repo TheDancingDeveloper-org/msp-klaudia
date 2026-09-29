@@ -50,7 +50,7 @@ type Setting struct {
 // var; the key text itself never appears.
 func Origins(cwd string) []Setting {
 	home := homeLayer()
-	proj := read(ProjectPath(cwd))
+	proj, _, _ := read(ProjectPath(cwd))
 
 	var out []Setting
 	// scalar records a string-valued field, choosing project over home; when
@@ -171,7 +171,8 @@ func homeLayer() Config {
 	if err != nil {
 		return Config{}
 	}
-	return read(filepath.Join(home, ".klaudia", "config.toml"))
+	c, _, _ := read(filepath.Join(home, ".klaudia", "config.toml"))
+	return c
 }
 
 // appendAPIKey reports the API key's presence and source without ever emitting
