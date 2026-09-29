@@ -126,6 +126,12 @@ type Options struct {
 	// produces (autocompact). The CLI persists it alongside the transcript for
 	// token-saving resume. May be nil.
 	OnSummary func(summary string)
+	// Diagnostics, if set, lets Edit/Write fetch language-server diagnostics for
+	// a file they just wrote and append any new problems to their result. The
+	// CLI wires it to the LSP pool's Diagnostics method; nil (LSP off, or a
+	// caller that has not wired it) makes it a no-op. It is a passthrough into
+	// tools.Context — the loop does not decide anything with it.
+	Diagnostics tools.DiagnosticsFunc
 }
 
 // Result is the outcome of a Run.
@@ -923,12 +929,13 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		}
 	}
 	results, err := tool.Execute(ctx, tools.Context{
-		WorkingDir: opts.WorkingDir,
-		Ask:        opts.Asker,
-		Plan:       opts.Planner,
-		Reveal:     reveal,
-		HostChange: hostChangeFor(opts),
-		Progress:   progress,
+		WorkingDir:  opts.WorkingDir,
+		Ask:         opts.Asker,
+		Plan:        opts.Planner,
+		Reveal:      reveal,
+		HostChange:  hostChangeFor(opts),
+		Progress:    progress,
+		Diagnostics: opts.Diagnostics,
 	}, raw)
 	if err != nil {
 		return errResult(fmt.Sprintf("Tool execution error: %v", err))

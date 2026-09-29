@@ -21,6 +21,71 @@ func resolvePath(tctx Context, p string) string {
 	return filepath.Join(tctx.WorkingDir, p)
 }
 
+// DiagnosticsFunc fetches language-server diagnostics for a single file. It is
+// the seam by which Edit/Write reach the LSP pool without importing the agent
+// or CLI layers: the CLI wires the pool's Diagnostics method into tools.Context
+// (see Context.Diagnostics). The signature matches *lsp.Pool.Diagnostics.
+type DiagnosticsFunc func(ctx context.Context, path string) ([]lsp.Diagnostic, error)
+
+// maxAppendedDiagnostics caps how many problems are appended to an Edit/Write
+// result. A generated file with hundreds of errors must not flood the context
+// window; the model sees the first few and can run the Diagnostics tool for the
+// full list.
+const maxAppendedDiagnostics = 20
+
+// appendDiagnostics fetches diagnostics for a file just written by Edit/Write
+// and returns a compact section to append to the tool result, or "" when there
+// is nothing to add.
+//
+// It never fails the caller: a nil hook (LSP off), an unsupported or disabled
+// language, a missing server, or a timeout all yield "". Crucially it does NOT
+// claim the file is clean on silence — an empty or errored fetch appends
+// nothing rather than a false all-clear (aligning with the #109 fix intent:
+// silence, not a bogus clean report). Only a non-empty diagnostic set produces
+// text.
+func appendDiagnostics(ctx context.Context, tctx Context, path string) string {
+	if tctx.Diagnostics == nil {
+		return ""
+	}
+	diags, err := tctx.Diagnostics(ctx, path)
+	if err != nil || len(diags) == 0 {
+		return ""
+	}
+	return formatNewDiagnostics(path, diags)
+}
+
+// formatNewDiagnostics renders diagnostics as a compact "New diagnostics:"
+// section (file:line:col severity message per line), capped to
+// maxAppendedDiagnostics entries. Returns "" for an empty set so callers append
+// nothing.
+func formatNewDiagnostics(path string, diags []lsp.Diagnostic) string {
+	if len(diags) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nNew diagnostics:")
+	shown := diags
+	if len(shown) > maxAppendedDiagnostics {
+		shown = shown[:maxAppendedDiagnostics]
+	}
+	for _, d := range shown {
+		// LSP positions are 0-based; show 1-based for humans/models.
+		fmt.Fprintf(&b, "\n  %s:%d:%d %s %s",
+			path, d.Range.Start.Line+1, d.Range.Start.Character+1,
+			lsp.SeverityName(d.Severity), collapseWhitespace(d.Message))
+	}
+	if len(diags) > maxAppendedDiagnostics {
+		fmt.Fprintf(&b, "\n  … and %d more", len(diags)-maxAppendedDiagnostics)
+	}
+	return b.String()
+}
+
+// collapseWhitespace flattens a diagnostic message to a single line so one
+// problem stays on one line (some servers emit multi-line messages).
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // --- Diagnostics ---
 
 type DiagnosticsInput struct {

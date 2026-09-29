@@ -153,6 +153,16 @@ port mirrors (see `internal/version`).
   a server did not advertise at initialize now fail fast as "not supported"
   (recorded from the initialize result) rather than erroring or hanging, reusing
   the existing per-request timeout (see #109).
+- **Edit/Write append fresh language-server diagnostics.** After a successful
+  Edit or Write to a file whose language has a running server, the tool now
+  fetches that file's diagnostics through the LSP pool and appends a compact
+  `New diagnostics:` section (`path:line:col severity message`, capped) to its
+  result, so the model sees errors it just introduced without a separate
+  Diagnostics call — as Claude Code does. It is wired through a `Diagnostics`
+  hook on `tools.Context` (backed by the pool, set by the CLI), not through the
+  agent loop's dispatch. It never fails the edit: no server, an unsupported or
+  disabled language, or a timeout appends nothing, and — matching the #109 fix
+  intent — silence is never reported as a false "clean".
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

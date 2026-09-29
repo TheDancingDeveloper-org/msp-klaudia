@@ -15,6 +15,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/goal"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 // loopStallLimit stops the loop after this many consecutive iterations make no
@@ -24,20 +25,21 @@ const loopStallLimit = 3
 // loopRun bundles the already-built run state the goal loop reuses (set up once
 // in run() like the single-shot headless path).
 type loopRun struct {
-	loop       *agent.Loop
-	cwd        string
-	mode       permission.Mode
-	model      anthropic.Model
-	system     string
-	maxTurns   int
-	iterations int
-	permCtx    permission.Context
-	hostGate   *agent.HostGate
-	approver   agent.Approver
-	deferred   map[string]bool
-	recorder   agent.Recorder
-	onSummary  func(string)
-	render     *Renderer
+	loop        *agent.Loop
+	cwd         string
+	mode        permission.Mode
+	model       anthropic.Model
+	system      string
+	maxTurns    int
+	iterations  int
+	permCtx     permission.Context
+	hostGate    *agent.HostGate
+	approver    agent.Approver
+	deferred    map[string]bool
+	recorder    agent.Recorder
+	onSummary   func(string)
+	render      *Renderer
+	diagnostics tools.DiagnosticsFunc
 }
 
 // goalRetryBackoff is how long the goal loop waits before each retry of an
@@ -121,6 +123,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			Recorder:      p.recorder,
 			WebTools:      true,
 			OnSummary:     p.onSummary,
+			Diagnostics:   p.diagnostics,
 		}, emit)
 	}
 
