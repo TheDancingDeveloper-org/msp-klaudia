@@ -79,6 +79,23 @@ port mirrors (see `internal/version`).
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
 
+### Changed
+- **The always-loaded toolset is trimmed: the Browser and Task tools are now
+  deferred.** They join the MCP tools behind `ToolSearch` — withheld from every
+  request's standing tool list and revealed on demand — instead of riding in
+  eagerly. This removes eight tools (`BrowserSearch`, `BrowserFetch`,
+  `BrowserNavigate`, `BrowserSnapshot`, `TaskCreate`, `TaskList`, `TaskGet`,
+  `TaskUpdate`) from the request every turn carries, and its cached prompt
+  prefix, on the many turns that never touch them. The Browser tools' own
+  descriptions already tell the model to prefer the server-side
+  `web_search`/`web_fetch` on Claude models, so they were fallbacks the request
+  paid for on every turn regardless; the four-tool Task store is distinct from
+  the `TodoWrite` planning checklist, which stays eager because nearly every
+  non-trivial turn uses it. The tools stay registered and work the instant
+  `ToolSearch` reveals them; a session with no MCP servers now trims its
+  toolset too (previously `ToolSearch` was registered only when MCP tools were
+  present). The common edit/read/bash/search core is untouched.
+
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
