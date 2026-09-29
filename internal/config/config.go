@@ -152,6 +152,12 @@ type Sandbox struct {
 	// FailIfUnavailable refuses to start when the configured sandbox cannot
 	// be used, instead of warning and running commands unconfined.
 	FailIfUnavailable bool `toml:"failIfUnavailable,omitempty"`
+	// MemoryMax caps the memory one Bash command and everything it starts may
+	// use, e.g. "4G" or "512M" (K/M/G/T are powers of 1024). Empty means no
+	// limit. On Linux it is a cgroup made through `systemd-run --user --scope`;
+	// in container mode it is the container's --memory. Where it cannot be
+	// enforced Klaudia warns at startup and runs commands without it.
+	MemoryMax string `toml:"memoryMax,omitempty"`
 }
 
 // Browser engines.
@@ -374,6 +380,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Sandbox.FailIfUnavailable {
 		dst.Sandbox.FailIfUnavailable = true
+	}
+	if src.Sandbox.MemoryMax != "" {
+		dst.Sandbox.MemoryMax = src.Sandbox.MemoryMax
 	}
 	if len(src.Sandbox.WriteRoots) > 0 {
 		dst.Sandbox.WriteRoots = append(dst.Sandbox.WriteRoots, src.Sandbox.WriteRoots...)

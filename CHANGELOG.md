@@ -283,6 +283,16 @@ port mirrors (see `internal/version`).
   gives one, capped at 100. A `file` picks the language; without one, every
   language whose project file sits at the workspace root is asked, and a server
   that fails is noted beside the others' matches rather than hiding them.
+- **`sandbox.memoryMax` caps the memory of each Bash command.** Opt-in, e.g.
+  `memoryMax = "4G"`. The limit covers the command's whole process tree, swap
+  included, so a runaway build or test is OOM-killed alone instead of dragging
+  the machine into swap. Container mode passes it as `--memory`; on Linux
+  otherwise commands run in a transient `systemd-run --user --scope` with
+  `MemoryMax`, after a startup probe confirms the scope's `memory.max` really
+  holds the limit (where the memory controller is not delegated, systemd
+  accepts the setting and enforces nothing). Where it cannot be enforced — no
+  user session bus, no delegation, macOS — Klaudia warns and runs commands
+  without a limit.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
