@@ -80,6 +80,12 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`Diagnostics` reported "clean" when the language server never answered.**
+  If the server published nothing for the file within the 10s wait — a cold
+  gopls or rust-analyzer still indexing — the tool printed "No diagnostics — X
+  is clean.", a false all-clear the model would trust. It now returns an error
+  saying the server did not report in time and that this is not an all-clear;
+  "clean" is reserved for a server that actually published an empty list (#109).
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
