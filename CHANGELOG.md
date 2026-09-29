@@ -214,6 +214,13 @@ port mirrors (see `internal/version`).
   It collects every string literal that is exactly a variable name, not only
   `os.Getenv` arguments, because the browser package reads through its own
   `getenv`/`envBool` helpers.
+- **(s)omething else on every permission prompt, and the prompt says Esc
+  cancels the turn.** The redirect answer existed only on host-change asks; an
+  ordinary tool ask offered yes / always / no. `s` now declines any ask as a
+  redirect: the model is told the user is about to say what they want instead
+  and to wait for it rather than route around the refusal, and what you type
+  next lands before Klaudia's next step. Both prompts end with `(esc cancels
+  turn)`, because Esc is not "no" — it ends the whole turn.
 
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
