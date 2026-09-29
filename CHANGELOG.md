@@ -79,6 +79,16 @@ port mirrors (see `internal/version`).
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
 
+### Changed
+- **`/diff` pages a long diff, in colour.** It used to print the whole diff,
+  uncoloured, straight into scrollback. It now takes the same route as `/last`:
+  a diff longer than two screens opens in `$PAGER` (falling back to `less`,
+  then `more`), a shorter one prints inline. git is asked for
+  `--color=always` unless `NO_COLOR` is set or the terminal has no colour, in
+  which case it is asked for `--no-color` so a `color.ui = always` in git
+  config does not override `NO_COLOR`. When `git diff` fails, the message is
+  git's own rather than `exit status 128`.
+
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
