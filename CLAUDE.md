@@ -33,7 +33,7 @@ Use `go install` when you mean to try the change.
 - **session** - Transcripts, resume, persisted compaction summaries
 - **compaction** - Context/history compression (micro + auto)
 - **mcp** - Model Context Protocol support
-- **subagent** - Built-in sub-agent types
+- **subagent** - Sub-agent types: built-in, and markdown-defined (`.klaudia/agents`)
 - **skill** - Bundled skills (`skill/bundled/*.md`) + user-defined skills (`.klaudia/skills`)
 - **memory** - Auto-memory store
 - **doctor** - `/doctor` environment diagnostics

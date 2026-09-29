@@ -782,6 +782,27 @@ file it is in; `~/` is home; five levels deep); an `@path` inside a sentence
 stays as written and the file is appended. `@` inside code fences is left
 alone, `<!-- comments -->` are removed, and each file is included once.
 
+## Sub-agents
+
+Besides the built-in `general-purpose`, `Explore` and `Plan`, sub-agents can be
+defined as markdown files — the same format Claude Code and its plugins use —
+in `~/.claude/agents/`, `~/.klaudia/agents/`, `.claude/agents/` or
+`.klaudia/agents/` (later wins; a file can replace a built-in):
+
+```markdown
+---
+name: code-reviewer
+description: Reviews a diff for bugs, error handling and style
+tools: Read, Grep, Glob      # optional; omitted means every tool
+model: sonnet                # optional; "inherit" or omitted uses the parent's
+---
+You are a code reviewer. …
+```
+
+The model picks one by its description through the Agent tool; `/agents` lists
+them. A sub-agent runs under the session's permissions, whatever its `tools`
+say. On an OpenAI-compatible provider a Claude `model` is ignored.
+
 ## Skills
 
 Skills are read from four directories, in increasing precedence — so a project
