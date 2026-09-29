@@ -557,6 +557,12 @@ port mirrors (see `internal/version`).
   usage and do nothing. `/add-dir` expands `~`, resolves a relative path from the
   project, and refuses a path that doesn't exist or isn't a directory — before,
   a typo went into the prompt as a directory no tool could read.
+- **`/restart`, `/stopjob` and `/logs` resolve job names the same way.** With no
+  argument and more than one job running, all three now list the jobs with the
+  usage line (only `/logs` did); a name that matches nothing is answered with the
+  jobs that exist and their state, instead of a bare "no job X". `/stopjob` on a
+  job that had already exited used to report "stopped" — the store's kill is a
+  no-op there — and now says it already exited, with its code.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
