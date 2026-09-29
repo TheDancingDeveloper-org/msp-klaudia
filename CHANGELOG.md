@@ -373,6 +373,15 @@ port mirrors (see `internal/version`).
   the whole `[input]` section when it merged the home and project files, so
   Return always sent, whichever file set it. The setting now loads like the
   others: project over home.
+- **Resuming a compacted session dropped every turn since the last
+  compaction.** Once a session had compacted, resume seeded only the persisted
+  summary, and nothing in the transcript said where the summary ended, so the
+  conversation after it was lost on the next launch — the default resume path
+  for any long session. Compaction now appends a `compact_boundary` system line
+  to the transcript, and resume seeds the summary followed by every message
+  after the last boundary. `--full` still replays the whole transcript; a
+  transcript compacted before this change has no boundary and resumes from the
+  summary alone, as before.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

@@ -142,7 +142,8 @@ func fileExists(path string) bool {
 // Entry is one transcript line. Field names/tags match the JS schema; optional
 // fields are omitted when empty so output stays close to the reference.
 type Entry struct {
-	Type        string          `json:"type"` // "user" | "assistant"
+	Type        string          `json:"type"`              // "user" | "assistant" | "system"
+	Subtype     string          `json:"subtype,omitempty"` // system-only, e.g. "compact_boundary"
 	UUID        string          `json:"uuid"`
 	ParentUUID  *string         `json:"parentUuid"`
 	SessionID   string          `json:"sessionId"`

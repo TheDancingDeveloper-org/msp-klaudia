@@ -620,6 +620,45 @@ func resumeTranscript(cwd, resumeID string) string {
 	return session.ExistingPath(cwd, resumeID)
 }
 
+// resumeMessages is the history a resumed session starts with, and whether it
+// was seeded from the persisted compaction summary.
+//
+// Token-saving resume: when a summary exists and full is not set, the history
+// is the summary followed by every message recorded after the transcript's
+// last compaction boundary — the summary covers what came before it, and
+// nothing covers what came after, so dropping those would lose every turn
+// since the last compaction. A transcript written before boundaries were
+// recorded has no marker to cut at and resumes from the summary alone, as it
+// always did. Without a summary, or with full, the whole transcript is
+// replayed.
+func resumeMessages(cwd, resumeID string, full bool) ([]anthropic.BetaMessageParam, bool, error) {
+	path := resumeTranscript(cwd, resumeID)
+	if summary, ok := session.ReadSummary(cwd, resumeID); ok && !full {
+		msgs := []anthropic.BetaMessageParam{
+			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
+				"Summary of the earlier conversation in this session:\n\n" + summary)),
+		}
+		tail, marked, err := session.ReadSinceCompaction(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, false, err
+		}
+		if marked {
+			rest, err := agent.MessagesFromEntries(tail)
+			if err != nil {
+				return nil, false, err
+			}
+			msgs = append(msgs, rest...)
+		}
+		return msgs, true, nil
+	}
+	entries, err := session.Read(path)
+	if err != nil {
+		return nil, false, err
+	}
+	msgs, err := agent.MessagesFromEntries(entries)
+	return msgs, false, err
+}
+
 // chooseSessionID returns the id this run records under and, when it continues
 // an existing transcript, that transcript's path (empty for a new file at the
 // default location).
@@ -799,24 +838,13 @@ func run(cmd *cobra.Command, opts *options) error {
 		return err
 	}
 	if resumeID != "" {
-		// Token-saving resume: if a persisted compaction summary exists and the
-		// user didn't ask for a --full replay, seed from the summary instead of
-		// the entire transcript. Falls back to full replay when no summary exists.
-		if summary, ok := session.ReadSummary(cwd, resumeID); ok && !opts.fullResume {
-			initialMessages = []anthropic.BetaMessageParam{
-				anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
-					"Summary of the earlier conversation in this session:\n\n" + summary)),
-			}
+		var fromSummary bool
+		initialMessages, fromSummary, err = resumeMessages(cwd, resumeID, opts.fullResume)
+		if err != nil {
+			return fmt.Errorf("resume %s: %w", resumeID, err)
+		}
+		if fromSummary {
 			fmt.Fprintln(cmd.ErrOrStderr(), "resuming from compacted summary (--full for the entire transcript)")
-		} else {
-			entries, rerr := session.Read(resumeTranscript(cwd, resumeID))
-			if rerr != nil {
-				return fmt.Errorf("resume %s: %w", resumeID, rerr)
-			}
-			initialMessages, rerr = agent.MessagesFromEntries(entries)
-			if rerr != nil {
-				return fmt.Errorf("resume %s: %w", resumeID, rerr)
-			}
 		}
 	}
 
@@ -1122,6 +1150,7 @@ func run(cmd *cobra.Command, opts *options) error {
 	// Open the transcript for this session (best effort: a transcript failure
 	// should not abort the run).
 	var recorder agent.Recorder
+	var transcript *session.Transcript
 	if tr, terr := session.NewTranscript(session.Meta{
 		SessionID:      sessionID,
 		CWD:            cwd,
@@ -1132,12 +1161,19 @@ func run(cmd *cobra.Command, opts *options) error {
 	}); terr == nil {
 		defer func() { _ = tr.Close() }()
 		recorder = tr
+		transcript = tr
 	}
 
 	loop := agent.New(provider, registry)
 
 	// Persist compaction summaries for token-saving resume (a Klaudia divergence).
+	// The boundary marks where in the transcript this summary was taken, so a
+	// resume can seed from it and still replay the messages recorded after it.
+	// Every caller runs this before the loop records its next message.
 	onSummary := func(summary string) {
+		if transcript != nil {
+			_ = transcript.MarkCompaction()
+		}
 		if transcriptPath != "" {
 			_ = session.WriteSummaryAt(session.SummaryPathFor(transcriptPath), sessionID, summary, gitCommit(cwd))
 			return

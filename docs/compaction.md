@@ -56,6 +56,11 @@ blockingLimit    = effectiveWindow - 3000            // hard ceiling
 
 Beyond the JS scheme, each autocompact summary is offered to the CLI via
 `agent.Options.OnSummary` and written alongside the transcript in
-`~/.klaudia/sessions/<encoded-cwd>/<id>.summary.md`. On resume, Klaudia seeds the
-conversation from that summary instead of replaying the whole transcript
-(token-saving); `--full` forces a full replay. See `internal/session/summary.go`.
+`~/.klaudia/sessions/<encoded-cwd>/<id>.summary.md`, and a
+`{"type":"system","subtype":"compact_boundary"}` line is appended to the
+transcript at the point the summary was taken. On resume, Klaudia seeds the
+conversation from that summary plus every message recorded after the last
+boundary, instead of replaying the whole transcript (token-saving); `--full`
+forces a full replay. A transcript compacted before boundaries were written
+resumes from the summary alone. See `internal/session/summary.go` and
+`internal/session/boundary.go`.

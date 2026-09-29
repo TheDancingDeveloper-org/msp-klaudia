@@ -324,8 +324,8 @@ Auto-resume is an interactive convenience: headless (`-p`) and embedding
 Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
 (override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
 transcripts from `~/.klaudia/projects/<encoded-cwd>/` during migration. When a
-session has a persisted compaction summary, resume seeds from it (token-saving)
-unless `--full`.
+session has a persisted compaction summary, resume seeds from it plus the
+messages recorded since that compaction (token-saving) unless `--full`.
 
 `-r <id>` finds the transcript by id anywhere under the sessions root, not only
 in the current directory's project dir, and keeps appending to the file it was
