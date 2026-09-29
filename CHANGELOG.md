@@ -80,6 +80,17 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **The host guardrail missed common host changes and asked about harmless
+  ones.** It now asks before `sudo pacman -S nginx` and `pacman -Syu` (and
+  `rpm -ivh`, `dpkg -i`, `nix-env -i`, which had the same fault: the operation
+  is a flag, so the package was read as the verb), `yarn global add`,
+  `git config --global`/`--system` (docs/trust.md already called `~/.gitconfig`
+  host), `sudo pip install` and `sudo make install`. It no longer asks about
+  `brew update` or `apt-get update`, which refresh an index and install
+  nothing, or about `ln -s $(pwd)/tool ~/.local/bin/tool`, where only the link
+  is written. A write to a path held in a variable (`rm -rf "$BUILD_DIR"`) now
+  says whether it writes or deletes, and the refusal suggests re-running with
+  the literal path.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
