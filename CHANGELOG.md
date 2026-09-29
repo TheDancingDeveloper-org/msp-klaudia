@@ -80,6 +80,14 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **Stopping a command also stops what it detached (Linux).** Commands are
+  killed as a process group, and a process that leaves the group — `setsid`,
+  a daemon that double-forks — escaped: it outlived Esc, `/stopjob` and the
+  end of the session, often still holding a port. Each command's environment
+  now carries a tag, and stopping it also stops every process still carrying
+  that tag (SIGTERM, then SIGKILL after the usual grace). A command that
+  finishes on its own leaves what it started alone. macOS is unchanged.
+  Upstream 2.1.257.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
