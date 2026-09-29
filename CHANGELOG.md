@@ -80,6 +80,13 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **`-p` reads a piped prompt, and refuses an empty one.** `echo "q" | klaudia -p`
+  ignored stdin and sent a request with no user message, exiting 0. Piped stdin
+  now becomes the prompt, or is appended after a blank line to one given on the
+  command line (`git diff | klaudia -p "review this"`). With a prompt already
+  given, Klaudia waits at most 3s for stdin to start, so a caller that leaves a
+  silent pipe open is not hung; redirect `< /dev/null` to skip the wait. No
+  prompt at all is a usage error (exit 2).
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
