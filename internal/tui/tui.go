@@ -1031,6 +1031,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case editDraftDoneMsg:
+		m.applyEditedDraft(msg)
+		return m, nil
+
 	case compactDoneMsg:
 		if msg.err != nil {
 			m.appendLine(errStyle.Render("compact: " + api.FriendlyError(msg.err)))
@@ -1209,6 +1213,14 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// never sees it (see paste.go).
 	if msg.Paste {
 		return m.onPaste(string(msg.Runes))
+	}
+
+	// Ctrl+G opens the current draft in $EDITOR. Only where the box holds a
+	// real, editable draft (idle, queuing a follow-up, or answering in your own
+	// words) — not on a y/n or numbered prompt, where the box is a placeholder
+	// and the keystroke would land on nothing.
+	if msg.Type == tea.KeyCtrlG && m.editableInput() {
+		return m, m.editDraft()
 	}
 
 	// What Return means depends on config (see keyAction). Computed once, so
@@ -1541,6 +1553,7 @@ const keyHints = `Keys:
   Tab              Complete a /command or an @<path> reference (Tab again cycles)
   ↑ / ↓            Cycle through previous prompts
   Ctrl+J           Newline without sending
+  Ctrl+G           Edit the current draft in $EDITOR ($VISUAL, else vi/nano)
   Ctrl+U / Ctrl+K  Delete before / after the cursor
   Ctrl+W           Delete the word before the cursor
   Alt+← / Alt+→    Move by word

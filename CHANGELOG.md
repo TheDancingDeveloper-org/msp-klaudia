@@ -192,6 +192,17 @@ port mirrors (see `internal/version`).
   only that a key is set and whether it came inline from a file or from the
   named `apiKeyEnv` variable (an `env` origin), and the key text appears
   nowhere in the output.
+- **Ctrl+G opens the current prompt draft in `$EDITOR`.** Composing a long or
+  structured prompt in the input box is awkward without editor motions; Ctrl+G
+  writes the current draft to a temp file, opens it in your editor via Bubble
+  Tea v1's `tea.ExecProcess` (which suspends the TUI, hands the child the real
+  terminal, and repaints on return), and reads the edited text back into the
+  box. It works while idle, while queuing a follow-up mid-turn, and while
+  answering a question in your own words. Editor resolution follows `/open`'s
+  `$VISUAL` → `$EDITOR` order, then falls back to `vi`/`nano` on `PATH`; with
+  none of those it prints a brief hint rather than failing. An editor that exits
+  with an error leaves the original draft untouched, and the temp file is always
+  removed.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
