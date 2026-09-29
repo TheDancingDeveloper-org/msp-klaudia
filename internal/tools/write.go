@@ -69,7 +69,7 @@ func (w *Write) CheckPermissions(pctx permission.Context, _ permission.Permissio
 	return editClassDecision(pctx)
 }
 
-func (w *Write) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
+func (w *Write) Execute(ctx context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
 	var in WriteInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -83,5 +83,9 @@ func (w *Write) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([
 	if err := os.WriteFile(in.FilePath, []byte(in.Content), 0o644); err != nil {
 		return []Result{{Content: fmt.Sprintf("Error writing file: %v", err), IsError: true}}, nil
 	}
-	return []Result{{Content: fmt.Sprintf("File written successfully to %s", in.FilePath)}}, nil
+	msg := fmt.Sprintf("File written successfully to %s", in.FilePath)
+	// Surface any problems this write just introduced (no-op when LSP is off or
+	// the language has no server; never errors the write).
+	msg += appendDiagnostics(ctx, tctx, in.FilePath)
+	return []Result{{Content: msg}}, nil
 }

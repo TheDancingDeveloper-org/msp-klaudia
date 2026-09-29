@@ -92,6 +92,13 @@ type Context struct {
 	// twenty minutes looked indistinguishable from a hang. It is a plain string
 	// callback rather than an event type because tools must not import agent.
 	Progress func(line string)
+	// Diagnostics, if non-nil, fetches language-server diagnostics for a file
+	// that was just written. Edit/Write call it after a successful write and
+	// append any new problems to their result, so the model immediately sees
+	// errors it just introduced. Nil — LSP disabled, or a caller that did not
+	// wire it — makes the append a no-op; it is backed by the LSP pool. A hook
+	// error or timeout appends nothing (never a false "clean").
+	Diagnostics DiagnosticsFunc
 }
 
 // Tool is the contract implemented by every local tool (Read, Write, Bash, …).

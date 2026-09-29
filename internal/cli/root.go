@@ -1136,6 +1136,7 @@ func run(cmd *cobra.Command, opts *options) error {
 				Recorder:        recorder,
 				WebTools:        true,
 				OnSummary:       onSummary,
+				Diagnostics:     lspPool.Diagnostics,
 			}, emit)
 		}
 		return tui.Run(ctx, tui.RunFunc(runFn), initialMessages, sess)
@@ -1173,9 +1174,10 @@ func run(cmd *cobra.Command, opts *options) error {
 				InitialMessages: history,
 				// The transcript on disk and the peer's envelope stream are
 				// fed from the same Record calls, as in the -p path.
-				Recorder:  multiRecorder{recorder, rec},
-				WebTools:  true,
-				OnSummary: onSummary,
+				Recorder:    multiRecorder{recorder, rec},
+				WebTools:    true,
+				OnSummary:   onSummary,
+				Diagnostics: lspPool.Diagnostics,
 			}, emit)
 		}
 		return driver.Run(ctx, cmd.InOrStdin(), runFn)
@@ -1184,20 +1186,21 @@ func run(cmd *cobra.Command, opts *options) error {
 	// Autonomous goal loop: iterate against the spec until complete or capped.
 	if opts.loop {
 		return runGoalLoop(ctx, cmd, loopRun{
-			loop:       loop,
-			cwd:        cwd,
-			mode:       mode,
-			model:      model,
-			system:     sysPrompt,
-			maxTurns:   opts.maxTurns,
-			iterations: opts.maxIterations,
-			permCtx:    permCtx,
-			hostGate:   hostGate,
-			approver:   approver,
-			deferred:   deferredTools,
-			recorder:   recorder,
-			onSummary:  onSummary,
-			render:     r,
+			loop:        loop,
+			cwd:         cwd,
+			mode:        mode,
+			model:       model,
+			system:      sysPrompt,
+			maxTurns:    opts.maxTurns,
+			iterations:  opts.maxIterations,
+			permCtx:     permCtx,
+			hostGate:    hostGate,
+			approver:    approver,
+			deferred:    deferredTools,
+			recorder:    recorder,
+			onSummary:   onSummary,
+			render:      r,
+			diagnostics: lspPool.Diagnostics,
 		})
 	}
 
@@ -1234,6 +1237,7 @@ func run(cmd *cobra.Command, opts *options) error {
 		WebTools:        true,
 		OnSummary:       onSummary,
 		PartialMessages: partial,
+		Diagnostics:     lspPool.Diagnostics,
 	}, emit)
 
 	out := ResultMessage{

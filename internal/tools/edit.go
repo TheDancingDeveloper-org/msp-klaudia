@@ -126,7 +126,7 @@ func editHint(content, oldString string) string {
 	return "Hint: old_string must match exactly, including whitespace. Use Read immediately before Edit and include surrounding unchanged context."
 }
 
-func (e *Edit) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
+func (e *Edit) Execute(ctx context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
 	var in EditInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -192,6 +192,9 @@ func (e *Edit) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 	if flexible {
 		msg += " — old_string was matched ignoring surrounding whitespace; verify the result with Read if it matters."
 	}
+	// Surface any problems this edit just introduced (no-op when LSP is off or
+	// the language has no server; never errors the edit).
+	msg += appendDiagnostics(ctx, tctx, in.FilePath)
 	return []Result{{Content: msg}}, nil
 }
 
