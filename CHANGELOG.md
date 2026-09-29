@@ -464,6 +464,15 @@ port mirrors (see `internal/version`).
   line is now parsed: `&>` and `&>>` are redirections, names match as whole
   words, only a command that is itself backgrounded counts, and `a & b & wait`
   is allowed because the shell waits for both.
+- **"Needs a terminal" refusals rejected their own suggested command.** The
+  check looked only at the program name, so `man ls | cat` was refused with
+  "use `man <page> | cat`", and `crontab -l` with "use `crontab -l`". Forms that
+  never touch a terminal now run: `man`, `less`, `more` and `most` with stdout
+  piped or redirected, `top -b` (`top -l` on macOS), `crontab -l`/`-r`/`<file>`,
+  tmux and screen commands that do not attach (`tmux ls`, `tmux new -d`,
+  `screen -dmS`, `screen -ls`), `visudo -c`, and `--help`/`--version` on any of
+  them. `top` in a pipe stays refused (it fails with "failed tty get"), and the
+  `top` advice now names `top -b -n 1`.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
