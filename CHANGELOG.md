@@ -78,6 +78,16 @@ port mirrors (see `internal/version`).
   that fail to launch are named, capped at three with a count of the rest, and
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
+- **Pickers take arrow keys and a type-ahead filter, and `/model` lists every
+  model.** `/model`, `/mode`, `/theme` and `/mcp` used to print numbered items
+  and accept only the digits 1–9, so `/model` cut the provider's list to nine
+  and an OpenAI-compatible endpoint serving dozens of models left most of them
+  unreachable (`/model <id>` was the only way in). The list is now drawn in the
+  live region with a highlighted row: `↑`/`↓` (and PgUp/PgDn, Home/End) move
+  it, Enter picks it, typing filters the list word by word, Backspace edits the
+  filter, and Esc cancels. The digits still pick directly while no filter is
+  typed. A list taller than the terminal shows a scrolling window (at most 15
+  rows) with the position in the footer.
 
 ### Fixed
 - **The stream-json embedding channel emitted a different shape from
