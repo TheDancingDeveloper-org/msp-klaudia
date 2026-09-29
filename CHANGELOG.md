@@ -80,6 +80,15 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A bubblewrap that cannot run no longer breaks every command.** Sandbox
+  mode `os` checked only that `bwrap` was on the PATH. Where unprivileged user
+  namespaces are disabled it is installed and fails to start anything, so
+  every Bash call became an error. It is now tried once at startup and, if it
+  cannot run, Klaudia falls back to local execution with a warning saying
+  why. New `sandbox.failIfUnavailable = true` makes any unusable sandbox — a
+  missing tool, bwrap that cannot run, a container mode with no image — an
+  error at startup instead of a silent drop to unconfined execution.
+  Upstream 2.1.83.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
