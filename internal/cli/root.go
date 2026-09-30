@@ -1560,6 +1560,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			Theme:               themeOrWarn(cfg.Theme, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }), // user default (~/.klaudia) overlaid by project; /theme overrides per session
 			PermissionMode:      string(mode),
 			EnterInserts:        tui.EnterInserts(cfg.Input.Enter, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
+			PromptHistory:       session.NewPromptHistory(session.PromptHistoryPath(cwd), tui.MaxInputHistory),
 			Memory:              memStore,
 			Goal:                restoredGoal,
 			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },
