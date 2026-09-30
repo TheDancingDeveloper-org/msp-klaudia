@@ -114,8 +114,16 @@ func TestEditReportsAWriteFailure(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
 	}
-	path := filepath.Join(t.TempDir(), "ro.txt")
-	writeFile(t, path, "abc", 0o444)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ro.txt")
+	writeFile(t, path, "abc", 0o644)
+	// The atomic write creates its temp file in the target's directory and
+	// renames it over the target, so a read-only file is replaced regardless
+	// of its own mode. A read-only directory is what makes the write fail.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	e, _ := NewEdit()
 	res := runTool(t, e, Context{}, EditInput{FilePath: path, OldString: "b", NewString: "B"})
 	if !res.IsError || !strings.HasPrefix(res.Content, "Error writing file:") {
@@ -175,8 +183,12 @@ func TestReadTruncatesVeryLongLines(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("lines = %d, want 2", len(lines))
 	}
-	if got := len(strings.SplitN(lines[0], "\t", 2)[1]); got != readMaxLineLen {
-		t.Errorf("first line length = %d, want it cut to %d", got, readMaxLineLen)
+	text := strings.SplitN(lines[0], "\t", 2)[1]
+	if !strings.HasPrefix(text, strings.Repeat("x", readMaxLineLen)) {
+		t.Errorf("first line not truncated to %d visible chars", readMaxLineLen)
+	}
+	if !strings.Contains(text, "line truncated") {
+		t.Errorf("first line lacks the truncation notice: %q", text)
 	}
 	if lines[1] != "     2\tshort" {
 		t.Errorf("second line = %q", lines[1])
@@ -198,12 +210,17 @@ func TestReadEmptyAndPastTheEnd(t *testing.T) {
 	}
 }
 
-func TestReadLineTooLongForTheScannerIsAnError(t *testing.T) {
+// A line far too long for a scanner's buffer is no longer an error: the capped
+// line reader (issue #43) truncates it in place, keeping the read usable.
+func TestReadLineTooLongIsTruncatedNotAnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "huge.txt")
 	writeFile(t, path, strings.Repeat("y", 2<<20), 0o644)
 	res := runTool(t, mustRead(t), Context{}, ReadInput{FilePath: path})
-	if !res.IsError || !strings.HasPrefix(res.Content, "Error reading file:") {
-		t.Errorf("res = %+v", res)
+	if res.IsError {
+		t.Fatalf("res = %+v, want a truncated read, not an error", res)
+	}
+	if !strings.Contains(res.Content, "line truncated") {
+		t.Errorf("a 2 MiB line should be truncated with a notice:\n%.120s", res.Content)
 	}
 }
 
@@ -226,19 +243,28 @@ func TestReadImageAndPDFFailures(t *testing.T) {
 func TestReadImageMediaTypes(t *testing.T) {
 	dir := t.TempDir()
 	r := mustRead(t)
-	for name, want := range map[string]string{
-		"a.gif":  "image/gif",
-		"a.webp": "image/webp",
-		"a.JPEG": "image/jpeg",
+	// Read verifies an image's content (http.DetectContentType), not just its
+	// extension, so the fixtures carry each format's magic bytes.
+	for name, c := range map[string]struct {
+		want  string
+		magic string
+	}{
+		"a.gif":  {"image/gif", "GIF89a\x00\x00"},
+		"a.webp": {"image/webp", "RIFF\x00\x00\x00\x00WEBPVP8 "},
+		"a.JPEG": {"image/jpeg", "\xff\xd8\xff\xe0\x00\x10JFIF"},
 	} {
 		p := filepath.Join(dir, name)
-		writeFile(t, p, "bytes", 0o644)
+		writeFile(t, p, c.magic, 0o644)
 		res := runTool(t, r, Context{}, ReadInput{FilePath: p})
-		if res.IsError || len(res.Images) != 1 || res.Images[0].MediaType != want {
-			t.Errorf("%s: res = %+v, want one %s image", name, res, want)
+		if res.IsError || len(res.Images) != 1 || res.Images[0].MediaType != c.want {
+			t.Errorf("%s: res = %+v, want one %s image", name, res, c.want)
 		}
 	}
-	if res, _ := readImage("x.bmp"); !res[0].IsError || !strings.Contains(res[0].Content, "Unsupported image type: .bmp") {
+	// A real BMP is a valid image the model cannot be shown: readImage keys on
+	// the sniffed content type, so an unsupported one is reported as such.
+	bmp := filepath.Join(dir, "x.bmp")
+	writeFile(t, bmp, "BM\x00\x00\x00\x00\x00\x00", 0o644)
+	if res, _ := readImage(bmp); !res[0].IsError || !strings.Contains(res[0].Content, "image/bmp") {
 		t.Errorf("unsupported type: %+v", res[0])
 	}
 }

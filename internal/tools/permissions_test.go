@@ -130,8 +130,8 @@ func TestPermissionRequestSpecifiers(t *testing.T) {
 		{must[*BrowserNavigate](t)(NewBrowserNavigate(nil)), `{"url":"https://example.com/x"}`, "https://example.com/x"},
 		{must[*BrowserFetch](t)(NewBrowserFetch(nil)), `{"url":"https://example.com/y"}`, "https://example.com/y"},
 		{must[*BrowserSearch](t)(NewBrowserSearch(nil)), `{"query":"go generics"}`, "go generics"},
-		{must[*Read](t)(NewRead()), `{"file_path":"/p/a.txt"}`, ""},
-		{must[*Glob](t)(NewGlob()), `{"pattern":"*"}`, ""},
+		{must[*Read](t)(NewRead()), `{"file_path":"/p/a.txt"}`, "/p/a.txt"},
+		{must[*Glob](t)(NewGlob()), `{"pattern":"*"}`, "."},
 	}
 	for _, c := range cases {
 		got := c.tool.PermissionRequest(json.RawMessage(c.raw)).Specifier
