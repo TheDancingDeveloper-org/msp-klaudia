@@ -355,6 +355,20 @@ port mirrors (see `internal/version`).
   absent = no-op. This is read-only injection; the Memory tool still *writes* only to
   project memory (`.klaudia/MEMORY.md`), so adding a user-scoped write would be a
   follow-up.
+- **Skill frontmatter parity: `allowed-tools`, `argument-hint`, `model`, and
+  `$1`/`$2`/`$ARGUMENTS` substitution.** Skill frontmatter now accepts the
+  Claude Code keys `allowed-tools` (the older `tools` key stays as an alias),
+  `argument-hint`, and `model`. Skill bodies expand positional arguments (`$1`,
+  `$2`, … `$N` — whitespace-split, empty when absent) alongside the existing
+  `$ARGUMENTS`, matching Claude Code semantics; a body that references neither
+  still gets non-empty arguments appended, as before. The skill's base
+  directory is now surfaced: `$KLAUDIA_SKILL_DIR` (and `${KLAUDIA_SKILL_DIR}`)
+  expands to it in the body, and a one-line preamble names it in the result so
+  the model can reach files bundled beside the skill. `argument-hint` is
+  surfaced in the Skill tool's description; `allowed-tools` and `model` are
+  parsed, stored and documented but not yet enforced — there is no per-skill
+  tool-restriction or model-switch hook, since a skill injects instructions
+  into the current turn rather than opening a scoped sub-session.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

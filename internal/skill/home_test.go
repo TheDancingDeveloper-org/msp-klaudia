@@ -40,7 +40,7 @@ func TestLoadSkipsClaudeSyncedStoreQuietly(t *testing.T) {
 	write(t, filepath.Join(home, ".claude", "skills", "review", "SKILL.md"), "---\ndescription: installed\n---\nbody")
 
 	var warnings []string
-	got := Load(t.TempDir(), func(m string) { warnings = append(warnings, m) })
+	got := nonBundled(Load(t.TempDir(), func(m string) { warnings = append(warnings, m) }))
 	if len(warnings) != 0 {
 		t.Errorf("warnings = %q, want none for the synced store", warnings)
 	}
@@ -69,7 +69,7 @@ func TestLoadSkillNamedSyncedStillLoads(t *testing.T) {
 	// A real skill that happens to be called "synced" is not the store.
 	write(t, filepath.Join(home, ".claude", "skills", "synced", "SKILL.md"), "---\ndescription: d\n---\nbody")
 
-	got := Load(t.TempDir(), nil)
+	got := nonBundled(Load(t.TempDir(), nil))
 	if len(got) != 1 || got[0].Name != "synced" {
 		t.Fatalf("got %+v, want the skill named synced", got)
 	}

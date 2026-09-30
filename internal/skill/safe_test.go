@@ -15,10 +15,10 @@ func TestLoadUserSkipsProjectSkills(t *testing.T) {
 	os.MkdirAll(filepath.Join(cwd, ".klaudia", "skills"), 0o755)
 	os.WriteFile(filepath.Join(cwd, ".klaudia", "skills", "theirs.md"), []byte("---\ndescription: theirs\n---\nx"), 0o644)
 
-	if got := len(Load(cwd, nil)); got != 2 {
+	if got := len(nonBundled(Load(cwd, nil))); got != 2 {
 		t.Fatalf("Load = %d skills, want 2", got)
 	}
-	got := LoadUser(nil)
+	got := nonBundled(LoadUser(nil))
 	if len(got) != 1 || got[0].Name != "mine" {
 		t.Errorf("LoadUser = %+v, want only the user's skill", got)
 	}
