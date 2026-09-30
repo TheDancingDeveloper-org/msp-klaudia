@@ -96,6 +96,8 @@ type Config struct {
 	Warnings []string `toml:"-"`
 	// Session configures how a launch picks up earlier sessions.
 	Session Session `toml:"session,omitempty"`
+	// TUI configures terminal-UI behaviour.
+	TUI TUI `toml:"tui,omitempty"`
 }
 
 // Session configures session resume.
@@ -133,6 +135,23 @@ func (s Session) MaxAge() (time.Duration, error) {
 		return DefaultAutoResumeMaxAge, fmt.Errorf("session.autoResumeMaxAge %q is not a duration like \"24h\", \"7d\" or \"0\"; using 24h", v)
 	}
 	return d, nil
+}
+
+// TUI configures the terminal UI.
+type TUI struct {
+	// Notify selects how Klaudia gets your attention when it needs you while you
+	// are looking elsewhere — a turn has finished, or a permission/approval
+	// prompt is waiting. It is a comma-separated list of mechanisms:
+	//
+	//   "bell"   — the terminal bell (\a); the most widely supported.
+	//   "osc9"   — an OSC 9 desktop notification (iTerm2, kitty, WezTerm, …).
+	//   "osc777" — an OSC 777 desktop notification (rxvt/urxvt and others).
+	//
+	// "all" enables every mechanism; "off"/"none"/"false" stays silent. Unset
+	// defaults to "bell", the least intrusive and most portable choice. When
+	// the terminal reports focus, the notification is emitted only while the
+	// window is unfocused.
+	Notify string `toml:"notify,omitempty"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -529,6 +548,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Session.AutoResumeMaxAge != "" {
 		dst.Session.AutoResumeMaxAge = src.Session.AutoResumeMaxAge
+	}
+	if src.TUI.Notify != "" {
+		dst.TUI.Notify = src.TUI.Notify
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)

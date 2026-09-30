@@ -588,6 +588,10 @@ provider = "anthropic"
 # mode = "autonomous" # autonomous | plan | bypassPermissions | dontAsk
 # allow = ["Bash(go test:*)"]
 # deny = ["Bash(rm:*)"]
+#
+# [tui]
+# notify = "bell" # attention when a turn finishes / a prompt waits: comma list
+#                 # of bell | osc9 | osc777, or "all" / "off". Default: bell.
 `
 
 func createConfig(scope, cwd string) (string, error) {
@@ -1562,6 +1566,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			PermissionMode:      string(mode),
 			EnterInserts:        tui.EnterInserts(cfg.Input.Enter, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			PromptHistory:       session.NewPromptHistory(session.PromptHistoryPath(cwd), tui.MaxInputHistory),
+			Notify:              tui.ParseNotify(cfg.TUI.Notify, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			Memory:              memStore,
 			Goal:                restoredGoal,
 			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },
