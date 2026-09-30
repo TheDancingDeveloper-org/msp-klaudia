@@ -491,6 +491,13 @@ type Model struct {
 	statTurns int
 	statIn    int64
 	statOut   int64
+	// Cumulative cache tokens for the session, tracked separately from statIn/
+	// statOut because cost prices them at different rates. Live "usage" events
+	// carry no cache deltas, so these are updated only at doneMsg from the
+	// authoritative Result — the status-bar cost is therefore exact at each turn
+	// end and slightly under mid-turn (cache reads not yet counted).
+	statCacheRead  int64
+	statCacheWrite int64
 	// Per-turn tally of what we already counted via live "usage" events. Reset
 	// at startTurn and subtracted from the final Result at doneMsg so a dropped
 	// usage event still settles correctly without double-counting.
@@ -1044,6 +1051,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statTurns += msg.res.NumTurns - m.turnLiveTurns
 		m.statIn += msg.res.InputTokens - m.turnLiveIn
 		m.statOut += msg.res.OutputTokens - m.turnLiveOut
+		// Cache tokens have no live delta, so add the whole turn's Result totals
+		// (each turn is one loop.Run, so its Cache* fields are that turn's cost).
+		m.statCacheRead += msg.res.CacheReadInputTokens
+		m.statCacheWrite += msg.res.CacheCreationInputTokens
 		m.turnLiveTurns, m.turnLiveIn, m.turnLiveOut = 0, 0, 0
 		// Clear phase state too so a queued-message follow-up turn starts
 		// fresh — a stale "running Bash" or "quiet for 90s" would otherwise
@@ -2349,6 +2360,7 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 	case "/stats":
 		resident := compaction.EstimateTokens(m.history)
 		m.appendLine(bannerStyle.Render(formatStats(m.statTurns, m.statIn, m.statOut, resident, m.sess.ContextWindow, m.sess.ContextWindowSource)))
+		m.appendLine(bannerStyle.Render(formatCostStats(m.sessionModel(), m.sessionUsage())))
 	case "/allow", "/deny":
 		// Deprecated in favour of /trust: no longer listed in /help or offered
 		// by type-ahead, but still honoured so muscle memory and existing

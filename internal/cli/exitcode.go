@@ -24,6 +24,11 @@ const (
 	// Distinct from failure: what was done is done, and re-running with a
 	// higher --max-turns is a reasonable response.
 	ExitMaxTurns = 3
+	// ExitMaxBudget — the --max-budget-usd cost limit was reached with work still
+	// outstanding. Like ExitMaxTurns it is a limit, not a failure: re-running with
+	// a higher --max-budget-usd is a reasonable response, and an automation can
+	// tell "ran out of budget" from "ran out of turns" from "the model failed".
+	ExitMaxBudget = 5
 	// ExitHostChangeBlocked — the task needed a change to this machine and had
 	// no way to get agreement. Re-running with --allow-host-changes is the
 	// answer, and an automation can decide that for itself.

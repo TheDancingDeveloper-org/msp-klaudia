@@ -366,7 +366,7 @@ func TestResultLineCarriesSessionAndDuration(t *testing.T) {
 	if ms, ok := res["duration_ms"].(float64); !ok || ms < 20 {
 		t.Errorf("duration_ms = %v, want >= 20", res["duration_ms"])
 	}
-	if _, ok := res["total_cost_usd"]; ok {
-		t.Errorf("result carries total_cost_usd without a real cost: %v", res)
+	if c, ok := res["total_cost_usd"].(float64); !ok || c != 0 {
+		t.Errorf("total_cost_usd = %v, want 0 for a run with no priced usage", res["total_cost_usd"])
 	}
 }

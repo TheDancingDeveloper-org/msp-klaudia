@@ -70,12 +70,17 @@ type Recorder interface {
 
 // Options configures a single Run.
 type Options struct {
-	Prompt     string
-	Model      anthropic.Model
-	System     string
-	MaxTurns   int   // 0 = unlimited
-	MaxTokens  int64 // 0 = model-aware default via api.MaxOutputTokensFor
-	Permission permission.Context
+	Prompt    string
+	Model     anthropic.Model
+	System    string
+	MaxTurns  int   // 0 = unlimited
+	MaxTokens int64 // 0 = model-aware default via api.MaxOutputTokensFor
+	// MaxBudgetUSD stops the run once cumulative cost reaches this many USD,
+	// the same way MaxTurns stops it on turn count. 0 = unlimited. It can only
+	// fire for a model with a known price (see api.CostUSD); an unpriced model
+	// (e.g. an OpenAI-compatible endpoint) has cost 0 and is never budget-stopped.
+	MaxBudgetUSD float64
+	Permission   permission.Context
 	// Host is the trust gate: it classifies each tool call and refuses changes
 	// to this machine that the user has not agreed to. Nil disables the whole
 	// feature, which is what every caller that has not been wired up yet gets.
@@ -172,6 +177,12 @@ type Result struct {
 	// against wall time it separates "the model was slow" from "the tools
 	// were". Sub-agents' requests are theirs, as their token counts are.
 	APIDuration time.Duration
+	// CostUSD is the cumulative cost of the run in USD, derived from the token
+	// totals above and the per-model price table (api.CostUSD). It is 0 for a
+	// model with no known price (unknown/OpenAI-compatible), so a 0 here can mean
+	// either "free" or "unpriced" — callers that must tell them apart re-query
+	// api.CostUSD for the known flag.
+	CostUSD float64
 	// Messages is the full conversation after the run (initial + this turn's
 	// exchanges), so a caller can carry it forward as InitialMessages for the
 	// next turn (used by the stream-json embedding frontend).
@@ -417,6 +428,14 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		res.OutputTokens += assistant.Usage.OutputTokens
 		res.CacheReadInputTokens += assistant.Usage.CacheReadInputTokens
 		res.CacheCreationInputTokens += assistant.Usage.CacheCreationInputTokens
+		// Recompute cumulative cost from the running totals (not per-delta) so
+		// rounding never accumulates. Unknown models return 0, leaving CostUSD 0.
+		res.CostUSD, _ = api.CostUSD(string(opts.Model), api.Usage{
+			InputTokens:              res.InputTokens,
+			OutputTokens:             res.OutputTokens,
+			CacheReadInputTokens:     res.CacheReadInputTokens,
+			CacheCreationInputTokens: res.CacheCreationInputTokens,
+		})
 		res.Text = finalText
 		// Live usage tick: emit per inner LLM call so frontends can update
 		// counters during long iterations. TurnDelta=1 mirrors res.NumTurns
@@ -546,6 +565,17 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 
 		if opts.MaxTurns > 0 && res.NumTurns >= opts.MaxTurns {
 			res.StopReason = "max_turns"
+			res.Messages = messages
+			return res, nil
+		}
+
+		// Budget stop, checked here alongside max_turns (end of turn, after the
+		// tool batch) so the run stops on a clean boundary rather than mid-turn
+		// with dangling tool_use. Like max_turns, it can overshoot by at most the
+		// last turn's cost. res.CostUSD is 0 for an unpriced model, so this never
+		// trips without a known price.
+		if opts.MaxBudgetUSD > 0 && res.CostUSD >= opts.MaxBudgetUSD {
+			res.StopReason = "max_budget"
 			res.Messages = messages
 			return res, nil
 		}

@@ -27,25 +27,26 @@ const loopStallLimit = 3
 // loopRun bundles the already-built run state the goal loop reuses (set up once
 // in run() like the single-shot headless path).
 type loopRun struct {
-	loop        *agent.Loop
-	cwd         string
-	mode        permission.Mode
-	model       anthropic.Model
-	provider    string // configured provider name, for the model-aware defaults
-	effort      string
-	thinking    string
-	system      string
-	maxTurns    int
-	iterations  int
-	permCtx     permission.Context
-	hostGate    *agent.HostGate
-	approver    agent.Approver
-	deferred    map[string]bool
-	recorder    agent.Recorder
-	onSummary   func(string)
-	hooks       *hooks.Runner
-	render      *Renderer
-	diagnostics tools.DiagnosticsFunc
+	loop         *agent.Loop
+	cwd          string
+	mode         permission.Mode
+	model        anthropic.Model
+	provider     string // configured provider name, for the model-aware defaults
+	effort       string
+	thinking     string
+	system       string
+	maxTurns     int
+	maxBudgetUSD float64
+	iterations   int
+	permCtx      permission.Context
+	hostGate     *agent.HostGate
+	approver     agent.Approver
+	deferred     map[string]bool
+	recorder     agent.Recorder
+	onSummary    func(string)
+	hooks        *hooks.Runner
+	render       *Renderer
+	diagnostics  tools.DiagnosticsFunc
 }
 
 // goalRetryBackoff is how long the goal loop waits before each retry of an
@@ -129,6 +130,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			ProviderName:  p.provider,
 			System:        p.system,
 			MaxTurns:      p.maxTurns,
+			MaxBudgetUSD:  p.maxBudgetUSD,
 			Permission:    p.permCtx,
 			Host:          p.hostGate,
 			Approver:      p.approver,

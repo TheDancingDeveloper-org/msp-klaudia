@@ -688,12 +688,13 @@ type options struct {
 	dangerouslySkip  bool
 	verbose          bool
 	maxTurns         int
-	resume           string // --resume <session-id>
-	continueSession  bool   // --continue
-	newSession       bool   // --new-session
-	forkSession      bool   // --fork-session
-	fullResume       bool   // --full (replay entire transcript, not the summary)
-	sessionID        string // --session-id <id>: the id to record under (embedders)
+	maxBudgetUSD     float64 // --max-budget-usd: stop the run past this cumulative cost
+	resume           string  // --resume <session-id>
+	continueSession  bool    // --continue
+	newSession       bool    // --new-session
+	forkSession      bool    // --fork-session
+	fullResume       bool    // --full (replay entire transcript, not the summary)
+	sessionID        string  // --session-id <id>: the id to record under (embedders)
 
 	allowedTools    []string
 	disallowedTools []string
@@ -986,6 +987,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.dangerouslySkip, "dangerously-skip-permissions", false, "Skip all permission checks (sets bypassPermissions)")
 	f.BoolVar(&opts.verbose, "verbose", false, "Verbose output (required for stream-json)")
 	f.IntVar(&opts.maxTurns, "max-turns", 0, "Limit the number of agentic loop turns (0 = unlimited)")
+	f.Float64Var(&opts.maxBudgetUSD, "max-budget-usd", 0, "Stop the run once its cumulative cost reaches this many USD, checked at each turn boundary like --max-turns (0 = unlimited; has no effect on models with no known price)")
 	f.StringVarP(&opts.resume, "resume", "r", "", "Resume a session by ID")
 	f.BoolVarP(&opts.continueSession, "continue", "c", false, "Resume the most recent session in this directory (interactive runs already do this unless --new-session; headless runs only with this flag)")
 	f.BoolVar(&opts.newSession, "new-session", false, "Start a fresh session instead of auto-resuming the most recent session in this directory")
@@ -1741,6 +1743,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				ProviderName:    cfg.Provider,
 				System:          withExtraDirs(sysPrompt, sess.ExtraDirs),
 				MaxTurns:        opts.maxTurns,
+				MaxBudgetUSD:    opts.maxBudgetUSD,
 				ContextWindow:   cfg.ContextWindow,
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      turnPerm,
@@ -1792,6 +1795,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				ProviderName:    cfg.Provider,
 				System:          headlessSys,
 				MaxTurns:        opts.maxTurns,
+				MaxBudgetUSD:    opts.maxBudgetUSD,
 				ContextWindow:   cfg.ContextWindow,
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      permCtx,
@@ -1814,25 +1818,26 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// Autonomous goal loop: iterate against the spec until complete or capped.
 	if opts.loop {
 		return runGoalLoop(ctx, cmd, loopRun{
-			loop:        loop,
-			cwd:         cwd,
-			mode:        mode,
-			model:       model,
-			provider:    cfg.Provider,
-			effort:      effort,
-			thinking:    thinking,
-			system:      headlessSys,
-			maxTurns:    opts.maxTurns,
-			iterations:  opts.maxIterations,
-			permCtx:     permCtx,
-			hostGate:    hostGate,
-			approver:    approver,
-			deferred:    deferredTools,
-			recorder:    recorder,
-			onSummary:   onSummary,
-			hooks:       hookRunner,
-			render:      r,
-			diagnostics: lspPool.Diagnostics,
+			loop:         loop,
+			cwd:          cwd,
+			mode:         mode,
+			model:        model,
+			provider:     cfg.Provider,
+			effort:       effort,
+			thinking:     thinking,
+			system:       headlessSys,
+			maxTurns:     opts.maxTurns,
+			maxBudgetUSD: opts.maxBudgetUSD,
+			iterations:   opts.maxIterations,
+			permCtx:      permCtx,
+			hostGate:     hostGate,
+			approver:     approver,
+			deferred:     deferredTools,
+			recorder:     recorder,
+			onSummary:    onSummary,
+			hooks:        hookRunner,
+			render:       r,
+			diagnostics:  lspPool.Diagnostics,
 		})
 	}
 
@@ -1862,6 +1867,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		ProviderName:    cfg.Provider,
 		System:          headlessSys,
 		MaxTurns:        opts.maxTurns,
+		MaxBudgetUSD:    opts.maxBudgetUSD,
 		ContextWindow:   cfg.ContextWindow,
 		MaxTokens:       int64(cfg.MaxTokens),
 		Permission:      permCtx,
@@ -1887,7 +1893,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		Result:        res.Text,
 		StopReason:    res.StopReason,
 		SessionID:     sessionID,
-		TotalCostUSD:  0, // not computed yet: cost tracking is #150.
+		TotalCostUSD:  res.CostUSD, // derived from usage + api pricing table; 0 for unpriced models
 		Usage: map[string]any{
 			"input_tokens":                res.InputTokens,
 			"output_tokens":               res.OutputTokens,
@@ -1927,6 +1933,8 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		return exitError{ExitHostChangeBlocked}
 	case res.StopReason == "max_turns":
 		return exitError{ExitMaxTurns}
+	case res.StopReason == "max_budget":
+		return exitError{ExitMaxBudget}
 	case agent.TurnEndedEmpty(res.Text) && agent.TurnNote(res.StopReason, false) != "":
 		// The model refused or hit a limit and returned nothing. No answer came
 		// back, so this is a failure a caller should be able to branch on.

@@ -634,14 +634,15 @@ func decodeUserContent(raw json.RawMessage) string {
 // it was interrupted, rather than the bare context error.
 func (d *Driver) resultEvent(res agent.Result, err error, dur time.Duration, interrupted bool) map[string]any {
 	m := map[string]any{
-		"type":        "result",
-		"subtype":     "success",
-		"is_error":    err != nil,
-		"duration_ms": dur.Milliseconds(),
-		"num_turns":   res.NumTurns,
-		"result":      res.Text,
-		"stop_reason": res.StopReason,
-		"session_id":  d.SessionID,
+		"type":           "result",
+		"subtype":        "success",
+		"is_error":       err != nil,
+		"duration_ms":    dur.Milliseconds(),
+		"num_turns":      res.NumTurns,
+		"result":         res.Text,
+		"stop_reason":    res.StopReason,
+		"session_id":     d.SessionID,
+		"total_cost_usd": res.CostUSD,
 		"usage": map[string]any{
 			"input_tokens":                res.InputTokens,
 			"output_tokens":               res.OutputTokens,

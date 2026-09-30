@@ -38,6 +38,9 @@ func TurnNote(stopReason string, hadText bool) string {
 	case "model_context_window_exceeded":
 		return "The conversation is too large for the model's context window. /compact to " +
 			"summarise it, or /clear to start fresh."
+	case "max_budget":
+		return "Stopped: the run reached its --max-budget-usd cost limit. What was done is done; " +
+			"re-run with a higher --max-budget-usd to continue."
 	}
 	return ""
 }
