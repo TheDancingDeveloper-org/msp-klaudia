@@ -254,6 +254,12 @@ which is what the status bar's `ctx N%` measures against.
 (`low`, `medium`, `high`, `xhigh`, `max`; `default` returns to the model's own);
 with no argument it reports the current level. It applies from the next turn.
 
+Every picker (`/model`, `/mode`, `/theme`, `/mcp`) works the same way: `↑`/`↓`
+move the highlight and Enter picks it, typing filters the list (Backspace edits
+the filter), `1`–`9` pick directly while no filter is typed, and Esc cancels. A
+list longer than the terminal scrolls, so `/model` offers everything the
+endpoint serves.
+
 `/theme` switches the colour theme (Markdown + chrome) for the session; set a
 durable default with `theme = "nord"` in `.klaudia/config.toml` (dracula |
 gruvbox | tokyo-night | nord | light | catppuccin). `NO_COLOR` is honoured.
