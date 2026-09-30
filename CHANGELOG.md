@@ -990,6 +990,11 @@ port mirrors (see `internal/version`).
   history from the first line and ↓ from the last (readline's
   up-line-or-history), elsewhere they move the cursor. A long line that wraps
   counts by its displayed rows, so ↑ at the end of one first walks up it.
+- **The Bash tool now tells the model how its shell behaves.** Its description
+  says each call is a fresh shell in the project directory (`cd` and exports do
+  not carry over) and names `run_in_background` for commands that never finish
+  on their own. A timeout now states the limit that was hit and whether a larger
+  `timeout` is still possible, rather than a bare "timed out".
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},
