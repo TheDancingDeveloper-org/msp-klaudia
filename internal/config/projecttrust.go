@@ -129,6 +129,8 @@ func withholdUntrusted(c *Config) []string {
 	}
 	hold(c.Provider != "", "provider", func() { c.Provider = "" })
 	hold(c.BaseURL != "", "baseURL", func() { c.BaseURL = "" })
+	// The Bedrock region decides where prompts are processed (data residency).
+	hold(c.Region != "", "region", func() { c.Region = "" })
 	hold(c.APIKey != "", "apiKey", func() { c.APIKey = "" })
 	hold(c.APIKeyEnv != "", "apiKeyEnv", func() { c.APIKeyEnv = "" })
 	hold(len(c.ExtraHeadersEnv) > 0, "extraHeadersEnv", func() { c.ExtraHeadersEnv = nil })

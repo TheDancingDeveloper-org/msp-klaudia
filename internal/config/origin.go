@@ -117,6 +117,7 @@ func Origins(cwd string) []Setting {
 	scalar("model", home.Model, proj.Model, "")
 	scalar("theme", home.Theme, proj.Theme, "")
 	scalar("baseURL", home.BaseURL, proj.BaseURL, "")
+	scalar("region", home.Region, proj.Region, "")
 
 	// API key: never print the value. Report whether one resolves and its
 	// source. An inline apiKey in a file is a file origin; an apiKeyEnv that

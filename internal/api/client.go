@@ -280,6 +280,11 @@ type Client struct {
 	// Anthropic API), kept so a model-not-found error can say where it came
 	// from.
 	baseURL string
+	// bedrock marks a client built by NewBedrock: requests are adapted to what
+	// Bedrock serves (see adaptForBedrock), with bedrockBetas the beta flags
+	// allowed through.
+	bedrock      bool
+	bedrockBetas []anthropic.AnthropicBeta
 }
 
 // defaultAnthropicEndpoint is what an unset baseURL talks to, named in errors.

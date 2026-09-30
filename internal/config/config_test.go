@@ -514,3 +514,19 @@ command = "project-post"
 		t.Errorf("PostToolUse groups = %d, want 0 (project dropped)", len(cfg.Hooks.PostToolUse))
 	}
 }
+
+func TestBedrockConfigFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	writeConfig(t, home, `provider = "bedrock"
+region = "ap-southeast-2"
+model = "au.anthropic.claude-sonnet-4-5-20250929-v1:0"
+bedrockBetas = ["context-management-2025-06-27"]
+`)
+	cfg := mustLoad(t, t.TempDir())
+	if cfg.Provider != ProviderBedrock || cfg.Region != "ap-southeast-2" ||
+		len(cfg.BedrockBetas) != 1 || cfg.BedrockBetas[0] != "context-management-2025-06-27" {
+		t.Errorf("cfg = %+v", cfg)
+	}
+}
