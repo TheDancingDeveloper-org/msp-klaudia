@@ -6,7 +6,6 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -531,14 +530,31 @@ func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
 // outlives the deadline: it bounds the handshake, not the connection. It goes
 // through m.connect so the Manager's client options (tools/list_changed) are
 // wired into every session.
+//
+// The deadline is enforced with a timer that cancels the connect context if the
+// handshake has not finished in time, and is stopped the moment connect
+// returns. A plain `context.WithTimeout` + `defer cancel()` cannot be used: the
+// legacy SSE transport keeps its event stream on the connect context for the
+// session's whole life, so cancelling it once connect returns tears a
+// just-connected SSE server straight back down (streamable HTTP and stdio don't
+// care, which is why this only surfaced for SSE). On success the context's
+// release is handed to the parent instead, which ends when Klaudia does.
 func (m *Manager) connectWithDeadline(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
-	cctx, cancel := context.WithTimeout(ctx, connectTimeout())
-	defer cancel()
+	cctx, cancel := context.WithCancel(ctx)
+	timer := time.AfterFunc(connectTimeout(), cancel)
 	srv, err := m.connect(cctx, name, cfg)
-	if err != nil && errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-		return nil, fmt.Errorf("mcp %q: no answer within %s of starting (KLAUDIA_MCP_CONNECT_TIMEOUT): %w", name, connectTimeout(), err)
+	timedOut := !timer.Stop() // Stop reports false when the timer already fired
+	if err != nil {
+		cancel()
+		if timedOut && ctx.Err() == nil {
+			return nil, fmt.Errorf("mcp %q: no answer within %s of starting (KLAUDIA_MCP_CONNECT_TIMEOUT): %w", name, connectTimeout(), err)
+		}
+		return nil, err
 	}
-	return srv, err
+	// Keep the session's context alive past the handshake; release it when the
+	// parent context is done rather than now.
+	context.AfterFunc(ctx, cancel)
+	return srv, nil
 }
 
 // connectTimeout is how long a server has to complete its handshake.
