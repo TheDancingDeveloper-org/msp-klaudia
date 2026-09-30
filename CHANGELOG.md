@@ -919,6 +919,19 @@ port mirrors (see `internal/version`).
   confirmation again. An OpenAI provider with no `model` configured and no
   `--model` is now a startup error instead of silently requesting Claude's
   default model.
+- **A headless run that could not start wrote nothing to stdout in JSON mode.**
+  With `--output-format json` or `stream-json`, a missing credential, an
+  incomplete provider config or a bad flag combination went to stderr as plain
+  text and left stdout empty, so a script parsing stdout had nothing to parse.
+  It now gets an `is_error: true` result line with the reason (the stderr
+  message stays). The exit code is unchanged.
+- **`duration_api_ms` was the wall time.** It is now the time spent waiting on
+  the model — requests, retries and autocompact summaries — so it no longer
+  counts tool execution. `total_cost_usd` still reads `0`: cost is not computed
+  yet.
+- **Some usage errors exited 1.** An invalid `--output-format`,
+  `--create-config=foo` and `--new-session` with `--resume`/`--continue` now
+  exit 2, like an unknown flag.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

@@ -274,6 +274,14 @@ runs headless and exits, so it scripts the same way. (Claude Code opens its TUI
 with the prompt instead; see [docs/ux-spec.md](docs/ux-spec.md).)
 `--max-turns N` caps the agentic loop; `0`, the default, is unlimited.
 
+With `--output-format json` or `stream-json`, stdout always ends with a
+`result` line, even when the run cannot start (no credential, an incomplete
+provider config, a bad flag combination): `is_error` is `true` and `result`
+carries the reason, which is also printed to stderr. `duration_api_ms` is the
+time spent waiting on the model, `duration_ms` the whole run. `total_cost_usd`
+is not computed yet and reads `0`. The exit code says what kind of failure it
+was — see [Exit codes](docs/jobs.md#exit-codes).
+
 ### Shell completion
 
 ```bash

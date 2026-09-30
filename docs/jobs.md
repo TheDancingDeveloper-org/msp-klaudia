@@ -143,7 +143,7 @@ Headless runs exit with a code an automation can branch on:
 |---|---|
 | 0 | completed |
 | 1 | failed — the reason is in the result payload |
-| 2 | invoked wrongly (bad flag, invalid mode); nothing ran |
+| 2 | invoked wrongly (unknown flag, bad flag value or combination, invalid mode); nothing ran |
 | 3 | hit `--max-turns` with work outstanding |
 | 4 | needed a host change and had no way to ask — see `--allow-host-changes` |
 | 130 | interrupted (SIGINT/SIGTERM) |
