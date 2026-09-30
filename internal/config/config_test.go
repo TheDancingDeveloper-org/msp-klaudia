@@ -96,14 +96,14 @@ func TestLoadTUINotifyOverridesHome(t *testing.T) {
 	writeConfig(t, home, "[tui]\nnotify = \"bell\"\n")
 
 	// Global-only: inherited.
-	if cfg := Load(t.TempDir()); cfg.TUI.Notify != "bell" {
+	if cfg := mustLoad(t, t.TempDir()); cfg.TUI.Notify != "bell" {
 		t.Errorf("tui.notify = %q, want bell (from home)", cfg.TUI.Notify)
 	}
 
 	// Project overrides global.
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "[tui]\nnotify = \"off\"\n")
-	if cfg := Load(cwd); cfg.TUI.Notify != "off" {
+	if cfg := mustLoad(t, cwd); cfg.TUI.Notify != "off" {
 		t.Errorf("tui.notify = %q, want off (project wins)", cfg.TUI.Notify)
 	}
 }
@@ -446,5 +446,71 @@ func TestLoadSessionProjectOverridesHome(t *testing.T) {
 	writeConfig(t, cwd, "[session]\nautoResumeMaxAge = \"0\"\n")
 	if cfg := mustLoad(t, cwd); cfg.Session.AutoResumeMaxAge != "0" {
 		t.Errorf("autoResumeMaxAge = %q, want 0 (project wins)", cfg.Session.AutoResumeMaxAge)
+	}
+}
+
+func TestLoadUserHooksParsed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `
+[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo hi"
+timeout = 30
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+command = "echo stop"
+`)
+
+	cfg := mustLoad(t, t.TempDir())
+	if len(cfg.Hooks.PreToolUse) != 1 {
+		t.Fatalf("PreToolUse groups = %d, want 1", len(cfg.Hooks.PreToolUse))
+	}
+	g := cfg.Hooks.PreToolUse[0]
+	if g.Matcher != "Bash" || len(g.Hooks) != 1 {
+		t.Fatalf("group = %+v", g)
+	}
+	if h := g.Hooks[0]; h.Type != "command" || h.Command != "echo hi" || h.Timeout != 30 {
+		t.Errorf("hook = %+v", h)
+	}
+	if len(cfg.Hooks.Stop) != 1 {
+		t.Errorf("Stop groups = %d, want 1", len(cfg.Hooks.Stop))
+	}
+}
+
+// Project-level hooks are a code-execution vector and must be dropped: only
+// user-level (~/.klaudia) hooks survive Load.
+func TestLoadDropsProjectHooks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeConfig(t, home, `
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+command = "user-hook"
+`)
+
+	cwd := t.TempDir()
+	writeConfig(t, cwd, `
+[[hooks.PreToolUse]]
+[[hooks.PreToolUse.hooks]]
+command = "project-hook"
+
+[[hooks.PostToolUse]]
+[[hooks.PostToolUse.hooks]]
+command = "project-post"
+`)
+
+	cfg := mustLoad(t, cwd)
+	if len(cfg.Hooks.PreToolUse) != 1 {
+		t.Fatalf("PreToolUse groups = %d, want 1 (user only)", len(cfg.Hooks.PreToolUse))
+	}
+	if got := cfg.Hooks.PreToolUse[0].Hooks[0].Command; got != "user-hook" {
+		t.Errorf("surviving hook = %q, want user-hook", got)
+	}
+	if len(cfg.Hooks.PostToolUse) != 0 {
+		t.Errorf("PostToolUse groups = %d, want 0 (project dropped)", len(cfg.Hooks.PostToolUse))
 	}
 }

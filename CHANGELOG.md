@@ -381,6 +381,40 @@ port mirrors (see `internal/version`).
   unfocused; a terminal that never reports focus is notified regardless. The
   escape sequences are emitted through the render path like the OSC 52 clipboard
   copy, keeping them ordered with the frame rather than racing it.
+- **Lifecycle hooks: `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`.**
+  A `[hooks]` config section maps each event to matcher groups of shell commands,
+  modeled on Claude Code. Each hook receives a JSON payload on stdin
+  (`hook_event_name` plus event fields: `tool_name`/`tool_input` for PreToolUse,
+  those plus `tool_response` for PostToolUse, `prompt` for UserPromptSubmit) and
+  steers the loop by exit code and stdout: exit 0 with
+  `{"decision":"block","reason":…}` blocks the action, exit 2 blocks with stderr
+  as the reason, any other non-zero is logged and ignored. PreToolUse can deny a
+  tool (an error tool_result carries the reason and the tool never runs);
+  PostToolUse appends feedback to the result; UserPromptSubmit can block the turn
+  or add `additionalContext` to the prompt; a blocking Stop hook re-injects its
+  reason and keeps the model working (bounded, so an always-blocking hook cannot
+  loop forever). Per-hook `timeout` (default 60s) is enforced by killing the
+  hook's process group. Matchers apply to the tool name for the two tool events
+  (empty/`*` match all; otherwise an anchored regexp, falling back to exact
+  match).
+
+  Config shape:
+
+  ```toml
+  [[hooks.PreToolUse]]
+  matcher = "Bash"
+  [[hooks.PreToolUse.hooks]]
+  type = "command"
+  command = "my-guard"
+  timeout = 30
+  ```
+
+  **Limitation — project hooks are ignored.** Hooks run arbitrary commands, so a
+  checked-in project `.klaudia/config.toml` would be a code-execution vector for
+  anyone who can commit to the repo (the escalation the repo already gates for
+  project-supplied executable config). Only user-level (`~/.klaudia`) hooks are
+  honored; project-level hooks are dropped at load time. A future project-trust
+  prompt could relax this.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

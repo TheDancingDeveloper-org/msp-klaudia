@@ -22,6 +22,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/doctor"
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/lsp"
 	"github.com/greenthread-ai/klaudia/internal/mcp"
 	"github.com/greenthread-ai/klaudia/internal/memory"
@@ -1160,6 +1161,15 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		}
 	}
 
+	// Lifecycle hooks (user-level only; project hooks are dropped by
+	// config.LoadTrusting). nil when none are configured, which disables the
+	// feature in the loop.
+	hookRunner := hooks.New(cfg.Hooks, cwd)
+	if hookRunner != nil {
+		hookRunner.Logf = func(format string, args ...any) {
+			fmt.Fprintf(cmd.ErrOrStderr(), "hook: "+format+"\n", args...)
+		}
+	}
 	provider, providerModel, err := buildProvider(cfg)
 	if err != nil {
 		return err
@@ -1629,6 +1639,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      turnPerm,
 				Host:            hostGate,
+				Hooks:           hookRunner,
 				Interject:       interject,
 				BeforeEdit:      beforeEdit,
 				DeferredTools:   currentDeferred(),
@@ -1679,6 +1690,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				MaxTokens:       int64(cfg.MaxTokens),
 				Permission:      permCtx,
 				Host:            hostGate,
+				Hooks:           hookRunner,
 				Approver:        ap,
 				DeferredTools:   currentDeferred(),
 				InitialMessages: history,
@@ -1712,6 +1724,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			deferred:    deferredTools,
 			recorder:    recorder,
 			onSummary:   onSummary,
+			hooks:       hookRunner,
 			render:      r,
 			diagnostics: lspPool.Diagnostics,
 		})
@@ -1747,6 +1760,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		MaxTokens:       int64(cfg.MaxTokens),
 		Permission:      permCtx,
 		Host:            hostGate,
+		Hooks:           hookRunner,
 		Approver:        approver,
 		DeferredTools:   deferredTools,
 		InitialMessages: initialMessages,

@@ -22,6 +22,7 @@ import (
 
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/compaction"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
@@ -144,6 +145,10 @@ type Options struct {
 	// caller that has not wired it) makes it a no-op. It is a passthrough into
 	// tools.Context — the loop does not decide anything with it.
 	Diagnostics tools.DiagnosticsFunc
+	// Hooks, if set, runs user-configured lifecycle hooks (PreToolUse,
+	// PostToolUse, UserPromptSubmit, Stop). Nil disables the feature entirely,
+	// which is what every caller that has not been wired up gets.
+	Hooks *hooks.Runner
 }
 
 // Result is the outcome of a Run.
@@ -283,20 +288,43 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		}
 	}
 
+	var res Result
 	messages := append([]anthropic.BetaMessageParam{}, opts.InitialMessages...)
 	if opts.Prompt != "" {
-		userMsg := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(opts.Prompt))
+		prompt := opts.Prompt
+		// UserPromptSubmit hooks see the prompt before it is added. A block
+		// aborts the turn with the reason; additionalContext is appended to the
+		// user message so the model sees it alongside the prompt.
+		if opts.Hooks != nil {
+			hd, _ := opts.Hooks.Run(ctx, hooks.UserPromptSubmit, hooks.Input{Prompt: prompt})
+			if hd.Block {
+				res.StopReason = "hook_block"
+				res.Text = hookBlockText(hd.Reason)
+				res.Messages = messages
+				if emit != nil {
+					emit(Event{Type: "assistant", Text: res.Text})
+				}
+				return res, nil
+			}
+			if hd.AdditionalContext != "" {
+				prompt = prompt + "\n\n" + hd.AdditionalContext
+			}
+		}
+		userMsg := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(prompt))
 		messages = append(messages, userMsg)
 		rec("user", userMsg)
 	}
 
-	var res Result
 	halted := false
 	// calib corrects the local token estimate using the input sizes the API
 	// reports; overflowRecovered ensures the compact-and-retry path fires at
 	// most once per Run, so a genuinely oversized request still surfaces.
 	var calib compaction.Calibration
 	overflowRecovered := false
+	// stopBlocks counts how many times a Stop hook has forced the loop to
+	// re-enter after a tool-less final answer. Capped by stopBlockLimit so a
+	// hook that always blocks cannot loop forever.
+	stopBlocks := 0
 	for {
 		res.NumTurns++
 
@@ -422,6 +450,31 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Collect tool_use blocks from this turn.
 		toolUses := toolUseBlocks(assistant)
 		if len(toolUses) == 0 {
+			// Stop hooks fire when the model is about to return a tool-less final
+			// answer. A block re-enters the loop with the hook's reason injected
+			// as a user message so the model keeps working. A user halt wins over
+			// any Stop hook, and stopBlockLimit bounds the re-entries so a hook
+			// that always blocks cannot loop forever.
+			if opts.Hooks != nil && !halted && stopBlocks < stopBlockLimit {
+				hd, _ := opts.Hooks.Run(ctx, hooks.Stop, hooks.Input{})
+				if hd.Block {
+					stopBlocks++
+					reason := strings.TrimSpace(hd.Reason)
+					if reason == "" {
+						reason = "A Stop hook requested that you keep working rather than stop here."
+					}
+					// The assistant turn is complete and tool-less, so it is safe
+					// to record now; then append and record the injected message.
+					record(opts.Recorder, "assistant", assistant)
+					stopMsg := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(reason))
+					messages = append(messages, stopMsg)
+					record(opts.Recorder, "user", stopMsg)
+					if emit != nil {
+						emit(Event{Type: "steer", Content: reason})
+					}
+					continue
+				}
+			}
 			// Final (tool-less) answer: structurally fine on its own, record now.
 			rec("assistant", assistant)
 			res.Messages = messages
@@ -850,6 +903,31 @@ func truncatedToolNote(maxTokens int64) string {
 		"then continue.", maxTokens)
 }
 
+// stopBlockLimit bounds how many times a Stop hook may force the loop to
+// re-enter after a tool-less answer. A hook that unconditionally blocks would
+// otherwise spin forever; after this many re-entries the answer is allowed
+// through regardless.
+const stopBlockLimit = 8
+
+// hookBlockText renders the message a blocked action reports back. A hook that
+// blocks without a reason still needs to say something actionable.
+func hookBlockText(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "Blocked by a hook."
+	}
+	return reason
+}
+
+// feedbackIf returns reason when block is set and reason is non-empty, else "".
+// It keeps the PostToolUse append expression readable.
+func feedbackIf(block bool, reason string) string {
+	if !block {
+		return ""
+	}
+	return strings.TrimSpace(reason)
+}
+
 func shortCircuit(emit Emitter, tu anthropic.BetaToolUseBlock, msg string) anthropic.BetaContentBlockParamUnion {
 	if emit != nil {
 		emit(Event{Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID, Content: msg, IsError: true})
@@ -1003,6 +1081,18 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		}
 	}
 
+	// PreToolUse hooks run just before the tool executes, on a call that has
+	// passed permission and validation. A block returns an error tool_result
+	// carrying the reason and the tool never runs. It is tagged like a host
+	// refusal (a decision, not a malfunction) so a repeatedly-blocking hook does
+	// not feed the same-shape streak breaker and latch the tool.
+	if opts.Hooks != nil {
+		hd, _ := opts.Hooks.Run(ctx, hooks.PreToolUse, hooks.Input{ToolName: tu.Name, ToolInput: raw})
+		if hd.Block {
+			return errResultTagged(hookBlockText(hd.Reason), true)
+		}
+	}
+
 	if opts.BeforeEdit != nil {
 		if paths := editedPaths(tu.Name, raw); len(paths) > 0 {
 			opts.BeforeEdit(tu.Name, paths)
@@ -1069,6 +1159,29 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		delete(failures, key)
 		delete(errStreaks, tu.Name)
 	}
+
+	// PostToolUse hooks see the completed call and its result. A block adds its
+	// reason as additional feedback appended to the tool_result; any
+	// additionalContext is appended the same way. This never turns a successful
+	// result into an error — it only adds guidance the model reads next turn.
+	if opts.Hooks != nil {
+		resp, _ := json.Marshal(struct {
+			Content string `json:"content"`
+			IsError bool   `json:"is_error"`
+		}{Content: content, IsError: isErr})
+		hd, _ := opts.Hooks.Run(ctx, hooks.PostToolUse, hooks.Input{
+			ToolName:     tu.Name,
+			ToolInput:    raw,
+			ToolResponse: resp,
+		})
+		for _, extra := range []string{feedbackIf(hd.Block, hd.Reason), hd.AdditionalContext} {
+			if extra != "" {
+				content += "\n\n" + extra
+				full += "\n\n" + extra
+			}
+		}
+	}
+
 	if emit != nil {
 		ev := Event{Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID, Content: content, IsError: isErr}
 		if clamped {
