@@ -152,6 +152,7 @@ func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string
 		AuthKind:        "none",
 		ContextWindow:   ctxLimit,
 		ContextSource:   ctxSource,
+		Build:           version.Get().Summary(),
 	}
 	if cfg.Provider == config.ProviderOpenAI {
 		if cfg.ResolveAPIKey() != "" {
@@ -893,8 +894,9 @@ for -p: it runs headless, prints the result and exits.
 
 Shell completion: klaudia completion bash|zsh|fish|powershell
 (each prints its install steps with --help).`,
-		// We render our own version string to match the JS reference exactly.
-		Version:       fmt.Sprintf("%s (%s)", version.Version, version.Name),
+		// The first line is the reference-compatible "2.1.66-klaudia (Klaudia)";
+		// the second names this build (commit, dirty tree, commit time).
+		Version:       version.Line(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.ArbitraryArgs,
@@ -909,7 +911,8 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 		},
 	}
 
-	// Match commander's `--version` output: "<version> (Klaudia)" with no prefix.
+	// Match commander's `--version` output: "<version> (Klaudia)" with no
+	// prefix, followed by the build line.
 	cmd.SetVersionTemplate("{{.Version}}\n")
 
 	// A malformed command line is a usage error, not a run failure: nothing
@@ -1499,6 +1502,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		SessionID:      sessionID,
 		CWD:            cwd,
 		Version:        version.Version,
+		Build:          version.Get().Summary(),
 		GitBranch:      gitBranch(cwd),
 		PermissionMode: string(mode),
 		Path:           transcriptPath,

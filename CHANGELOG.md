@@ -316,6 +316,18 @@ port mirrors (see `internal/version`).
   and it applies to sub-agents and compaction summaries, which share the
   provider. When the fallback has a smaller known output cap, `max_tokens` is
   lowered to fit.
+- **Build information in `--version`, `/doctor`, the banner and transcripts.**
+  `--version` was the constant `2.1.66-klaudia (Klaudia)`, so neither a bug
+  report nor its author could tell which build produced it — or that the
+  `klaudia` on `$PATH` was months older than the checkout. The first line is
+  unchanged (it is the reference-compatible string, and the transcript
+  `version` and MCP client version stay on it); a second line now names the
+  build from `runtime/debug.ReadBuildInfo`: the commit, `+dirty` for
+  uncommitted changes, the commit time and the Go toolchain. `/doctor` gains a
+  `version` line, the startup banner a `build` field, and transcript entries a
+  `klaudiaBuild` field. Release builds can stamp `internal/version.release` and
+  `internal/version.commit` with `-ldflags -X`; a build with no VCS
+  information says `dev`.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
