@@ -415,6 +415,32 @@ port mirrors (see `internal/version`).
   project-supplied executable config). Only user-level (`~/.klaudia`) hooks are
   honored; project-level hooks are dropped at load time. A future project-trust
   prompt could relax this.
+- **MCP `tools/list_changed`, prompts as slash commands, and remote OAuth.** Three
+  related MCP enhancements (#159):
+  - **`tools/list_changed` (fully implemented).** A connected server that announces
+    its tool list changed now has that list re-fetched and both tool registries
+    rebuilt live — a tool that appears or disappears mid-session is usable (or gone)
+    without a config edit or restart. The Manager installs the notification handler
+    on every session it brings up, so reconnects and reload-added servers stay
+    covered; the rebuild shares the reload path and is serialised against it.
+  - **Prompts as slash commands (fully implemented).** `prompts/list` and
+    `prompts/get` are surfaced: each server prompt becomes a `/mcp__<server>__<prompt>`
+    command in the TUI (mirroring MCP tool namespacing), whose invocation fetches the
+    prompt and submits its rendered text as the turn. Arguments accept `key=value`
+    tokens, and bare text fills the prompt's first required argument. Prompts are
+    enumerated at startup; re-registering prompts added by a *later* config reload as
+    slash commands is the one deferred piece here (the prompt stays reachable through
+    the MCP layer meanwhile).
+  - **OAuth 2.1 for remote (HTTP/SSE) servers.** A new `oauth` block on a server
+    config. The **`client_credentials`** grant is implemented end to end: Klaudia
+    exchanges a client id + secret (secret named via `clientSecretEnv`, never written
+    in the file) for an access token and refreshes it transparently. The
+    **`authorization_code`** grant ships as a foundation: token *storage and refresh*
+    work (a token is loaded, used, and re-persisted with 0600 perms as it refreshes),
+    but the interactive acquisition step — opening a browser and catching the redirect
+    — is **follow-up**; until then an `authorization_code` server with no stored token
+    connects unauthenticated and receives the server's 401. Config is validated at
+    connect and per server, so one bad OAuth block does not abort startup.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

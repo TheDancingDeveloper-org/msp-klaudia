@@ -234,6 +234,39 @@ func tuiSkills(skills []skill.Skill, warn func(string)) []tui.SkillCommand {
 	return out
 }
 
+// mcpPromptCommands exposes each connected server's MCP prompts (prompts/list)
+// as a /mcp__<server>__<prompt> slash command, mirroring the tool namespacing.
+// The command's Render fetches the prompt (prompts/get) and returns its rendered
+// text, which the TUI submits as the turn prompt; a fetch error is returned as
+// text so the failure is visible rather than silent.
+//
+// Prompts are enumerated once, at startup. A prompt added by a later config
+// reload is not yet re-registered as a slash command (the underlying prompt is
+// still reachable via the MCP layer) — that UI refresh is tracked as follow-up.
+func mcpPromptCommands(ctx context.Context, mgr *mcp.Manager) []tui.SkillCommand {
+	prompts := mgr.Prompts(ctx)
+	out := make([]tui.SkillCommand, 0, len(prompts))
+	for _, p := range prompts {
+		p := p
+		desc := p.Description
+		if desc == "" {
+			desc = p.Title
+		}
+		out = append(out, tui.SkillCommand{
+			Name:        p.Qualified,
+			Description: strings.TrimSpace("MCP prompt (" + p.Server + "): " + desc),
+			Render: func(arguments string) string {
+				text, err := mgr.GetPrompt(ctx, p.Server, p.Name, mcp.ParsePromptArgs(p, arguments))
+				if err != nil {
+					return fmt.Sprintf("MCP prompt %s failed: %v", p.Qualified, err)
+				}
+				return text
+			},
+		})
+	}
+	return out
+}
+
 // modelLister exposes the provider's model enumeration to the TUI when it has
 // one. Both shipped providers do, but the capability is an optional interface
 // rather than part of Provider — so a future backend that can't list models
@@ -1464,13 +1497,36 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	wiring.spawner.WithProviderName(cfg.Provider)
 	registry := wiring.registry
 
-	// MCP config hot reload. An edit to any .mcp.json that applies here takes
-	// effect in this session instead of at the next start — installing a server
-	// and then having to restart to use it is the whole problem.
+	// rebuildTools reassembles both tool registries from the live MCP state. It
+	// is called from two goroutines — the config watcher and the MCP client's
+	// notification handler — so a mutex serialises them; a reload racing a
+	// server's tools/list_changed must not interleave two Replace calls.
 	//
 	// Both registries are rebuilt: the main loop dispatches from `registry`,
 	// while sub-agents draw from `base`. Updating one and not the other would
 	// give a sub-agent a different tool set than its parent.
+	var rebuildMu sync.Mutex
+	rebuildTools := func() {
+		rebuildMu.Lock()
+		defer rebuildMu.Unlock()
+		next, deferred := buildTools()
+		base.Replace(next...)
+		registry.Replace(append(append([]tools.Tool(nil), next...), wiring.agentTool)...)
+		wiring.spawner.SetDeferred(deferred)
+		deferredMu.Lock()
+		deferredTools = deferred
+		deferredMu.Unlock()
+	}
+
+	// tools/list_changed: when a server announces its tool list changed, re-list
+	// it and rebuild the registries live, so a server that gains or drops tools
+	// mid-session is reflected without a config edit or restart. The Manager
+	// installs the notification handler per session, so reconnects stay covered.
+	mcpMgr.SetToolsChangedHandler(rebuildTools)
+
+	// MCP config hot reload. An edit to any .mcp.json that applies here takes
+	// effect in this session instead of at the next start — installing a server
+	// and then having to restart to use it is the whole problem.
 	//
 	// A config that no longer parses is left alone rather than applied — a
 	// half-typed file should not take working servers away mid-session — and
@@ -1490,13 +1546,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		if len(held) > 0 {
 			errs = append(errs, errors.New(mcpHeldMessage(held)))
 		}
-		next, deferred := buildTools()
-		base.Replace(next...)
-		registry.Replace(append(append([]tools.Tool(nil), next...), wiring.agentTool)...)
-		wiring.spawner.SetDeferred(deferred)
-		deferredMu.Lock()
-		deferredTools = deferred
-		deferredMu.Unlock()
+		rebuildTools()
 		if len(errs) > 0 {
 			msgs := make([]string, 0, len(errs))
 			for _, e := range errs {
@@ -1582,7 +1632,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },
 			MCP:                 mcpController{mgr: mcpMgr, ctx: ctx},
 			OnMCPReload:         mcpReloads.register,
-			Skills:              tuiSkills(skills, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
+			Skills:              append(tuiSkills(skills, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }), mcpPromptCommands(ctx, mcpMgr)...),
 			Provider:            providerName(cfg),
 			SandboxMode:         sandboxMode(cfg.Sandbox),
 			CWD:                 cwd,

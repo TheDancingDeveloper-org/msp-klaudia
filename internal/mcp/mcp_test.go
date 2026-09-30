@@ -188,7 +188,7 @@ func TestLoadConfigHandlesProjectDirEqualToConfigRoot(t *testing.T) {
 
 func TestConnectServerRejectsEmptyConfig(t *testing.T) {
 	// No command and no url → a clear error, without attempting any connection.
-	if _, err := connectServer(context.Background(), "bad", ServerConfig{}); err == nil {
+	if _, err := connectServer(context.Background(), "bad", ServerConfig{}, nil); err == nil {
 		t.Error("expected error for a config with neither command nor url")
 	}
 }

@@ -124,7 +124,7 @@ func TestConnectServerRefusesUnresolvableReference(t *testing.T) {
 	_, err := connectServer(t.Context(), "loki", ServerConfig{
 		Command: "true",
 		Env:     map[string]string{"X": "${KLAUDIA_TEST_DEFINITELY_UNSET_VAR_7f3a}"},
-	})
+	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "KLAUDIA_TEST_DEFINITELY_UNSET_VAR_7f3a") {
 		t.Fatalf("err = %v, want unresolved-variable error naming the variable", err)
 	}

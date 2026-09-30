@@ -14,7 +14,7 @@ func TestConnectErrorRedactsResolvedValues(t *testing.T) {
 	t.Setenv("MCP_TEST_TOKEN", "sk-secret-4f9a")
 	_, err := connectServer(context.Background(), "remote", ServerConfig{
 		URL: "http://127.0.0.1:1/mcp?key=${MCP_TEST_TOKEN}",
-	})
+	}, nil)
 	if err == nil {
 		t.Fatal("want a connect error (nothing listens on port 1)")
 	}

@@ -822,7 +822,41 @@ servers alone, so a half-typed file can't take working tools away; the reload
 is otherwise silent, so check `/mcp` if a server doesn't appear.
 
 Their tools appear as `mcp__<server>__<tool>`, auto-deferred behind `ToolSearch`.
-In the TUI, `/mcp` lists servers and reconnects/disconnects them.
+In the TUI, `/mcp` lists servers and reconnects/disconnects them. A server that
+announces `tools/list_changed` has its list re-fetched and folded in live, so a
+tool that appears or disappears mid-session needs no restart.
+
+**Prompts as slash commands.** A server's MCP prompts (`prompts/list`) become
+`/mcp__<server>__<prompt>` commands in the TUI. Running one fetches the prompt
+(`prompts/get`) and submits its rendered text as the turn. Arguments take
+`key=value` tokens, and bare text fills the prompt's first required argument, so
+`/mcp__wiki__review the login flow` works without ceremony.
+
+**OAuth for remote servers.** A remote (`url`) server can authorize with OAuth
+2.1 via an `oauth` block. Secrets are named by environment variable, never
+written in the file:
+
+```jsonc
+{ "mcpServers": {
+  "remote": {
+    "type": "http", "url": "https://mcp.example.com/v1",
+    "oauth": {
+      "grant": "client_credentials",
+      "tokenUrl": "https://auth.example.com/oauth/token",
+      "clientId": "klaudia",
+      "clientSecretEnv": "MCP_REMOTE_SECRET",
+      "scopes": ["mcp"]
+    }
+  }
+} }
+```
+
+The `client_credentials` grant is complete: Klaudia mints and refreshes tokens on
+its own. The `authorization_code` grant (fields `authUrl`/`redirectUrl`) has token
+storage and refresh working — a token is persisted under
+`~/.klaudia/mcp-oauth/<server>.json` (0600) and refreshed transparently — but the
+interactive browser step that first obtains a token is not yet wired, so until
+then such a server connects unauthenticated.
 
 The **read-only sub-agents get read-only MCP tools**. Fanning out across a wiki,
 an issue tracker and a chat archive is what `Explore` and `Plan` are for, and it

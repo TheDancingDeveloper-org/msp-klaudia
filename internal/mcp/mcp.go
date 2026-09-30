@@ -70,6 +70,9 @@ type ServerConfig struct {
 	// Timeout bounds one tool call on this server, in seconds. Unset uses
 	// KLAUDIA_MCP_TOOL_TIMEOUT, or ten minutes.
 	Timeout int `json:"timeout,omitempty"`
+	// OAuth, when set, authorizes a remote (URL) server with OAuth 2.1. It is
+	// ignored for stdio servers. See OAuthConfig for the supported grants.
+	OAuth *OAuthConfig `json:"oauth,omitempty"`
 }
 
 // Config is the .mcp.json shape: a map of server name → launch config.
@@ -257,8 +260,8 @@ func (s *Server) alive(ctx context.Context) bool {
 	return sess.Ping(ctx, nil) == nil
 }
 
-func newClient() *mcpsdk.Client {
-	return mcpsdk.NewClient(&mcpsdk.Implementation{Name: "klaudia", Version: version.Version}, nil)
+func newClient(opts *mcpsdk.ClientOptions) *mcpsdk.Client {
+	return mcpsdk.NewClient(&mcpsdk.Implementation{Name: "klaudia", Version: version.Version}, opts)
 }
 
 // connectServer connects to a server using the transport its config implies:
@@ -266,7 +269,11 @@ func newClient() *mcpsdk.Client {
 // ${VAR:-default} references in the config are resolved against Klaudia's
 // environment first (see expandServerConfig); an unresolvable one is this
 // server's error and leaves the others alone.
-func connectServer(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+//
+// opts carries the client options (e.g. the tools/list_changed handler) the
+// Manager wants on this session. It may be nil — tests and callers that do not
+// need server-initiated notifications pass nothing.
+func connectServer(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions) (*Server, error) {
 	// Remember what each ${VAR} resolved to, so a failure can be reported
 	// without it: a URL or argument carrying a token ends up in the SDK's
 	// error text (and a server may echo it to stderr, which is appended), and
@@ -279,38 +286,52 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig) (*Server,
 		}
 		return v, ok
 	}
-	srv, err := connectExpanded(ctx, name, cfg, lookup)
+	srv, err := connectExpanded(ctx, name, cfg, lookup, opts)
 	if err != nil {
 		return nil, redactValues(err, resolved)
 	}
 	return srv, nil
 }
 
-func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup func(string) (string, bool)) (*Server, error) {
+func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup func(string) (string, bool), opts *mcpsdk.ClientOptions) (*Server, error) {
 	cfg, err := expandServerConfig(name, cfg, lookup)
 	if err != nil {
 		return nil, err
 	}
 	if url := strings.TrimSpace(cfg.URL); url != "" {
-		var client *http.Client
+		// OAuth authorization applies only to remote servers. A nil client means
+		// "use the transport's default" (no Authorization header).
+		httpClient, err := oauthHTTPClient(ctx, name, cfg.OAuth, lookup)
+		if err != nil {
+			return nil, err
+		}
+		// Configured static headers ride on top of whatever the OAuth client
+		// set (both, if both are configured).
 		if len(cfg.Headers) > 0 {
-			client = &http.Client{Transport: headerTransport{base: http.DefaultTransport, headers: cfg.Headers}}
+			base := http.DefaultTransport
+			if httpClient != nil && httpClient.Transport != nil {
+				base = httpClient.Transport
+			}
+			if httpClient == nil {
+				httpClient = &http.Client{}
+			}
+			httpClient.Transport = headerTransport{base: base, headers: cfg.Headers}
 		}
 		switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 		case "sse":
-			return ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: client})
+			return connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
 		case "http", "streamable":
-			return ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: client})
+			return connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
 		}
 		// Type unset: try streamable HTTP, and if the server does not speak
 		// it, the legacy SSE transport. Plenty of deployed servers are
 		// SSE-only, and a config written for another client often gives no
 		// type; they used to fail here with an HTTP error and no hint.
-		srv, err := ConnectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: client})
+		srv, err := connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
 		if err == nil || ctx.Err() != nil {
 			return srv, err
 		}
-		if sseSrv, sseErr := ConnectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: client}); sseErr == nil {
+		if sseSrv, sseErr := connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts); sseErr == nil {
 			return sseSrv, nil
 		}
 		return nil, fmt.Errorf("%w (legacy SSE was tried too; set \"type\" to choose one)", err)
@@ -318,11 +339,15 @@ func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup 
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, fmt.Errorf("mcp %q: config has neither command (stdio) nor url (http)", name)
 	}
-	return ConnectCommand(ctx, name, cfg)
+	return connectCommand(ctx, name, cfg, opts)
 }
 
 // ConnectCommand spawns a stdio MCP server and connects to it.
 func ConnectCommand(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+	return connectCommand(ctx, name, cfg, nil)
+}
+
+func connectCommand(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions) (*Server, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = os.Environ()
 	for k, v := range cfg.Env {
@@ -330,7 +355,7 @@ func ConnectCommand(ctx context.Context, name string, cfg ServerConfig) (*Server
 	}
 	stderr := newServerStderr(name)
 	cmd.Stderr = stderr
-	srv, err := ConnectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd})
+	srv, err := connectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd}, opts)
 	if err != nil {
 		// A failed connect has closed the transport and waited for the child,
 		// so its stderr has been drained: what it said is why it failed.
@@ -345,7 +370,11 @@ func ConnectCommand(ctx context.Context, name string, cfg ServerConfig) (*Server
 // ConnectTransport connects to a server over an arbitrary transport (used by
 // command servers and by tests via an in-memory transport).
 func ConnectTransport(ctx context.Context, name string, t mcpsdk.Transport) (*Server, error) {
-	session, err := newClient().Connect(ctx, t, nil)
+	return connectTransport(ctx, name, t, nil)
+}
+
+func connectTransport(ctx context.Context, name string, t mcpsdk.Transport, opts *mcpsdk.ClientOptions) (*Server, error) {
+	session, err := newClient(opts).Connect(ctx, t, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp %q connect: %w", name, err)
 	}
@@ -361,6 +390,59 @@ type Manager struct {
 	servers []*Server
 	cfg     Config
 	ctx     context.Context
+
+	// onToolsChanged, when set, is called after a server sends
+	// notifications/tools/list_changed. It lets the host rebuild its tool
+	// registry from the server's fresh list without a config reload or restart.
+	// Guarded because it is set on the main goroutine but read from the MCP
+	// client's notification goroutine.
+	cbMu           sync.RWMutex
+	onToolsChanged func()
+}
+
+// SetToolsChangedHandler registers a callback invoked whenever a connected
+// server announces that its tool list changed (notifications/tools/list_changed).
+// The Manager itself holds no tool registry — Tools() always re-lists live — so
+// the handler's job is to rebuild whatever the host assembled from Tools().
+//
+// It is set once, after Connect, and applies to every server: the per-session
+// notification handler installed at connect time dispatches here, so a server
+// that reconnects (or one added by a later reload) is covered without re-arming.
+func (m *Manager) SetToolsChangedHandler(fn func()) {
+	m.cbMu.Lock()
+	m.onToolsChanged = fn
+	m.cbMu.Unlock()
+}
+
+// dispatchToolsChanged fans a server's list_changed notification out to the
+// registered handler, if any. It is called on the client's notification
+// goroutine.
+func (m *Manager) dispatchToolsChanged() {
+	m.cbMu.RLock()
+	fn := m.onToolsChanged
+	m.cbMu.RUnlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+// clientOptions builds the per-session client options for a server: a
+// tools/list_changed handler that re-lists tools live through the Manager. The
+// handler closes over the Manager (not the server name) because a rebuild
+// re-lists every server anyway.
+func (m *Manager) clientOptions() *mcpsdk.ClientOptions {
+	return &mcpsdk.ClientOptions{
+		ToolListChangedHandler: func(context.Context, *mcpsdk.ToolListChangedRequest) {
+			m.dispatchToolsChanged()
+		},
+	}
+}
+
+// connect wires the Manager's client options into connectServer, so every
+// server the Manager brings up (at startup, on reconnect, or on reload) reports
+// tool-list changes back to the Manager.
+func (m *Manager) connect(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+	return connectServer(ctx, name, cfg, m.clientOptions())
 }
 
 // Connect launches and connects every server in cfg. Servers that fail to
@@ -386,7 +468,7 @@ func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			servers[i], errs[i] = connectWithDeadline(ctx, name, cfg.MCPServers[name])
+			servers[i], errs[i] = m.connectWithDeadline(ctx, name, cfg.MCPServers[name])
 		}()
 	}
 	wg.Wait()
@@ -403,12 +485,14 @@ func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
 	return m, failed
 }
 
-// connectWithDeadline is connectServer bounded by connectTimeout. The session
-// outlives the deadline: it bounds the handshake, not the connection.
-func connectWithDeadline(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+// connectWithDeadline is m.connect bounded by connectTimeout. The session
+// outlives the deadline: it bounds the handshake, not the connection. It goes
+// through m.connect so the Manager's client options (tools/list_changed) are
+// wired into every session.
+func (m *Manager) connectWithDeadline(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
 	cctx, cancel := context.WithTimeout(ctx, connectTimeout())
 	defer cancel()
-	srv, err := connectServer(cctx, name, cfg)
+	srv, err := m.connect(cctx, name, cfg)
 	if err != nil && errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		return nil, fmt.Errorf("mcp %q: no answer within %s of starting (KLAUDIA_MCP_CONNECT_TIMEOUT): %w", name, connectTimeout(), err)
 	}
@@ -498,7 +582,7 @@ func (m *Manager) Reconnect(name string) error {
 	// TUI runs this synchronously). On timeout the server stays disconnected.
 	ctx, cancel := context.WithTimeout(m.ctx, reconnectTimeout)
 	defer cancel()
-	fresh, err := connectServer(ctx, name, cfg)
+	fresh, err := m.connect(ctx, name, cfg)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("mcp %q: reconnect timed out after %s", name, reconnectTimeout)
@@ -557,7 +641,7 @@ func (m *Manager) Reload(ctx context.Context, cfg Config) []error {
 				_ = s.Close()
 			}
 		}
-		fresh, err := connectWithDeadline(ctx, name, sc)
+		fresh, err := m.connectWithDeadline(ctx, name, sc)
 		if err != nil {
 			errs = append(errs, err)
 			// Keep a disconnected placeholder, so /mcp can retry it by hand.
