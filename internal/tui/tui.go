@@ -135,6 +135,11 @@ type Session struct {
 	// spawner is not wired for background agents, in which case /agents shows the
 	// available types only.
 	BackgroundAgents BackgroundAgentLister
+	// Resume, if set, backs the /resume picker: it switches the live transcript
+	// recorder to the session with the given id and returns that session's
+	// reconstructed history for the TUI to load. Nil when resume isn't wired
+	// (e.g. no transcript), in which case /resume says so rather than pretending.
+	Resume func(id string) ([]anthropic.BetaMessageParam, error)
 }
 
 // MCPController lets the TUI manage MCP servers without owning the manager.
@@ -1694,6 +1699,8 @@ var commandList = []cmdInfo{
 	{"/show", "<n>", "Show one entry from /search or /outline in full", nil},
 	{"/errors", "[n]", "List the most recent errors", nil},
 	{"/open", "<path:line>", "Open a file reference in $EDITOR (paths from stack traces work)", nil},
+	{"/resume", "", "Pick a recent session to resume in place", nil},
+	{"/rename", "<title>", "Set a title for the current session", nil},
 	{"/clear", "", "Clear the screen and conversation history", nil},
 	{"/quit", "", "Exit Klaudia (alias /exit)", nil},
 }
@@ -2397,6 +2404,13 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		}
 		m.appendLine(bannerStyle.Render(fmt.Sprintf("model=%s  effort=%s  permissions=%s  messages=%d%s",
 			model, effortLabel(m.sess.Effort), m.currentMode().Label(), len(m.history), resume)))
+	case "/resume":
+		if m.busyGuard("/resume") {
+			break
+		}
+		return m.startResumePicker()
+	case "/rename":
+		m.renameSession(strings.TrimSpace(strings.Join(args, " ")))
 	case "/mode":
 		if len(args) > 0 {
 			want := permission.Mode(args[0])
