@@ -556,6 +556,33 @@ port mirrors (see `internal/version`).
   explanatory turn note. Budget is enforced per `loop.Run` (main headless/TUI run
   and each `--loop` iteration); sub-agent spend is not folded into the parent
   budget.
+- **Background sub-agents, an `/agents` status view, and worktree isolation for
+  writers.** The Agent tool takes `background: true`: it launches the sub-agent,
+  returns a handle immediately, and lets the parent turn continue instead of
+  blocking until the child finishes. A finished child's result is delivered back
+  on a later turn (a registry polled at the loop's two safe injection points, the
+  same points steering uses), so a long investigation runs alongside the main
+  thread rather than stalling it. Synchronous spawning stays the default, so
+  nothing regresses.
+
+  `/agents` now lists the launched background sub-agents beneath the available
+  types — id, type, status (running/succeeded/failed), elapsed, and the current
+  tool a running one is on — so a background launch is no longer a closed box.
+
+  A background *writer* (a type that can call Write/Edit/Bash, i.e.
+  general-purpose or any explicit mutating toolset) runs in its own detached-HEAD
+  git worktree, created on launch and removed on completion, so concurrent
+  writers cannot corrupt each other's tree; read-only agents (Explore, Plan)
+  share the parent tree. If a worktree cannot be created — e.g. the project is not
+  a git repository — the writer fails rather than silently running in the shared
+  tree.
+
+  Shared state (the background registry) is mutex-guarded and verified with
+  `go test -race`. **Follow-up:** background delivery is wired for the interactive
+  TUI path only — a headless single-shot run returns before a background child
+  finishes, so it is not collected there; and the worktree lifecycle covers the
+  common case (create/run/remove) but does not yet surface per-agent cancellation
+  or worktree reclamation after a crash beyond a best-effort pre-clean.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

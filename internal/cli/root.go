@@ -65,7 +65,10 @@ func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.
 	spawner := agent.NewSpawnerWithDeferred(provider, base, model, perm, approver, maxTurns, deferred).
 		WithWorkingDir(workingDir).
 		WithHostGate(host).
-		WithTypes(types)
+		WithTypes(types).
+		// Background writers run in their own git worktree so concurrent writers
+		// cannot corrupt the shared tree; read-only agents share it.
+		WithWorktrees(agent.NewGitWorktrees())
 
 	infos := make([]tools.AgentTypeInfo, 0)
 	for _, t := range types {
@@ -1697,11 +1700,12 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			},
 			// Nil unless the provider can enumerate its models; /model falls
 			// back to type-the-id when it is.
-			ListModels: listModels,
-			Trust:      tui.NewTrustController(hostGate),
-			Jobs:       jobStore,
-			Executor:   executor,
-			Rotate:     sessRec.Rotate,
+			ListModels:       listModels,
+			Trust:            tui.NewTrustController(hostGate),
+			Jobs:             jobStore,
+			Executor:         executor,
+			Rotate:           sessRec.Rotate,
+			BackgroundAgents: wiring.spawner.Background(),
 		}
 		// Seed from --add-dir so /add-dir extends that set rather than starting
 		// empty, and the host gate reads the combined list live each tool call.
@@ -1750,16 +1754,18 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				Host:            hostGate,
 				Hooks:           hookRunner,
 				Interject:       interject,
-				BeforeEdit:      beforeEdit,
-				DeferredTools:   currentDeferred(),
-				Approver:        ap,
-				Asker:           asker,
-				Planner:         planner,
-				InitialMessages: history,
-				Recorder:        recorder,
-				WebTools:        true,
-				OnSummary:       onSummary,
-				Diagnostics:     lspPool.Diagnostics,
+				// Deliver finished background sub-agents into the next turn.
+				CollectBackground: wiring.spawner.Background().PendingReport,
+				BeforeEdit:        beforeEdit,
+				DeferredTools:     currentDeferred(),
+				Approver:          ap,
+				Asker:             asker,
+				Planner:           planner,
+				InitialMessages:   history,
+				Recorder:          recorder,
+				WebTools:          true,
+				OnSummary:         onSummary,
+				Diagnostics:       lspPool.Diagnostics,
 			}, emit)
 		}
 		return tui.Run(ctx, tui.RunFunc(runFn), initialMessages, sess)

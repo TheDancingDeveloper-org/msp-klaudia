@@ -154,6 +154,10 @@ func (failingSpawner) Spawn(context.Context, string, string, func(string)) (stri
 	return "", errors.New("model unavailable")
 }
 
+func (failingSpawner) SpawnBackground(string, string, string, func(string)) (string, error) {
+	return "", errors.New("model unavailable")
+}
+
 func TestAgentHasTypeAndReportsSpawnFailure(t *testing.T) {
 	a := newTestAgent(t, failingSpawner{})
 	if !a.HasType("Explore") || a.HasType("Bash") {

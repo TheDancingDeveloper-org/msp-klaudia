@@ -130,6 +130,11 @@ type Session struct {
 	// nothing). Backs /clear, so a cleared conversation stays behind as its own
 	// session instead of being auto-resumed. Nil only clears memory.
 	Rotate func() (newID, prevID string)
+	// BackgroundAgents, if set, backs the second half of /agents: the background
+	// sub-agents this session has launched and their live status. Nil when the
+	// spawner is not wired for background agents, in which case /agents shows the
+	// available types only.
+	BackgroundAgents BackgroundAgentLister
 }
 
 // MCPController lets the TUI manage MCP servers without owning the manager.
@@ -2442,7 +2447,11 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 	case "/config":
 		m.appendLine(bannerStyle.Render(m.renderConfig()))
 	case "/agents":
-		m.appendLine(bannerStyle.Render(m.renderAgents()))
+		out := m.renderAgents()
+		if bg := m.backgroundAgentsSection(); bg != "" {
+			out += "\n\n" + bg
+		}
+		m.appendLine(bannerStyle.Render(out))
 	case "/context":
 		m.appendLine(bannerStyle.Render(m.renderContext()))
 	case "/pin":
@@ -3412,6 +3421,13 @@ func (m *Model) renderEvent(ev agent.Event) {
 		// said in the scrollback, not in the reply.
 		m.flushAssistant()
 		m.appendLine(bannerStyle.Render("· " + ev.Content))
+	case "background":
+		// A background sub-agent finished and its result was just handed to the
+		// model. A short banner so the user knows it landed; the full result is
+		// in the conversation the model is now responding to, and /agents shows
+		// per-agent status. Not the report itself — that can be long.
+		m.flushAssistant()
+		m.appendLine(bannerStyle.Render("· a background sub-agent finished — result delivered to Klaudia (/agents for status)"))
 	case "usage":
 		// One inner LLM call's usage. Update both the session counters and the
 		// per-turn tally so doneMsg's reconciliation knows what we already
