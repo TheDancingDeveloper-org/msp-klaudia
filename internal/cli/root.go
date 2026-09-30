@@ -314,7 +314,7 @@ func buildProvider(cfg config.Config) (api.Provider, string, error) {
 		if err != nil {
 			return nil, "", err
 		}
-		return api.New(cred, os.Getenv("KLAUDIA_CUSTOM_ENDPOINT")), cfg.Model, nil
+		return api.New(cred, api.ResolveAnthropicBaseURL(cfg.BaseURL)), cfg.Model, nil
 	}
 }
 
@@ -1010,6 +1010,8 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	// session, so they are safe in scripts and CI.
 	cmd.AddCommand(newDoctorCommand())
 	cmd.AddCommand(newConfigCommand())
+
+	cmd.AddCommand(newLoginCommand())
 
 	return cmd
 }
