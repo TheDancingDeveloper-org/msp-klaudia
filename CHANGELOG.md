@@ -504,6 +504,17 @@ port mirrors (see `internal/version`).
   `ANTHROPIC_BASE_URL` is now honoured for the Anthropic API base URL. Precedence:
   explicit config `baseURL` wins, then `KLAUDIA_CUSTOM_ENDPOINT`
   (`--custom-endpoint`), then `ANTHROPIC_BASE_URL`, then the production API.
+- **`/compact <focus>` and `/summary [edit]`.** `/compact` now takes optional
+  free text after the command — `/compact the auth refactor` — that is threaded
+  into the summary request so the model keeps detail about what you named, even
+  at the cost of brevity elsewhere; a plain `/compact` is byte-for-byte the old
+  prompt, and autocompact (which has no user focus) is unchanged. `/summary`
+  shows the current session's last compaction summary — the in-memory one from
+  this session, or the persisted one that seeds `--resume` — and `/summary edit`
+  opens it in `$EDITOR` (via the same temp-file round-trip as `/open`); saving
+  and quitting replaces the stored summary with the edited text, so a later
+  `--resume` starts from your correction. Editing revises the persisted summary
+  that seeds resume, not the message already carried in the live context.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
@@ -1162,6 +1173,11 @@ port mirrors (see `internal/version`).
   not carry over) and names `run_in_background` for commands that never finish
   on their own. A timeout now states the limit that was hit and whether a larger
   `timeout` is still possible, rather than a bare "timed out".
+- **`/compact` summarized with a stale model.** The TUI wired compaction to the
+  model captured when the session was built, so a `/model` switch mid-session
+  did not reach it and `/compact` kept summarizing with the original model —
+  unlike every turn, which already resolves `sess.Model` fresh. Compaction now
+  reads the live session model too, matching the autocompact/turn path.
 - **The stream-json embedding channel emitted a different shape from
   `-p --output-format stream-json`.** Single-shot runs wrap each conversation
   message in the JS-compatible envelope (`{"type":"assistant","message":{…},

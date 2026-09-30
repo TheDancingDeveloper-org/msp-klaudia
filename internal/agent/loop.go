@@ -218,8 +218,8 @@ func (l *Loop) lastPrefix() (requestPrefix, bool) {
 // them missed the cache on the entire history — the largest request a session
 // sends, billed in full at the moment it is largest. The tools also define the
 // tool_use blocks the history carries.
-func summaryRequest(messages []anthropic.BetaMessageParam, model anthropic.Model, maxTokens int64, p requestPrefix) anthropic.BetaMessageNewParams {
-	req := compaction.BuildSummaryRequest(messages, model, maxTokens)
+func summaryRequest(messages []anthropic.BetaMessageParam, model anthropic.Model, maxTokens int64, p requestPrefix, focus string) anthropic.BetaMessageNewParams {
+	req := compaction.BuildSummaryRequest(messages, model, maxTokens, focus)
 	req.System = p.system
 	req.Tools = p.tools
 	req.Betas = p.betas
@@ -615,8 +615,10 @@ func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessagePara
 // Compact unconditionally summarizes the conversation via the model and returns
 // the replacement history plus the summary text. Used by the TUI's /compact
 // command (the loop's own autocompact runs automatically near the context
-// limit). Returns an error if the summary call fails or yields no text.
-func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model) ([]anthropic.BetaMessageParam, string, error) {
+// limit). A non-empty focus is passed through to the summary request so the
+// summary emphasizes what the user named; an empty focus is the default prompt.
+// Returns an error if the summary call fails or yields no text.
+func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model, focus string) ([]anthropic.BetaMessageParam, string, error) {
 	prefix, ok := l.lastPrefix()
 	if !ok {
 		// No turn has been sent yet in this process (a resumed session
@@ -626,7 +628,7 @@ func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessagePara
 		ts, _ := l.buildToolParams(ctx, nil, nil)
 		prefix = requestPrefix{tools: ts}
 	}
-	summary, err := l.summarize(ctx, messages, model, 0, prefix)
+	summary, err := l.summarize(ctx, messages, model, 0, prefix, focus)
 	if err != nil {
 		return nil, "", err
 	}
@@ -637,9 +639,9 @@ func (l *Loop) Compact(ctx context.Context, messages []anthropic.BetaMessagePara
 // autocompact summarizes the conversation via the model and returns the
 // replacement history, or the error that stopped it. The summary request
 // carries this turn's cached prefix (system prompt + tools) so it shares the
-// conversation's prompt cache.
+// conversation's prompt cache. Automatic compaction has no user focus.
 func (l *Loop) autocompact(ctx context.Context, messages []anthropic.BetaMessageParam, opts Options, prefix requestPrefix) ([]anthropic.BetaMessageParam, error) {
-	summary, err := l.summarize(ctx, messages, opts.Model, int(opts.MaxTokens), prefix)
+	summary, err := l.summarize(ctx, messages, opts.Model, int(opts.MaxTokens), prefix, "")
 	if err != nil {
 		return nil, err
 	}
@@ -655,10 +657,10 @@ func (l *Loop) autocompact(ctx context.Context, messages []anthropic.BetaMessage
 // compaction is forced by the conversation overflowing — it is made smaller
 // (compaction.ShrinkForSummary) and retried, and the summary then says that
 // the oldest part of the conversation is not in it.
-func (l *Loop) summarize(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model, maxTokens int, prefix requestPrefix) (string, error) {
+func (l *Loop) summarize(ctx context.Context, messages []anthropic.BetaMessageParam, model anthropic.Model, maxTokens int, prefix requestPrefix, focus string) (string, error) {
 	dropped := 0
 	for attempt := 0; ; attempt++ {
-		req := summaryRequest(sanitizeMessages(messages), model, summaryMaxTokens(model, maxTokens), prefix)
+		req := summaryRequest(sanitizeMessages(messages), model, summaryMaxTokens(model, maxTokens), prefix, focus)
 		assistant, _, err := l.streamTurn(ctx, req, nil, nil)
 		if err != nil {
 			if !api.IsContextOverflow(err) || attempt == maxSummaryShrinks {

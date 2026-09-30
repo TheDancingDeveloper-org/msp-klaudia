@@ -39,8 +39,8 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/version"
 )
 
-func compactAndPersist(ctx context.Context, history []anthropic.BetaMessageParam, compact tui.CompactFunc, onSummary func(string)) ([]anthropic.BetaMessageParam, string, error) {
-	newHistory, summary, err := compact(ctx, history)
+func compactAndPersist(ctx context.Context, history []anthropic.BetaMessageParam, focus string, compact tui.CompactFunc, onSummary func(string)) ([]anthropic.BetaMessageParam, string, error) {
+	newHistory, summary, err := compact(ctx, history, focus)
 	if err == nil && onSummary != nil {
 		onSummary(summary)
 	}
@@ -1630,13 +1630,19 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		}
 	}
 
-	// Persist compaction summaries for token-saving resume (a Klaudia divergence),
-	// under whichever session is current: after /clear, the new one. The
-	// boundary marks where in the transcript this summary was taken, so a resume
-	// can seed from it and still replay the messages recorded after it.
+	// persistSummary writes a compaction summary for token-saving resume, under
+	// whichever session is current (after /clear, the new one). Used by /summary
+	// edit; onSummary wraps it for autocompact and /compact.
+	persistSummary := func(summary string) error {
+		return session.WriteSummaryAt(sessRec.SummaryPath(), sessRec.ID(), summary, gitCommit(cwd))
+	}
+	// onSummary is the fire-and-forget persist used by autocompact and after a
+	// /compact; the boundary marks where in the transcript this summary was
+	// taken, so a resume can seed from it and still replay the messages after it.
+	// A lost summary only costs a token-saving resume, not correctness.
 	onSummary := func(summary string) {
 		_ = sessRec.MarkCompaction()
-		_ = session.WriteSummaryAt(sessRec.SummaryPath(), sessRec.ID(), summary, gitCommit(cwd))
+		_ = persistSummary(summary)
 	}
 
 	// Interactive TUI: the default when not headless and not stream-json input.
@@ -1680,11 +1686,6 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			Agents:              tuiAgents(agentTypes),
 			ContextWindow:       ctxLimit,
 			ContextWindowSource: ctxSource,
-			Compact: func(ctx context.Context, history []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
-				return compactAndPersist(ctx, history, func(ctx context.Context, history []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
-					return loop.Compact(ctx, history, api.ResolveModelFor(cfg.Provider, modelStr))
-				}, onSummary)
-			},
 			// Nil unless a transcript was opened; /rewind then edits only the
 			// in-memory conversation.
 			Rewind: rewindFn,
@@ -1703,6 +1704,17 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// Seed from --add-dir so /add-dir extends that set rather than starting
 		// empty, and the host gate reads the combined list live each tool call.
 		sess.ExtraDirs = append([]string(nil), cliExtraDirs...)
+		// Assigned after the literal so the closures can read sess.Model live:
+		// /model updates sess.Model, and compaction must summarize with whatever
+		// model is selected now, not the one captured when the session was built.
+		sess.Compact = func(ctx context.Context, history []anthropic.BetaMessageParam, focus string) ([]anthropic.BetaMessageParam, string, error) {
+			return compactAndPersist(ctx, history, focus, func(ctx context.Context, history []anthropic.BetaMessageParam, focus string) ([]anthropic.BetaMessageParam, string, error) {
+				return loop.Compact(ctx, history, api.ResolveModelFor(cfg.Provider, sess.Model), focus)
+			}, onSummary)
+		}
+		// /summary reads the persisted summary and, on edit, writes it back.
+		sess.ReadSummary = func() (string, bool) { return session.ReadSummary(cwd, sessionID) }
+		sess.SaveSummary = persistSummary
 		extraDirs = func() []string { return sess.ExtraDirs }
 		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
 			// Permission mode reads live from the session every check, so a

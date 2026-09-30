@@ -114,7 +114,7 @@ func TestCompactSummaryRequestSharesTheConversationPrefix(t *testing.T) {
 	loop := New(provider, readRegistry(t))
 	history := []anthropic.BetaMessageParam{anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock("hello"))}
 
-	if _, _, err := loop.Compact(context.Background(), history, "m"); err != nil {
+	if _, _, err := loop.Compact(context.Background(), history, "m", ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := toolNames(provider.summaries[0].Tools); !reflect.DeepEqual(got, []string{"Read"}) {
@@ -124,7 +124,7 @@ func TestCompactSummaryRequestSharesTheConversationPrefix(t *testing.T) {
 	if _, err := loop.Run(context.Background(), Options{Prompt: "hi", System: "you are klaudia", ContextWindow: 1_000_000}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loop.Compact(context.Background(), history, "m"); err != nil {
+	if _, _, err := loop.Compact(context.Background(), history, "m", ""); err != nil {
 		t.Fatal(err)
 	}
 	samePrefix(t, provider.summaries[1], provider.turns[0])

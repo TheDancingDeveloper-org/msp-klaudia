@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -25,15 +24,6 @@ func assistantMarkerCall(t *testing.T) anthropic.BetaMessage {
 }
 
 // assistantText builds a tool-less assistant turn carrying text.
-func assistantText(t *testing.T, text string) anthropic.BetaMessage {
-	t.Helper()
-	j := fmt.Sprintf(`{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":%q}]}`, text)
-	var m anthropic.BetaMessage
-	if err := json.Unmarshal([]byte(j), &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	return m
-}
 
 // TestPreToolUseBlockPreventsExecution: a PreToolUse hook that blocks must stop
 // the tool from running and feed its reason back as an error tool_result.
