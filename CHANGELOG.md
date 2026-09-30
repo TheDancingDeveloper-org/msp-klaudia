@@ -515,6 +515,22 @@ port mirrors (see `internal/version`).
   and quitting replaces the stored summary with the edited text, so a later
   `--resume` starts from your correction. Editing revises the persisted summary
   that seeds resume, not the message already carried in the live context.
+- **`@file` includes the file, and images attach as images.** An `@path` in the
+  prompt is expanded at submit time: a text file is inlined behind a
+  `===== path =====` delimiter, so the model reads the file instead of being
+  told to go and Read it. A line range trims what is inlined —
+  `@path:START-END` (1-based, inclusive) or `@path:LINE` for one line, the
+  colon form stack traces already print. An `@path` that points at an image
+  (png / jpeg / gif / webp) is attached as a base64 image content block on the
+  user message rather than dumped as bytes; paste or type the path to attach a
+  pasted screenshot. The on-screen prompt keeps the short `@path` the user
+  typed (as paste chips do). Bounds: a whole-file text reference over 256 KiB,
+  an image over 5 MiB, and a non-image binary are each refused with a short
+  note in the terminal (never sent to the model) rather than swamping the
+  request. Works on the first submit and on a message queued while Klaudia is
+  working; a mid-turn steering interjection stays text-only, and true
+  clipboard-image paste (image bytes straight off the system clipboard) is a
+  follow-up.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

@@ -11,9 +11,6 @@ func asst(blocks ...anthropic.BetaContentBlockParamUnion) anthropic.BetaMessageP
 	return anthropic.BetaMessageParam{Role: anthropic.BetaMessageParamRoleAssistant, Content: blocks}
 }
 
-func userText(s string) anthropic.BetaMessageParam {
-	return anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(s))
-}
 
 // toolResultMsg is the user-role message the loop uses to carry a tool_result
 // back — deliberately NOT an exchange boundary.

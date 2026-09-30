@@ -104,6 +104,10 @@ type Options struct {
 	// InitialMessages seeds the conversation when resuming a session. The new
 	// Prompt (if any) is appended after them.
 	InitialMessages []anthropic.BetaMessageParam
+	// PromptImages are image attachments for this turn's user message (a TUI
+	// "@image.png" reference, base64-encoded). They ride on the same message as
+	// Prompt, as image content blocks after the text.
+	PromptImages []tools.ResultImage
 	// Recorder, if set, receives each user/assistant message for transcript
 	// persistence. May be nil.
 	Recorder Recorder
@@ -290,7 +294,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 
 	var res Result
 	messages := append([]anthropic.BetaMessageParam{}, opts.InitialMessages...)
-	if opts.Prompt != "" {
+	if opts.Prompt != "" || len(opts.PromptImages) > 0 {
 		prompt := opts.Prompt
 		// UserPromptSubmit hooks see the prompt before it is added. A block
 		// aborts the turn with the reason; additionalContext is appended to the
@@ -310,7 +314,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 				prompt = prompt + "\n\n" + hd.AdditionalContext
 			}
 		}
-		userMsg := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(prompt))
+		userMsg := userMessageWithImages(prompt, opts.PromptImages)
 		messages = append(messages, userMsg)
 		rec("user", userMsg)
 	}
@@ -1377,6 +1381,33 @@ func (l *Loop) finalizeCall(p *preparedCall, results []tools.Result, err error, 
 		return anthropic.NewBetaToolResultBlock(tu.ID, content, isErr)
 	}
 	return toolResultWithImages(tu.ID, content, isErr, images)
+}
+
+// userMessageWithImages builds a user message carrying text plus any base64
+// image blocks (a TUI "@image.png" reference). Same block shape as an image
+// tool_result, but on a user turn rather than a tool result. With no images it
+// is exactly the plain-text message it replaces.
+func userMessageWithImages(text string, images []tools.ResultImage) anthropic.BetaMessageParam {
+	if len(images) == 0 {
+		return anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(text))
+	}
+	blocks := make([]anthropic.BetaContentBlockParamUnion, 0, len(images)+1)
+	if text != "" {
+		blocks = append(blocks, anthropic.NewBetaTextBlock(text))
+	}
+	for _, img := range images {
+		blocks = append(blocks, anthropic.BetaContentBlockParamUnion{
+			OfImage: &anthropic.BetaImageBlockParam{
+				Source: anthropic.BetaImageBlockParamSourceUnion{
+					OfBase64: &anthropic.BetaBase64ImageSourceParam{
+						Data:      img.Base64,
+						MediaType: anthropic.BetaBase64ImageSourceMediaType(img.MediaType),
+					},
+				},
+			},
+		})
+	}
+	return anthropic.NewBetaUserMessage(blocks...)
 }
 
 // toolResultWithImages builds a tool_result block carrying text plus one or

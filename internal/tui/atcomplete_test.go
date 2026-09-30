@@ -91,7 +91,7 @@ func TestQueuedFollowUpIsIndexed(t *testing.T) {
 	m.ctx = context.Background()
 	m.events = make(chan tea.Msg, 4)
 	sent := make(chan string, 1)
-	m.run = func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, _ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter, _ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
+	m.run = func(ctx context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam, _ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter, _ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
 		sent <- prompt
 		return agent.Result{}, nil
 	}

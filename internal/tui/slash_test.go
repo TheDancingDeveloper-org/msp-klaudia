@@ -57,7 +57,7 @@ type scriptedRun struct {
 	err     error
 }
 
-func (s *scriptedRun) run(_ context.Context, prompt string, _ []anthropic.BetaMessageParam,
+func (s *scriptedRun) run(_ context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam,
 	_ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter,
 	_ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
 	s.mu.Lock()
@@ -248,7 +248,7 @@ func TestGoalStandingReminderIsRestatedEachTurn(t *testing.T) {
 	sr := &scriptedRun{}
 	m.run = sr.run
 	m.sess.Goal = "ship v2"
-	m.startTurn("fix the tests")
+	m.startTurn("fix the tests", nil)
 	awaitMsg(t, m.events)
 	got := sr.last()
 	if !strings.Contains(got, "Standing goal for this session: ship v2") || !strings.Contains(got, "fix the tests") {
@@ -312,7 +312,7 @@ func TestGoalSettingFramesTheTurnAsSpecAuthoring(t *testing.T) {
 	sr := &scriptedRun{}
 	m.run = sr.run
 	m.goalSetting = true
-	m.startTurn("a todo app")
+	m.startTurn("a todo app", nil)
 	awaitMsg(t, m.events)
 	if got := sr.last(); !strings.Contains(got, "User: a todo app") {
 		t.Errorf("goal-setting turn was not framed:\n%s", got)
@@ -743,7 +743,7 @@ func TestCompactCommandGuards(t *testing.T) {
 	if !strings.Contains(shown(m), "compaction is not available") {
 		t.Errorf("/compact without a compactor:\n%s", shown(m))
 	}
-	m.sess.Compact = func(context.Context, []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
+	m.sess.Compact = func(context.Context, []anthropic.BetaMessageParam, string) ([]anthropic.BetaMessageParam, string, error) {
 		t.Error("compacted an empty conversation")
 		return nil, "", nil
 	}
@@ -762,7 +762,7 @@ func TestCompactReplacesHistoryWithTheSummary(t *testing.T) {
 	short := orig[:1]
 	m.history = orig
 	var gotLen int
-	m.sess.Compact = func(_ context.Context, h []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, string, error) {
+	m.sess.Compact = func(_ context.Context, h []anthropic.BetaMessageParam, _ string) ([]anthropic.BetaMessageParam, string, error) {
 		gotLen = len(h)
 		return short, "  we talked about one and two  ", nil
 	}

@@ -1716,7 +1716,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		sess.ReadSummary = func() (string, bool) { return session.ReadSummary(cwd, sessionID) }
 		sess.SaveSummary = persistSummary
 		extraDirs = func() []string { return sess.ExtraDirs }
-		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
+		runFn := func(ctx context.Context, prompt string, images []tools.ResultImage, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
 			// Permission mode reads live from the session every check, so a
 			// /mode bypass (or ExitPlanMode flipping out of plan) takes effect
 			// on the very next tool dispatch inside the agent loop — not just
@@ -1734,6 +1734,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			return loop.Run(ctx, agent.Options{
 				WorkingDir:      cwd,
 				Prompt:          prompt,
+				PromptImages:    images,
 				Model:           api.ResolveModelFor(cfg.Provider, sess.Model), // resolved fresh each turn
 				Effort:          sess.Effort,                                   // read per turn, like the model
 				Thinking:        thinking,

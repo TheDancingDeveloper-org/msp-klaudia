@@ -28,7 +28,7 @@ func turnModel(t *testing.T) (*Model, *atomic.Int32) {
 	m.ctx = ctx
 	m.events = make(chan tea.Msg, 64)
 	runs := &atomic.Int32{}
-	m.run = func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam,
+	m.run = func(ctx context.Context, _ string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam,
 		_ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter,
 		_ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
 		runs.Add(1)
@@ -227,7 +227,7 @@ func TestApprovalClosesAMidTurnPicker(t *testing.T) {
 func TestStartTurnRefusesASecondConcurrentTurn(t *testing.T) {
 	m, runs := startRunningTurn(t)
 
-	if cmd := m.startTurn("a second prompt"); cmd != nil {
+	if cmd := m.startTurn("a second prompt", nil); cmd != nil {
 		t.Fatal("startTurn started a second turn while one was in flight")
 	}
 	if !strings.Contains(stripANSI(m.transcript.String()), "already running") {
@@ -235,7 +235,7 @@ func TestStartTurnRefusesASecondConcurrentTurn(t *testing.T) {
 	}
 
 	m.interruptTurn() // cancelled, goroutine still winding down
-	if cmd := m.startTurn("after interrupt"); cmd != nil {
+	if cmd := m.startTurn("after interrupt", nil); cmd != nil {
 		t.Fatal("startTurn started a turn while the interrupted one was still finishing")
 	}
 	waitRuns(t, runs, 2)
@@ -245,7 +245,7 @@ func TestStartTurnRefusesASecondConcurrentTurn(t *testing.T) {
 
 	// Once the first turn reports done, a new one may start.
 	m = deliver(m, doneMsg{err: context.Canceled})
-	if cmd := m.startTurn("next"); cmd == nil {
+	if cmd := m.startTurn("next", nil); cmd == nil {
 		t.Fatal("startTurn refused after the previous turn finished")
 	}
 	waitRuns(t, runs, 2)
