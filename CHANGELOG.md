@@ -337,6 +337,14 @@ port mirrors (see `internal/version`).
   output; prompts carrying a paste chip or over 8 KiB are not written to disk.
   `Ctrl+R` opens a reverse incremental search (`Ctrl+R` again for older
   matches, `Enter` to edit the match, `Esc`/`Ctrl+G` to cancel).
+- **Grep: context lines, a type filter, `head_limit`, and useful multiline
+  results.** `-A`/`-B`/`-C` add lines around each match in content mode (context
+  lines are marked with `-`, groups separated by `--`, as in grep); `type=go`,
+  `type=ts` and ~20 other names filter by extension without a glob; `head_limit`
+  shows the first N results and says how many there were. Multiline mode used to
+  report only that a file matched, with an empty line; it now shows each match
+  with the line it starts on. Grep and Glob now take a relative `path` from the
+  working directory, like Read and Edit do.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

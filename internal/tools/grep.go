@@ -20,7 +20,24 @@ type GrepInput struct {
 	OutputMode string `json:"output_mode,omitempty" jsonschema:"description=files_with_matches (default), content, or count"`
 	IgnoreCase bool   `json:"-i,omitempty" jsonschema:"description=Case-insensitive search"`
 	LineNum    bool   `json:"-n,omitempty" jsonschema:"description=Show line numbers (content mode)"`
-	Multiline  bool   `json:"multiline,omitempty" jsonschema:"description=Allow patterns to span lines (dot matches newline)"`
+	Multiline  bool   `json:"multiline,omitempty" jsonschema:"description=Allow patterns to span lines (dot matches newline); content mode then shows each match with the line it starts on"`
+	Type       string `json:"type,omitempty" jsonschema:"description=Only search files of this type: go, py, js, ts, rust, java, c, cpp, rb, php, sh, md, json, yaml, toml, html, css, sql, swift, kotlin"`
+	After      int    `json:"-A,omitempty" jsonschema:"description=Lines of context after each match (content mode)"`
+	Before     int    `json:"-B,omitempty" jsonschema:"description=Lines of context before each match (content mode)"`
+	Context    int    `json:"-C,omitempty" jsonschema:"description=Lines of context before and after each match (content mode)"`
+	HeadLimit  int    `json:"head_limit,omitempty" jsonschema:"description=Return at most this many lines/files/counts; the rest are counted, not shown"`
+}
+
+// grepTypes maps the type filter's names to file extensions — the common
+// ripgrep types, enough that the model need not spell out a glob.
+var grepTypes = map[string][]string{
+	"go": {".go"}, "py": {".py", ".pyi"}, "js": {".js", ".mjs", ".cjs", ".jsx"},
+	"ts": {".ts", ".tsx", ".mts", ".cts"}, "rust": {".rs"}, "java": {".java"},
+	"c": {".c", ".h"}, "cpp": {".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".h"},
+	"rb": {".rb"}, "php": {".php"}, "sh": {".sh", ".bash", ".zsh"},
+	"md": {".md", ".markdown"}, "json": {".json"}, "yaml": {".yaml", ".yml"},
+	"toml": {".toml"}, "html": {".html", ".htm"}, "css": {".css", ".scss", ".sass"},
+	"sql": {".sql"}, "swift": {".swift"}, "kotlin": {".kt", ".kts"},
 }
 
 // Grep searches file contents using regular expressions.
@@ -42,13 +59,38 @@ func (g *Grep) Name() string { return "Grep" }
 func (g *Grep) Description(context.Context) (string, error) {
 	return "Search file contents with a regular expression. output_mode controls results: " +
 		"\"files_with_matches\" (default) lists matching files, \"content\" shows matching lines, " +
-		"\"count\" shows per-file match counts. Filter files with glob, ignore case with -i. " +
-		"Skips files ignored by .gitignore/.ignore and hidden (dot) files unless the path or glob names them.", nil
+		"\"count\" shows per-file match counts. Filter files with glob or type (e.g. type=go), ignore case with -i. " +
+		"In content mode, -A/-B/-C add lines of context (context lines use '-' where matches use ':'). " +
+		"head_limit caps how many results are shown; the rest are counted. " +
+		"Skips files ignored by .gitignore/.ignore and hidden (dot) files unless the path or glob names them. " +
+		"A relative path is taken from the working directory.", nil
 }
 
 func (g *Grep) InputSchema() json.RawMessage { return g.schema.Raw }
 
-func (g *Grep) ValidateInput(raw json.RawMessage) error { return g.schema.Validate(raw) }
+func (g *Grep) ValidateInput(raw json.RawMessage) error {
+	if err := g.schema.Validate(raw); err != nil {
+		return err
+	}
+	var in GrepInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return err
+	}
+	if in.Type != "" {
+		if _, ok := grepTypes[strings.ToLower(in.Type)]; !ok {
+			names := make([]string, 0, len(grepTypes))
+			for n := range grepTypes {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			return fmt.Errorf("unknown type %q; known types: %s (or use glob)", in.Type, strings.Join(names, ", "))
+		}
+	}
+	if in.After < 0 || in.Before < 0 || in.Context < 0 || in.HeadLimit < 0 {
+		return fmt.Errorf("-A, -B, -C and head_limit must not be negative")
+	}
+	return nil
+}
 
 // PermissionRequest names the search root, so Read deny rules apply to it.
 func (g *Grep) PermissionRequest(raw json.RawMessage) permission.PermissionRequest {
@@ -72,6 +114,15 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	root := in.Path
 	if root == "" {
 		root = tctx.WorkingDir
+	} else {
+		root = resolvePath(tctx, root)
+	}
+	before, after := in.Before, in.After
+	if in.Context > 0 {
+		before, after = max(before, in.Context), max(after, in.Context)
+	}
+	if in.OutputMode != "content" {
+		before, after = 0, 0 // context only means something where lines are shown
 	}
 
 	hidden := 0
@@ -85,6 +136,9 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		Ctx:        ctx,
 		Skip:       tctx.Hidden,
 		Skipped:    &hidden,
+		Exts:       grepTypes[strings.ToLower(in.Type)],
+		Before:     before,
+		After:      after,
 	})
 	if err != nil {
 		return []Result{{Content: fmt.Sprintf("Error: %v", err), IsError: true}}, nil
@@ -101,13 +155,27 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	var out string
 	switch in.OutputMode {
 	case "content":
-		out = formatContent(matches, in.LineNum)
+		out = formatContent(matches, in.LineNum, before > 0 || after > 0)
 	case "count":
 		out = formatCount(matches)
 	default: // files_with_matches
 		out = formatFiles(matches)
 	}
-	return []Result{CapResult(Result{Content: out + note})}, nil
+	return []Result{CapResult(Result{Content: headLimit(out, in.HeadLimit) + note})}, nil
+}
+
+// headLimit keeps the first n lines of out and says how many were left out,
+// so a capped result can't be mistaken for a complete one.
+func headLimit(out string, n int) string {
+	if n <= 0 {
+		return out
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) <= n {
+		return out
+	}
+	return strings.Join(lines[:n], "\n") +
+		fmt.Sprintf("\n[showing %d of %d lines; raise head_limit or narrow the search for the rest]", n, len(lines))
 }
 
 // formatFiles returns the distinct matching files, in stable order.
@@ -123,14 +191,25 @@ func formatFiles(matches []search.GrepMatch) string {
 	return strings.Join(files, "\n")
 }
 
-// formatContent returns "file:line:text" (or "file:text" without line numbers).
-func formatContent(matches []search.GrepMatch, lineNum bool) string {
+// formatContent returns "file:line:text" (or "file:text" without line
+// numbers). Context lines use '-' in place of ':', as grep and ripgrep do, and
+// with context on, a "--" line separates groups that are not adjacent.
+func formatContent(matches []search.GrepMatch, lineNum, withContext bool) string {
 	var b strings.Builder
+	prevFile, prevLine := "", 0
 	for _, m := range matches {
+		if withContext && prevFile != "" && (m.File != prevFile || m.Line != prevLine+1) {
+			b.WriteString("--\n")
+		}
+		prevFile, prevLine = m.File, m.Line
+		sep := ":"
+		if m.Context {
+			sep = "-"
+		}
 		if lineNum && m.Line > 0 {
-			fmt.Fprintf(&b, "%s:%d:%s\n", m.File, m.Line, m.Text)
+			fmt.Fprintf(&b, "%s%s%d%s%s\n", m.File, sep, m.Line, sep, m.Text)
 		} else {
-			fmt.Fprintf(&b, "%s:%s\n", m.File, m.Text)
+			fmt.Fprintf(&b, "%s%s%s\n", m.File, sep, m.Text)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
