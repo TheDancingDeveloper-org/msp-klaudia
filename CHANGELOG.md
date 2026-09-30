@@ -450,6 +450,16 @@ port mirrors (see `internal/version`).
   session and `--continue` / `-r <id>` to get it back. An explicit
   `--continue` or `-r` ignores the cutoff.
 
+### Changed
+- **`/diff` pages a long diff, in colour.** It used to print the whole diff,
+  uncoloured, straight into scrollback. It now takes the same route as `/last`:
+  a diff longer than two screens opens in `$PAGER` (falling back to `less`,
+  then `more`), a shorter one prints inline. git is asked for
+  `--color=always` unless `NO_COLOR` is set or the terminal has no colour, in
+  which case it is asked for `--no-color` so a `color.ui = always` in git
+  config does not override `NO_COLOR`. When `git diff` fails, the message is
+  git's own rather than `exit status 128`.
+
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or
   `--resume`, an unknown `--output-format`, and an unknown `--create-config`
