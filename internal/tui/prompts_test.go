@@ -124,10 +124,8 @@ func TestPermissionAnswers(t *testing.T) {
 	if m.state != stateAwaitingPermission {
 		t.Fatal("an unrelated key answered the prompt")
 	}
-	m.onKey(runeKey("s")) // "something else" only exists for host changes
-	if m.state != stateAwaitingPermission {
-		t.Fatal("s answered an ordinary permission prompt")
-	}
+	// "s" (redirect) now applies to every permission ask, not just host
+	// changes — see redirect_test.go for that path.
 	m.onKey(runeKey("a"))
 	if d := <-reply; d.Behavior != permission.Allow {
 		t.Errorf("a gave %v", d.Behavior)

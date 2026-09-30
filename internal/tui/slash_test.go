@@ -293,7 +293,7 @@ func TestGoalSettingToggles(t *testing.T) {
 	}
 
 	// With a spec on disk, it is loaded rather than drafted.
-	write(t, m.sess.CWD, "PRD.md", "# Goal: build the widget\n\n- [ ] widget\n")
+	write(t, m.sess.CWD, "PRD.md", "# Goal: build the widget\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 	m.handleSlash("/goal")
 	if !strings.Contains(shown(m), "Loaded spec from") || !strings.Contains(shown(m), "PRD.md") {
 		t.Errorf("an existing spec was not loaded:\n%s", shown(m))
@@ -329,7 +329,7 @@ func TestGoalRunNeedsASpecAndAValidCount(t *testing.T) {
 		t.Error("a loop started without a spec")
 	}
 
-	write(t, m.sess.CWD, "PRD.md", "# Goal: widget\n\n## Progress\n\n- [ ] widget\n")
+	write(t, m.sess.CWD, "PRD.md", "# Goal: widget\n\n## Progress\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 	for _, bad := range []string{"/goal run zero", "/goal run -2"} {
 		m.handleSlash(bad)
 	}
@@ -353,7 +353,7 @@ func TestGoalRunBranchesCapsAndStartsTheFirstIteration(t *testing.T) {
 	m.sess.CWD = dir
 	sr := &scriptedRun{}
 	m.run = sr.run
-	write(t, dir, "PRD.md", "# Goal: build the widget\n\n## Progress\n\n- [ ] widget\n")
+	write(t, dir, "PRD.md", "# Goal: build the widget\n\n## Progress\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 
 	_, cmd := m.handleSlash("/goal run 999")
 	if cmd == nil {
@@ -383,8 +383,12 @@ func TestGoalRunBranchesCapsAndStartsTheFirstIteration(t *testing.T) {
 	}
 
 	// A second run resumes on the existing branch rather than failing to
-	// create it again.
+	// create it again. Simulate the first turn having finished (its doneMsg was
+	// drained above but not fed back through Update, so clear the in-flight
+	// turn state that doneMsg would).
 	m.state = stateIdle
+	m.turnInFlight = false
+	m.turnCancel = nil
 	m.handleSlash("/goal run 1")
 	awaitMsg(t, m.events)
 	if m.loopBranch != "klaudia/goal-build-the-widget" {
@@ -403,7 +407,7 @@ func TestGoalRunOutsideARepoRunsWithoutBranching(t *testing.T) {
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(m.sess.CWD))
 	sr := &scriptedRun{}
 	m.run = sr.run
-	write(t, m.sess.CWD, "PRD.md", "# Goal: widget\n\n## Progress\n\n- [ ] widget\n")
+	write(t, m.sess.CWD, "PRD.md", "# Goal: widget\n\n## Progress\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 	m.handleSlash("/goal run 3")
 	awaitMsg(t, m.events)
 	if m.loopBranch != "" || !strings.Contains(shown(m), "not branching") {
@@ -452,9 +456,20 @@ func TestMCPPickerDisconnectsAndReconnects(t *testing.T) {
 	m.sess.MCP = f
 	m.handleSlash("/mcp")
 	out := shown(m)
-	for _, want := range []string{"● connected  github (12 tools)", "○ disconnected  godot", "Disconnect github", "Reconnect godot"} {
+	for _, want := range []string{"● connected  github (12 tools)", "○ disconnected  godot"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("/mcp is missing %q:\n%s", want, out)
+		}
+	}
+	// The disconnect/reconnect actions are the picker's options, not scrollback.
+	var labels []string
+	for _, it := range m.choiceItems {
+		labels = append(labels, it.label)
+	}
+	joined := strings.Join(labels, "\n")
+	for _, want := range []string{"Disconnect github", "Reconnect godot"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the MCP picker is missing %q: %v", want, labels)
 		}
 	}
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
@@ -583,8 +598,12 @@ func TestModeCommand(t *testing.T) {
 	if m.state != stateAwaitingChoice {
 		t.Fatalf("/mode with no argument should open the picker, state=%v", m.state)
 	}
-	if !strings.Contains(shown(m), "(current)") {
-		t.Errorf("the picker should mark the current mode:\n%s", shown(m))
+	var modeLabels []string
+	for _, it := range m.choiceItems {
+		modeLabels = append(modeLabels, it.label)
+	}
+	if !strings.Contains(strings.Join(modeLabels, "\n"), "(current)") {
+		t.Errorf("the picker should mark the current mode: %v", modeLabels)
 	}
 	// Autonomous is first and still refused through the picker.
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
@@ -721,12 +740,14 @@ func TestAddDirCommand(t *testing.T) {
 	if !strings.Contains(shown(m), "No extra directories added") {
 		t.Errorf("empty /add-dir:\n%s", shown(m))
 	}
-	m.handleSlash("/add-dir ../shared lib")
-	if len(m.sess.ExtraDirs) != 1 || m.sess.ExtraDirs[0] != "../shared lib" {
-		t.Errorf("ExtraDirs = %v", m.sess.ExtraDirs)
+	// /add-dir validates that the path exists and stores the resolved directory.
+	extra := t.TempDir()
+	m.handleSlash("/add-dir " + extra)
+	if len(m.sess.ExtraDirs) != 1 || m.sess.ExtraDirs[0] != extra {
+		t.Errorf("ExtraDirs = %v, want [%s]", m.sess.ExtraDirs, extra)
 	}
 	m.handleSlash("/add-dir")
-	if !strings.Contains(shown(m), "Extra directories:\n  ../shared lib") {
+	if !strings.Contains(shown(m), "Extra directories:\n  "+extra) {
 		t.Errorf("/add-dir listing:\n%s", shown(m))
 	}
 }
@@ -955,7 +976,7 @@ func TestSkillCommandRunsTheRenderedSkill(t *testing.T) {
 func TestUnknownCommandPointsAtHelp(t *testing.T) {
 	m := slashModel(t)
 	m.handleSlash("/frobnicate now")
-	if !strings.Contains(shown(m), "Unknown command /frobnicate. Try /help.") {
+	if !strings.Contains(shown(m), "Unknown command /frobnicate. Try /help") {
 		t.Errorf("unknown command:\n%s", shown(m))
 	}
 }
