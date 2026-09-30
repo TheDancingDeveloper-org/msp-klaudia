@@ -52,6 +52,10 @@ func (m multiRecorder) Record(role string, message json.RawMessage) error {
 		if r == nil {
 			continue
 		}
+		// Every recorder runs even when an earlier one failed: a transcript
+		// write failure must not stop the embedder's envelope output (see
+		// "report a transcript that cannot be written"). The first error is
+		// reported so the caller can warn once.
 		if err := r.Record(role, message); err != nil && first == nil {
 			first = err
 		}

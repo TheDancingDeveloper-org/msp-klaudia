@@ -19,7 +19,10 @@ func printRun(t *testing.T, cwd string, args ...string) (string, error) {
 	t.Chdir(cwd)
 	var errOut bytes.Buffer
 	cmd := NewRootCommand()
-	cmd.SetArgs(append([]string{"-p", "--permission-mode", "dontAsk"}, args...))
+	// The test wrote the project's .klaudia/config.toml itself, so apply it in
+	// full (the trust model otherwise withholds provider/baseURL/apiKey from an
+	// untrusted folder).
+	cmd.SetArgs(append([]string{"-p", "--permission-mode", "dontAsk", "--trusted-project-config"}, args...))
 	cmd.SetIn(strings.NewReader(""))
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(&errOut)

@@ -77,7 +77,7 @@ func TestPreRunFailureIsAJSONResult(t *testing.T) {
 		{"missing credential, embedding", func(t *testing.T) string { return t.TempDir() },
 			[]string{"--input-format", "stream-json", "--output-format", "stream-json", "--verbose"}, "needs credentials"},
 		{"incomplete provider config", incompleteOpenAI,
-			[]string{"-p", "hi", "--output-format", "json"}, "requires baseURL"},
+			[]string{"-p", "hi", "--output-format", "json", "--trusted-project-config"}, "requires baseURL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stdout, code := headless(t, tc.cwd(t), tc.args...)
@@ -149,7 +149,7 @@ func TestUsageErrorsExit2(t *testing.T) {
 func TestHeadlessJSONResultReportsAPITime(t *testing.T) {
 	srv := httptest.NewServer(&fakeChat{})
 	defer srv.Close()
-	stdout, code := headless(t, workdir(t, srv.URL), "-p", "hi", "--output-format", "json", "--permission-mode", "dontAsk")
+	stdout, code := headless(t, workdir(t, srv.URL), "-p", "hi", "--output-format", "json", "--permission-mode", "dontAsk", "--trusted-project-config")
 	res := lastResult(t, stdout)
 	if res.IsError || code != ExitOK {
 		t.Fatalf("run failed (exit %d): %+v", code, res)

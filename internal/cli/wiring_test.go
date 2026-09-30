@@ -302,11 +302,13 @@ func TestMultiRecorderSkipsNilAndStopsOnError(t *testing.T) {
 	if err := m.Record("assistant", json.RawMessage(`{"role":"assistant"}`)); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want boom", err)
 	}
-	if n := strings.Count(b.String(), "\n"); n != 1 {
-		t.Errorf("%d envelopes written, want 1 (the recorder after the failure must not run)", n)
+	// Every non-nil recorder runs even past the failing one, and the first
+	// error is reported (a transcript failure must not silence envelope output).
+	if n := strings.Count(b.String(), "\n"); n != 2 {
+		t.Errorf("%d envelopes written, want 2 (both envelope recorders run)", n)
 	}
 	var env map[string]any
-	if err := json.Unmarshal(b.Bytes(), &env); err != nil || env["type"] != "assistant" || env["session_id"] != "sid" {
+	if err := json.Unmarshal([]byte(strings.SplitN(b.String(), "\n", 2)[0]), &env); err != nil || env["type"] != "assistant" || env["session_id"] != "sid" {
 		t.Errorf("envelope = %s", b.String())
 	}
 }

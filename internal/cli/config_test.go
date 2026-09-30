@@ -202,7 +202,7 @@ func runWithConfig(t *testing.T, body string) (string, error) {
 	in := strings.NewReader(`{"type":"user","message":{"role":"user","content":"hi"}}` + "\n")
 	var stderr strings.Builder
 	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk"})
+	cmd.SetArgs([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--trusted-project-config"})
 	cmd.SetIn(in)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(&stderr)
@@ -262,7 +262,7 @@ func TestCreateConfigGlobalHonoursKlaudiaConfigDir(t *testing.T) {
 	if lerr != nil {
 		t.Fatalf("config.Load: %v", lerr)
 	}
-	if cfg.Provider != "openai" {
-		t.Errorf("config.Load provider = %q, want openai from the starter it just wrote", cfg.Provider)
+	if cfg.Provider != config.ProviderAnthropic {
+		t.Errorf("config.Load provider = %q, want %q from the starter it just wrote", cfg.Provider, config.ProviderAnthropic)
 	}
 }

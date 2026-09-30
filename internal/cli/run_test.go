@@ -360,7 +360,7 @@ func TestRunWarnsAboutBrokenOptionalConfig(t *testing.T) {
 	if r.Err != nil {
 		t.Fatal(r.dump())
 	}
-	for _, want := range []string{"warning: mcp config", "no image set"} {
+	for _, want := range []string{"warning: mcp config", "no image is set"} {
 		if !strings.Contains(r.Stderr, want) {
 			t.Errorf("stderr lacks %q:\n%s", want, r.Stderr)
 		}

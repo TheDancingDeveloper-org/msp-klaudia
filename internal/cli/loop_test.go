@@ -30,7 +30,7 @@ func gitInit(t *testing.T, e *cliEnv) {
 func TestLoopStopsWhenGoalComplete(t *testing.T) {
 	m := newFakeModel(t, say("all done\n"+goal.CompleteToken))
 	e := newCLIEnv(t, m)
-	e.write("PRD.md", "# Build the widget\n\n- [x] widget\n")
+	e.write("PRD.md", "# Build the widget\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 	gitInit(t, e)
 
 	r := e.run(nil, "--loop", "--dangerously-skip-permissions")
@@ -67,7 +67,7 @@ func TestLoopStopsWhenGoalComplete(t *testing.T) {
 func TestLoopStopsAfterStalledIterations(t *testing.T) {
 	m := newFakeModel(t)
 	e := newCLIEnv(t, m)
-	e.write("PRD.md", "# Stalling goal\n")
+	e.write("PRD.md", "# Stalling goal\n\n- [ ] keep going\n\n## Verify\n\nmake test\n")
 	gitInit(t, e)
 
 	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--max-iterations", "8")
@@ -126,7 +126,7 @@ func TestLoopRefusesWithoutSpecOrUnattendedMode(t *testing.T) {
 	t.Run("mode that asks", func(t *testing.T) {
 		m := newFakeModel(t)
 		e := newCLIEnv(t, m)
-		e.write("PRD.md", "# g\n")
+		e.write("PRD.md", "# g\n\n- [ ] task\n\n## Verify\n\nmake test\n")
 		r := e.run(nil, "--loop", "--permission-mode", "plan")
 		if r.Err == nil || !strings.Contains(r.Err.Error(), "cannot answer prompts") {
 			t.Fatalf("err = %v", r.Err)
@@ -141,7 +141,7 @@ func TestLoopRefusesWithoutSpecOrUnattendedMode(t *testing.T) {
 func TestLoopStopsOnAPIError(t *testing.T) {
 	m := newFakeModel(t, fakeTurn{Status: 400})
 	e := newCLIEnv(t, m)
-	e.write("PRD.md", "# g\n")
+	e.write("PRD.md", "# g\n\n- [ ] task\n\n## Verify\n\nmake test\n")
 	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--max-iterations", "3")
 	if r.Err == nil || r.Code != ExitError {
 		t.Fatalf("want an error exit\n%s", r.dump())

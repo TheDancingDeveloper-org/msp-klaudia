@@ -166,7 +166,7 @@ func TestPositionalPromptKeepsEveryWord(t *testing.T) {
 	t.Chdir(workdir(t, srv.URL))
 
 	cmd := NewRootCommand()
-	cmd.SetArgs([]string{"--permission-mode", "dontAsk", "explain", "this", "code"})
+	cmd.SetArgs([]string{"--permission-mode", "dontAsk", "--trusted-project-config", "explain", "this", "code"})
 	cmd.SetIn(strings.NewReader(""))
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)

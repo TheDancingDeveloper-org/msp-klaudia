@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/fakeapi"
 )
 
@@ -73,6 +74,12 @@ func newCLIEnv(t *testing.T, m *fakeModel) *cliEnv {
 	}
 	t.Setenv("KLAUDIA_CUSTOM_ENDPOINT", endpoint)
 	t.Chdir(e.Dir)
+	// The test owns this project directory and writes its own config, so trust
+	// it: the trust model otherwise withholds a project file's provider,
+	// endpoint, sandbox and permission settings from an untrusted folder.
+	if _, err := config.TrustProject(e.Dir); err != nil {
+		t.Fatal(err)
+	}
 	return e
 }
 
