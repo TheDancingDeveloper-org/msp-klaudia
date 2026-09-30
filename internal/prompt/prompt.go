@@ -126,6 +126,31 @@ func build(cwd, root, model string, project bool) string {
 	return b.String()
 }
 
+// Compose applies the two CLI system-prompt overrides to a default prompt,
+// matching Claude Code's semantics:
+//
+//   - override (--system-prompt), when non-empty, REPLACES the default entirely;
+//   - appendText (--append-system-prompt), when non-empty, is APPENDED to
+//     whatever remains (the default, or the replacement).
+//
+// So --append-system-prompt appends to the default when used alone, and follows
+// the replacement when both flags are given. Empty overrides leave defaultSystem
+// untouched, keeping the flags backward compatible.
+func Compose(defaultSystem, override, appendText string) string {
+	sys := defaultSystem
+	if strings.TrimSpace(override) != "" {
+		sys = override
+	}
+	if strings.TrimSpace(appendText) != "" {
+		if strings.TrimSpace(sys) == "" {
+			sys = appendText
+		} else {
+			sys += "\n\n" + appendText
+		}
+	}
+	return sys
+}
+
 // recalledKnowledge returns the curated project-knowledge file for priming the
 // model, or "" if there is none. Sibling of recalledMemory; KNOWLEDGE.md holds
 // hand-curated, durable lessons distinct from the free-form memory index.

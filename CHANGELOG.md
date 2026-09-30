@@ -441,6 +441,21 @@ port mirrors (see `internal/version`).
     — is **follow-up**; until then an `authorization_code` server with no stored token
     connects unauthenticated and receives the server's 401. Config is validated at
     connect and per server, so one bad OAuth block does not abort startup.
+- **`--system-prompt`, `--append-system-prompt`, `--mcp-config`, `--add-dir` CLI
+  flags** (Claude Code parity). `--system-prompt <text>` replaces the default
+  system prompt entirely; `--append-system-prompt <text>` appends to whatever
+  prompt is otherwise used (the default, or a `--system-prompt` replacement), so
+  the two compose. `--mcp-config <path-or-json>` (repeatable) loads additional
+  MCP servers from a file path or inline JSON in the `.mcp.json` shape and merges
+  them over the configured servers — a CLI value wins a name clash. Those servers
+  connect through the same path as project `.mcp.json` servers and their tools
+  keep the `mcp__<server>__<tool>` names, so they are gated for trust identically
+  (allowed only under an enforcing trust posture, asked interactively, refused
+  where there is nobody to ask): a CLI flag buys no extra trust. `--add-dir <dir>`
+  (repeatable) adds directories the agent may operate in beyond the working
+  directory; they become project roots for the host gate in every mode, and seed
+  the interactive session so `/add-dir` extends rather than replaces them. All
+  four are optional and backward compatible.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid

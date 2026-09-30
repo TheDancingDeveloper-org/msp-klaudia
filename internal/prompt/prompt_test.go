@@ -191,6 +191,36 @@ func TestSystemRecallsKnowledge(t *testing.T) {
 	}
 }
 
+func TestCompose(t *testing.T) {
+	const def = "DEFAULT"
+	tests := []struct {
+		name             string
+		override, append string
+		want             string
+	}{
+		{"neither leaves default untouched", "", "", def},
+		{"override replaces default", "REPLACED", "", "REPLACED"},
+		{"append adds to default", "", "MORE", def + "\n\nMORE"},
+		{"both: append follows replacement", "REPLACED", "MORE", "REPLACED\n\nMORE"},
+		{"blank override is ignored", "   ", "", def},
+		{"blank append is ignored", "", "  \n ", def},
+		{"append onto empty default stands alone", "", "MORE", def + "\n\nMORE"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Compose(def, tt.override, tt.append); got != tt.want {
+				t.Errorf("Compose(%q, %q, %q) = %q, want %q", def, tt.override, tt.append, got, tt.want)
+			}
+		})
+	}
+
+	// Appending onto a genuinely empty base yields just the appended text (no
+	// leading separator), so a --system-prompt "" with only --append is clean.
+	if got := Compose("", "", "ONLY"); got != "ONLY" {
+		t.Errorf("Compose empty base with append = %q, want %q", got, "ONLY")
+	}
+}
+
 func TestSystemNoClaudeMd(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate from a real ~/.claude/CLAUDE.md
 	p := System(t.TempDir(), "")
