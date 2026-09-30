@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
+	"github.com/greenthread-ai/klaudia/internal/session"
 	"github.com/greenthread-ai/klaudia/internal/textsafe"
 )
 
@@ -96,10 +97,23 @@ func build(cwd, root, model string, project bool) string {
 		return b.String()
 	}
 	dirs := stateDirs(root, cwd)
-	if mem := textsafe.StripInvisible(recalledMemory(dirs...)); mem != "" {
+	userMem := textsafe.StripInvisible(recalledUserMemory())
+	projMem := textsafe.StripInvisible(recalledMemory(dirs...))
+	if userMem != "" || projMem != "" {
 		b.WriteString("\n\n# Recalled memory\n")
-		b.WriteString("These are notes you saved in earlier sessions. Use the Memory tool to search for more or to add new ones.\n\n")
-		b.WriteString(mem)
+		b.WriteString("These are notes you saved in earlier sessions. Use the Memory tool to search for more or to add new ones.\n")
+		// User-level memory first, project-level last, so the project's notes
+		// can refine or override the global ones in the reader's mind. Each
+		// block is labelled so the two are never confused; the Memory tool
+		// still writes to project memory only.
+		if userMem != "" {
+			b.WriteString("\n**User memory** (global — carried across all your projects):\n\n")
+			b.WriteString(userMem)
+		}
+		if projMem != "" {
+			b.WriteString("\n\n**Project memory** (specific to this project):\n\n")
+			b.WriteString(projMem)
+		}
 	}
 	if kn := textsafe.StripInvisible(recalledKnowledge(dirs...)); kn != "" {
 		b.WriteString("\n\n# Project knowledge\n")
@@ -129,6 +143,20 @@ func stateDirs(root, cwd string) []string {
 		return []string{cwd}
 	}
 	return []string{root, cwd}
+}
+
+// recalledUserMemory returns the user-level (global) memory index for priming
+// the model, or "" if there is none. It lives at $KLAUDIA_CONFIG_DIR/MEMORY.md
+// (default ~/.klaudia/MEMORY.md), the same base as the user's config, so facts
+// about the user persist across every project. Like project memory the detail
+// notes are not inlined; unlike it there is no legacy path to fall back to,
+// because the user-level file is new. Absent file = no-op.
+func recalledUserMemory() string {
+	root := session.ConfigRoot()
+	if root == "" {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(readMarkdownFiles(filepath.Join(root, "MEMORY.md")), "\n\n"))
 }
 
 // recalledMemory returns the project memory index for priming the model, or ""

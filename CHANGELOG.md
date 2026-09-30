@@ -345,6 +345,16 @@ port mirrors (see `internal/version`).
   report only that a file matched, with an empty line; it now shows each match
   with the line it starts on. Grep and Glob now take a relative `path` from the
   working directory, like Read and Edit do.
+- **User-level memory at `~/.klaudia/MEMORY.md`.** Memory was per-project only, so a
+  fact about *you* (rather than a project) had to be re-taught in every checkout. A
+  user-level memory file, read from `$KLAUDIA_CONFIG_DIR/MEMORY.md` (default
+  `~/.klaudia/MEMORY.md`, the same base as your user config), is now loaded and injected
+  into the system prompt alongside project memory. The recall section labels the two —
+  **User memory** (global, across all projects) then **Project memory** (this project) —
+  with the project block last so its notes refine the global ones. The file is optional:
+  absent = no-op. This is read-only injection; the Memory tool still *writes* only to
+  project memory (`.klaudia/MEMORY.md`), so adding a user-scoped write would be a
+  follow-up.
 - **`extraHeadersEnv` for OpenAI-compatible providers.** A config map of HTTP header
   name → environment-variable NAME (never a value in the file, mirroring `apiKeyEnv`),
   applied to every request alongside `Authorization`. `provider = "openai"` is now valid
