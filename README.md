@@ -231,8 +231,8 @@ interrupt and send it now, or `↑` to edit it.
 `/model` with no argument asks the provider which models it serves and offers
 them as a picker — Anthropic and OpenAI-compatible endpoints both answer at
 `GET /v1/models` — so you don't have to remember an exact model ID. `/model
-<alias|id>` still sets one directly (`opus`, `sonnet`, `haiku`, `fable`, or any
-full ID). Picking from the list also records that model's real context window,
+<alias|id>` still sets one directly (`opus`, `sonnet`, `haiku`, `fable` on
+Anthropic, or any full ID). Picking from the list also records that model's real context window,
 which is what the status bar's `ctx N%` measures against.
 
 `/effort <level>` sets the reasoning effort for the rest of the session
@@ -559,10 +559,11 @@ extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID", "CF-Access-Client-Secret" =
 # "max_tokens must be at least 1, got -N" or "context length exceeded" 400s.
 # contextWindow = 128000
 
-# Optional: cap the tokens a single turn may generate. Defaults to the model's
-# real maximum (128000 on the 1M-context Claude models, 64000 on the 200k ones,
-# 8192 for models Klaudia doesn't recognise — including most OpenAI-compatible
-# ones). Set this when your provider's limit differs from that fallback.
+# Optional: cap the tokens a single turn may generate. On Anthropic it defaults
+# to the model's real maximum (128000 on the 1M-context Claude models, 64000 on
+# the 200k ones, 8192 for models Klaudia doesn't recognise); with
+# provider = "openai" it is always 8192. Set this when your provider's limit
+# differs from that fallback.
 # maxTokens = 32000
 
 # Optional: reasoning effort (low | medium | high | xhigh | max). Unset sends
@@ -601,7 +602,10 @@ does for `effort`, and `--fallback-model` sets the fallback the same way. A
 switch to the fallback is announced in the TUI, and on stderr (`note: …`) in
 `-p` runs. It is never made once part of the reply has been shown — a second
 request would show it twice — and it covers sub-agents and compaction summaries
-too, since they go through the same provider. The
+too, since they go through the same provider. The aliases and the Claude default
+model belong to the Anthropic provider: with `provider = "openai"` the model
+string is sent exactly as written (a bare `sonnet` gets a warning, not a
+rewrite), and a `model` is required. The
 OpenAI-compatible provider translates the Anthropic message shape to Chat
 Completions (including image tool-results → `image_url`).
 

@@ -30,6 +30,7 @@ type loopRun struct {
 	cwd         string
 	mode        permission.Mode
 	model       anthropic.Model
+	provider    string // configured provider name, for the model-aware defaults
 	effort      string
 	thinking    string
 	system      string
@@ -123,6 +124,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			Model:         p.model,
 			Effort:        p.effort,
 			Thinking:      p.thinking,
+			ProviderName:  p.provider,
 			System:        p.system,
 			MaxTurns:      p.maxTurns,
 			Permission:    p.permCtx,

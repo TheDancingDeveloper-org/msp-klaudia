@@ -33,8 +33,9 @@ type Spawner struct {
 	mu            sync.RWMutex
 	deferredTools map[string]bool
 
-	workingDir string
-	hostGate   *HostGate
+	workingDir   string
+	hostGate     *HostGate
+	providerName string
 }
 
 // SetDeferred replaces the deferred-tool set. A config reload can add or drop
@@ -62,6 +63,14 @@ func (s *Spawner) deferred() map[string]bool {
 // project — the kind of split that makes path-based policy meaningless.
 func (s *Spawner) WithWorkingDir(dir string) *Spawner {
 	s.workingDir = dir
+	return s
+}
+
+// WithProviderName records the configured provider ("" = anthropic), so a
+// sub-agent sizes its context window and output cap the way the parent does:
+// from Claude's tables on Anthropic, from the unknown-model defaults elsewhere.
+func (s *Spawner) WithProviderName(name string) *Spawner {
+	s.providerName = name
 	return s
 }
 
@@ -142,7 +151,7 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 	// Give the child the model's real window. Leaving this 0 fell back to the
 	// 200k compaction default, so a sub-agent on a 1M model summarised its
 	// history at a fifth of the room it actually had.
-	ctxWindow, _ := api.ContextWindow(string(model), 0)
+	ctxWindow, _ := api.ContextWindowFor(s.providerName, string(s.model), 0)
 
 	start := time.Now()
 	loop := New(s.provider, childTools)
@@ -156,6 +165,7 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 		WorkingDir:    s.workingDir,
 		Approver:      s.approver,
 		ContextWindow: ctxWindow,
+		ProviderName:  s.providerName,
 		DeferredTools: filterDeferred(s.deferred(), childTools),
 	}, emit)
 	if err != nil {

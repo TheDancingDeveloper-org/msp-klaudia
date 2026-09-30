@@ -2092,7 +2092,7 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		return m, m.showResult(args)
 	case "/model":
 		if len(args) > 0 {
-			m.setModel(args[0], 0)
+			m.appendLine(bannerStyle.Render(m.setModel(args[0], 0)))
 			if warn := m.unlistedModelWarning(args[0]); warn != "" {
 				m.appendLine(hintStyle.Render(warn))
 			}
