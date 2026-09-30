@@ -364,8 +364,9 @@ type Model struct {
 	pending    chan permission.Decision
 	pendingReq agent.ApprovalRequest
 	// knownModels is the model list the provider last reported to /model,
-	// kept so /model <id> can warn about an id the endpoint does not list
-	// without a second lookup. Nil until the list has been fetched once.
+	// kept so /model <id> can warn about an id the endpoint does not list and
+	// Tab can complete it, without a second lookup. Nil until the list has been
+	// fetched once.
 	knownModels []api.ModelInfo
 	// redirect marks the pending answer as "no, do it differently" rather than
 	// a plain refusal, so the echoed line invites the instruction the user is
@@ -1458,11 +1459,14 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Tab completion on an idle line: slash command when the line is a "/token",
-	// otherwise an @<path> reference.
+	// the command's argument when it has a completer, otherwise an @<path>
+	// reference.
 	if m.state == stateIdle && msg.Type == tea.KeyTab {
-		if strings.HasPrefix(m.input.Value(), "/") && !strings.ContainsAny(m.input.Value(), " \t") {
+		switch {
+		case strings.HasPrefix(m.input.Value(), "/") && !strings.ContainsAny(m.input.Value(), " \t"):
 			m.completeSlash()
-		} else {
+		case m.completeSlashArg():
+		default:
 			m.completeAtPath()
 		}
 		return m, nil
@@ -1520,61 +1524,66 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // cmdInfo describes one slash command — the single source of truth for both
-// /help and the type-ahead suggestions, so the two can never drift.
-type cmdInfo struct{ name, args, desc string }
+// /help and the type-ahead suggestions, so the two can never drift. complete,
+// when set, offers the candidates for the command's next argument on Tab (see
+// argcomplete.go); a command without one leaves Tab to @path completion.
+type cmdInfo struct {
+	name, args, desc string
+	complete         argCompleter
+}
 
 // helpColumn is the width of the usage column in /help.
 const helpColumn = 20
 
 var commandList = []cmdInfo{
-	{"/help", "", "Show this help"},
-	{"/model", "[name]", "Pick a model from the provider (no arg), or set one by alias/ID"},
-	{"/effort", "[level|default]", "Show or set reasoning effort: low, medium, high, xhigh, max"},
-	{"/theme", "[name]", "Change Markdown render theme (no arg = picker)"},
-	{"/mode", "[name]", "Change how Klaudia asks permission (no arg = picker)"},
-	{"!<command>", "", "Run a shell command directly; its output becomes context for Klaudia"},
-	{"/stop", "", "Ask Klaudia to finish the current step and stop, keeping what it has done"},
-	{"/changes", "", "Show the working tree split into your changes and Klaudia's"},
-	{"/undo", "", "Undo Klaudia's last change, leaving anything you also touched alone"},
-	{"/rewind", "[N]", "Drop the last N exchanges from the conversation (default 1) so you can back out recent turns"},
-	{"/jobs", "", "List background jobs: what's running, on what port, and where"},
-	{"/logs", "[-f|--errors] <job>", "Page a job's log ($PAGER), tail it (-f), or pull just its errors into the conversation; /logs stop ends a -f tail"},
-	{"/restart", "<job>", "Restart a background job in place, keeping its name and log"},
-	{"/stopjob", "<job|all>", "Stop a background job and its whole process group"},
-	{"/trust", "[upgrade|observe|off|revoke <id|all>]", "Show what Klaudia may change on this machine, and what it already may"},
-	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N]: iterate to the goal. stop: halt. clear: drop the standing reminder. text: standing reminder"},
-	{"/memory", "[add|recent|stale|tag|promote|supersede]", "Show / audit / curate memory; no args views the index"},
-	{"/mcp", "", "List MCP servers; reconnect or disconnect them"},
-	{"/stats", "", "Show session stats (turns, tokens)"},
-	{"/status", "", "Show the current session settings"},
-	{"/config", "", "Show resolved provider/model/sandbox settings"},
-	{"/agents", "", "List available sub-agent types"},
-	{"/context", "", "Show what Klaudia has in context: pinned, changed, active, recently inspected"},
-	{"/pin", "[path]", "Keep a file in context every turn (survives compaction)"},
-	{"/unpin", "<path>", "Stop pinning a file"},
-	{"/forget", "<path>", "Drop a file from the tracked context"},
-	{"/compact", "", "Summarize and compact the conversation history now"},
-	{"/add-dir", "<path>", "Add a directory to the prompt context"},
-	{"/plan", "[off]", "Enter (or leave) read-only plan mode"},
-	{"/doctor", "", "Run environment diagnostics"},
-	{"/diff", "[args]", "Show git diff of the working tree"},
-	{"/commit", "<msg>", "Stage all changes and commit (asks first)"},
-	{"/export", "", "Export the conversation to a Markdown file"},
-	{"/last", "[n|list]", "Show a tool output in full (no arg = latest; list or ls = index)"},
-	{"/copy", "[target]", "Copy to the clipboard: answer (default) | code [N] | out | all"},
-	{"/search", "<query>", "Search the session (--mine, --answers, --tools, --errors; /regex/)"},
-	{"/outline", "", "Show a session outline of prompts, tool calls, and errors"},
-	{"/show", "<n>", "Show one entry from /search or /outline in full"},
-	{"/errors", "[n]", "List the most recent errors"},
-	{"/open", "<path:line>", "Open a file reference in $EDITOR (paths from stack traces work)"},
-	{"/clear", "", "Clear the screen and conversation history"},
-	{"/quit", "", "Exit Klaudia (alias /exit)"},
+	{"/help", "", "Show this help", nil},
+	{"/model", "[name]", "Pick a model from the provider (no arg), or set one by alias/ID", completeModelArg},
+	{"/effort", "[level|default]", "Show or set reasoning effort: low, medium, high, xhigh, max", nil},
+	{"/theme", "[name]", "Change Markdown render theme (no arg = picker)", completeThemeArg},
+	{"/mode", "[name]", "Change how Klaudia asks permission (no arg = picker)", completeModeArg},
+	{"!<command>", "", "Run a shell command directly; its output becomes context for Klaudia", nil},
+	{"/stop", "", "Ask Klaudia to finish the current step and stop, keeping what it has done", nil},
+	{"/changes", "", "Show the working tree split into your changes and Klaudia's", nil},
+	{"/undo", "", "Undo Klaudia's last change, leaving anything you also touched alone", nil},
+	{"/rewind", "[N]", "Drop the last N exchanges from the conversation (default 1) so you can back out recent turns", nil},
+	{"/jobs", "", "List background jobs: what's running, on what port, and where", nil},
+	{"/logs", "[-f|--errors] <job>", "Page a job's log ($PAGER), tail it (-f), or pull just its errors into the conversation; /logs stop ends a -f tail", completeLogsArg},
+	{"/restart", "<job>", "Restart a background job in place, keeping its name and log", completeJobArg},
+	{"/stopjob", "<job|all>", "Stop a background job and its whole process group", completeStopJobArg},
+	{"/trust", "[upgrade|observe|off|revoke <id|all>]", "Show what Klaudia may change on this machine, and what it already may", completeTrustArg},
+	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N]: iterate to the goal. stop: halt. clear: drop the standing reminder. text: standing reminder", nil},
+	{"/memory", "[add|recent|stale|tag|promote|supersede]", "Show / audit / curate memory; no args views the index", nil},
+	{"/mcp", "", "List MCP servers; reconnect or disconnect them", nil},
+	{"/stats", "", "Show session stats (turns, tokens)", nil},
+	{"/status", "", "Show the current session settings", nil},
+	{"/config", "", "Show resolved provider/model/sandbox settings", nil},
+	{"/agents", "", "List available sub-agent types", nil},
+	{"/context", "", "Show what Klaudia has in context: pinned, changed, active, recently inspected", nil},
+	{"/pin", "[path]", "Keep a file in context every turn (survives compaction)", nil},
+	{"/unpin", "<path>", "Stop pinning a file", completeUnpinArg},
+	{"/forget", "<path>", "Drop a file from the tracked context", nil},
+	{"/compact", "", "Summarize and compact the conversation history now", nil},
+	{"/add-dir", "<path>", "Add a directory to the prompt context", nil},
+	{"/plan", "[off]", "Enter (or leave) read-only plan mode", nil},
+	{"/doctor", "", "Run environment diagnostics", nil},
+	{"/diff", "[args]", "Show git diff of the working tree", nil},
+	{"/commit", "<msg>", "Stage all changes and commit (asks first)", nil},
+	{"/export", "", "Export the conversation to a Markdown file", nil},
+	{"/last", "[n|list]", "Show a tool output in full (no arg = latest; list or ls = index)", completeLastArg},
+	{"/copy", "[target]", "Copy to the clipboard: answer (default) | code [N] | out | all", nil},
+	{"/search", "<query>", "Search the session (--mine, --answers, --tools, --errors; /regex/)", nil},
+	{"/outline", "", "Show a session outline of prompts, tool calls, and errors", nil},
+	{"/show", "<n>", "Show one entry from /search or /outline in full", nil},
+	{"/errors", "[n]", "List the most recent errors", nil},
+	{"/open", "<path:line>", "Open a file reference in $EDITOR (paths from stack traces work)", nil},
+	{"/clear", "", "Clear the screen and conversation history", nil},
+	{"/quit", "", "Exit Klaudia (alias /exit)", nil},
 }
 
 // keyHints documents the non-command key bindings shown in /help.
 const keyHints = `Keys:
   /                Type a slash to see matching commands
-  Tab              Complete a /command or an @<path> reference (Tab again cycles)
+  Tab              Complete a /command, its argument, or an @<path> reference (Tab again cycles)
   ↑ / ↓            Cycle through previous prompts
   Ctrl+J           Newline without sending
   Ctrl+G           Edit the current draft in $EDITOR ($VISUAL, else vi/nano)

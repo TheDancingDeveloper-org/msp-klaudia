@@ -459,6 +459,17 @@ port mirrors (see `internal/version`).
   which case it is asked for `--no-color` so a `color.ui = always` in git
   config does not override `NO_COLOR`. When `git diff` fails, the message is
   git's own rather than `exit status 128`.
+- **Tab completes slash-command arguments.** Tab after `/<cmd> ` used to fall
+  through to `@path` completion. It now offers what the command takes: `/theme`
+  themes, `/mode` modes, `/logs`, `/restart` and `/stopjob` jobs (and the
+  `/logs` flags after a `-`), `/last` result numbers and `list`, `/unpin` pinned
+  files, and `/trust` subcommands and, after `revoke`, the live approval ids.
+  `/model` completes from the list the last `/model` fetched and never fetches
+  on Tab; before any fetch it says how to get one. One match is filled in with a
+  space so the next Tab moves on; several are listed and extended to their
+  common prefix, then cycled. Commands without a completer, and an argument
+  typed as `@…`, keep `@path` completion. Each completer lives on its entry in
+  the command table.
 
 ### Fixed
 - **Flag mistakes exit 2, not 1.** `--new-session` with `--continue` or

@@ -170,7 +170,9 @@ scores the transcript against the spec's checklist.
 ```
 
 A Bubble Tea terminal UI: streamed Markdown answers, `/` slash commands with
-type-ahead, fuzzy `@path` file completion (Tab, Tab again to cycle), input
+type-ahead and Tab completion of their arguments (`/theme`, `/mode`, `/model`
+from its last-fetched list, job names, `/last` numbers, pinned files, `/trust
+revoke` ids), fuzzy `@path` file completion (Tab, Tab again to cycle), input
 history (↑/↓), and `Esc` to interrupt a turn. Type `/help` for the full list.
 
 A line that starts with `/` but is not a command is sent as a message when its
