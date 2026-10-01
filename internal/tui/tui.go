@@ -59,6 +59,7 @@ type Session struct {
 	Theme          string         // markdown render theme ("" = dark)
 	EnterInserts   bool           // Return inserts a newline; alt+Return/ctrl+j submit
 	Notify         NotifyModes    // terminal-attention mechanisms (bell/OSC9/OSC777)
+	NoTagline      bool           // [banner] tagline = "off": no rotating subtitle after the logo
 	Skills         []SkillCommand // user-defined skills dispatched as /<name>
 
 	// Render-only context for /config and /context (set once at startup).
@@ -344,7 +345,10 @@ const introSkillsShown = 4
 // which binary produced it. Empty leaves it out.
 func intro(model, branch, tagline, build string, skills []string) string {
 	logo := logoStyle.Render("✦ Klaudia")
-	tag := bannerStyle.Render(" " + tagline)
+	tag := ""
+	if tagline != "" {
+		tag = bannerStyle.Render(" " + tagline)
+	}
 	var meta string
 	for _, part := range []string{"model: " + model, "⎇ " + branch, "build " + build} {
 		if strings.HasSuffix(part, " ") { // that fact is unknown
@@ -691,6 +695,9 @@ func New(ctx context.Context, run RunFunc, history []anthropic.BetaMessageParam,
 	}
 	m.introModel, m.introBranch = model, branch
 	m.introTagline, m.hasIntro = randomTagline(), true
+	if sess != nil && sess.NoTagline {
+		m.introTagline = ""
+	}
 	m.appendLine(m.introText())
 	// A resumed session shows where the conversation was (recap.go)...
 	m.appendResumeRecap(history)

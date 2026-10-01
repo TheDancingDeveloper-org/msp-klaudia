@@ -86,6 +86,21 @@ func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// displayPath is how a tool result names a file: relative to the working dir when the file is
+// inside it, so a result never leaks the host's absolute layout (an embedding host's session
+// directory, a home path) and the model keeps using short relative paths. Outside the working
+// dir the path is shown as given.
+func displayPath(tctx Context, p string) string {
+	if tctx.WorkingDir == "" || !filepath.IsAbs(p) {
+		return p
+	}
+	rel, err := filepath.Rel(tctx.WorkingDir, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return p
+	}
+	return rel
+}
+
 // --- Diagnostics ---
 
 type DiagnosticsInput struct {

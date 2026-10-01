@@ -1712,6 +1712,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			EnterInserts:        tui.EnterInserts(cfg.Input.Enter, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			PromptHistory:       session.NewPromptHistory(session.PromptHistoryPath(cwd), tui.MaxInputHistory),
 			Notify:              tui.ParseNotify(cfg.TUI.Notify, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
+			NoTagline:           strings.EqualFold(strings.TrimSpace(cfg.Banner.Tagline), "off"),
 			Memory:              memStore,
 			Goal:                restoredGoal,
 			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },

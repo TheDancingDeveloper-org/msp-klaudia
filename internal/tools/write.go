@@ -83,7 +83,7 @@ func (w *Write) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 	if err := writeFileAtomic(in.FilePath, matchLineEndings(in.FilePath, []byte(in.Content)), 0o644); err != nil {
 		return []Result{{Content: fmt.Sprintf("Error writing file: %v", err), IsError: true}}, nil
 	}
-	msg := fmt.Sprintf("File written successfully to %s", in.FilePath)
+	msg := fmt.Sprintf("File written successfully to %s", displayPath(tctx, in.FilePath))
 	// Surface any problems this write just introduced (no-op when LSP is off or
 	// the language has no server; never errors the write).
 	msg += appendDiagnostics(ctx, tctx, in.FilePath)
