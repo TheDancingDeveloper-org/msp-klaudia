@@ -147,6 +147,9 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	if len(matches) == 0 {
 		return []Result{{Content: "No matches found" + note}}, nil
 	}
+	for i := range matches {
+		matches[i].File = displayPath(tctx, matches[i].File) // relative to the working dir
+	}
 
 	if len(matches) > maxSearchResults {
 		matches = matches[:maxSearchResults]

@@ -85,5 +85,8 @@ func (g *Glob) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		note = fmt.Sprintf("\n(%d files matched; showing the %d most recently modified — narrow the pattern or path to see the rest)", len(files), maxSearchResults)
 		files = files[:maxSearchResults]
 	}
+	for i, f := range files {
+		files[i] = displayPath(tctx, f) // relative to the working dir, like Write/Edit results
+	}
 	return []Result{CapResult(Result{Content: strings.Join(files, "\n") + note + hiddenNote(hidden)})}, nil
 }
