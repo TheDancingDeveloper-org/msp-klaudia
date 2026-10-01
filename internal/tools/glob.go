@@ -67,5 +67,8 @@ func (g *Glob) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 	if len(files) == 0 {
 		return []Result{{Content: "No files found"}}, nil
 	}
+	for i, f := range files {
+		files[i] = displayPath(tctx, f) // relative to the working dir, like Write/Edit results
+	}
 	return []Result{{Content: strings.Join(files, "\n")}}, nil
 }

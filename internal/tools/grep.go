@@ -81,6 +81,9 @@ func (g *Grep) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 	if len(matches) == 0 {
 		return []Result{{Content: "No matches found"}}, nil
 	}
+	for i := range matches {
+		matches[i].File = displayPath(tctx, matches[i].File) // relative to the working dir
+	}
 
 	switch in.OutputMode {
 	case "content":
