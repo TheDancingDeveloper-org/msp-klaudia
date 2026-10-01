@@ -125,6 +125,10 @@ func loadDir(dir string, warn func(string)) []Skill {
 			defaultName string
 		)
 		switch {
+		case e.IsDir() && strings.HasPrefix(e.Name(), "_"):
+			// A leading underscore marks a directory that is not a skill (an embedding host's
+			// reference material kept beside the skills); skip it without a warning.
+			continue
 		case e.IsDir():
 			path, defaultName = skillFileIn(filepath.Join(dir, e.Name())), e.Name()
 			if path == "" {

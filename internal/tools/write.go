@@ -83,5 +83,5 @@ func (w *Write) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([
 	if err := os.WriteFile(in.FilePath, []byte(in.Content), 0o644); err != nil {
 		return []Result{{Content: fmt.Sprintf("Error writing file: %v", err), IsError: true}}, nil
 	}
-	return []Result{{Content: fmt.Sprintf("File written successfully to %s", in.FilePath)}}, nil
+	return []Result{{Content: fmt.Sprintf("File written successfully to %s", displayPath(tctx, in.FilePath))}}, nil
 }

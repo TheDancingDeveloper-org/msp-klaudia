@@ -70,6 +70,15 @@ type Config struct {
 	Trust Trust `toml:"trust,omitempty"`
 	// Input configures the prompt's key handling.
 	Input Input `toml:"input,omitempty"`
+	// Banner configures the startup banner.
+	Banner Banner `toml:"banner,omitempty"`
+}
+
+// Banner configures the startup banner shown above the first prompt.
+type Banner struct {
+	// Tagline is "on" (default: a rotating subtitle after "✦ Klaudia") or "off" — for an
+	// embedding host that shows the terminal to its own users.
+	Tagline string `toml:"tagline,omitempty"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -360,6 +369,9 @@ func merge(dst *Config, src Config) {
 	dst.Permissions.Deny = append(dst.Permissions.Deny, src.Permissions.Deny...)
 	if src.Trust.Mode != "" {
 		dst.Trust.Mode = src.Trust.Mode
+	}
+	if src.Banner.Tagline != "" {
+		dst.Banner.Tagline = src.Banner.Tagline
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)

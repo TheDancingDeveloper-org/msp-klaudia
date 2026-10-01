@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -73,11 +75,26 @@ func toolSummary(name string, input any) string {
 		}
 	}
 	if key, ok := summaryKey[name]; ok {
-		if v := oneline(f[key], maxSummary); v != "" {
+		if v := oneline(relToCwd(f[key]), maxSummary); v != "" {
 			return " " + v
 		}
 	}
 	return ""
+}
+
+// relToCwd shortens absolute paths under the working directory to relative ones in a tool
+// header, so "⚙ Read /long/session/dir/src/a.go" reads "⚙ Read src/a.go" and the host's
+// directory layout never reaches the screen. Other text is unchanged.
+func relToCwd(s string) string {
+	wd, err := os.Getwd()
+	if err != nil || wd == "" || wd == "/" {
+		return s
+	}
+	s = strings.ReplaceAll(s, wd+string(filepath.Separator), "")
+	if s == wd {
+		return "."
+	}
+	return s
 }
 
 // oneline collapses whitespace/newlines and truncates to n runes.
