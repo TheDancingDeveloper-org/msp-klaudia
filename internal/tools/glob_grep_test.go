@@ -78,7 +78,7 @@ func TestGlobDefaultsToWorkingDir(t *testing.T) {
 	dir := searchTree(t)
 	g, _ := NewGlob()
 	res := runTool(t, g, Context{WorkingDir: dir}, GlobInput{Pattern: "**/*.txt"})
-	if res.Content != filepath.Join(dir, "sub", "c.txt") {
+	if res.Content != filepath.Join("sub", "c.txt") { // relative to the working dir
 		t.Errorf("content = %q, want the one .txt under the working dir", res.Content)
 	}
 }
@@ -149,7 +149,7 @@ func TestGrepMultilineMatchesAcrossLines(t *testing.T) {
 	dir := searchTree(t)
 	g, _ := NewGrep()
 	res := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: `package b.*func hello`, Multiline: true})
-	if res.Content != filepath.Join(dir, "b.go") {
+	if res.Content != "b.go" { // relative to the working dir
 		t.Errorf("content = %q, want b.go (the pattern spans its lines)", res.Content)
 	}
 }

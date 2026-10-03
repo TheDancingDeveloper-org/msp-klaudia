@@ -106,6 +106,8 @@ type Config struct {
 	// Stop). Hooks run arbitrary shell commands, so only user-level (~/.klaudia)
 	// hooks are honored: project-level hooks are dropped by Load (see there).
 	Hooks hooks.Config `toml:"hooks,omitempty"`
+	// Banner configures the startup banner.
+	Banner Banner `toml:"banner,omitempty"`
 }
 
 // Sessions configures retention of stored session transcripts, pruned once at
@@ -175,6 +177,13 @@ type TUI struct {
 	// the terminal reports focus, the notification is emitted only while the
 	// window is unfocused.
 	Notify string `toml:"notify,omitempty"`
+}
+
+// Banner configures the startup banner shown above the first prompt.
+type Banner struct {
+	// Tagline is "on" (default: a rotating subtitle after "✦ Klaudia") or "off" — for an
+	// embedding host that shows the terminal to its own users.
+	Tagline string `toml:"tagline,omitempty"`
 }
 
 // Input configures how the prompt treats the Return key.
@@ -590,6 +599,9 @@ func merge(dst *Config, src Config) {
 	}
 	if src.Sessions.RetentionMax != 0 {
 		dst.Sessions.RetentionMax = src.Sessions.RetentionMax
+	}
+	if src.Banner.Tagline != "" {
+		dst.Banner.Tagline = src.Banner.Tagline
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)

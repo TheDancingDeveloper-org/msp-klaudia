@@ -46,7 +46,7 @@ func TestGrepContextLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := filepath.Join(dir, "a.txt")
+	f := "a.txt" // relative to the working dir
 	want := strings.Join([]string{
 		f + "-2-two", f + ":3:HIT", f + "-4-four", "--",
 		f + "-7-seven", f + ":8:HIT", f + "-9-nine",
@@ -60,7 +60,7 @@ func TestGrepContextOverlapKeepsEachLineOnce(t *testing.T) {
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"a.txt": "x\nHIT\nHIT\ny\n"})
 	out, _ := runGrep(t, dir, map[string]any{"pattern": "HIT", "output_mode": "content", "-n": true, "-A": 2, "-B": 1})
-	f := filepath.Join(dir, "a.txt")
+	f := "a.txt" // relative to the working dir
 	want := strings.Join([]string{f + "-1-x", f + ":2:HIT", f + ":3:HIT", f + "-4-y"}, "\n")
 	if out != want {
 		t.Errorf("overlapping context:\n%s\nwant:\n%s", out, want)
@@ -102,7 +102,7 @@ func TestGrepAndGlobResolveRelativePath(t *testing.T) {
 	dir := t.TempDir()
 	writeFiles(t, dir, map[string]string{"sub/a.txt": "needle\n"})
 	out, _ := runGrep(t, dir, map[string]any{"pattern": "needle", "path": "sub"})
-	if !strings.Contains(out, filepath.Join(dir, "sub", "a.txt")) {
+	if !strings.Contains(out, filepath.Join("sub", "a.txt")) { // relative to the working dir
 		t.Errorf("Grep path=sub should search the working dir's sub:\n%s", out)
 	}
 

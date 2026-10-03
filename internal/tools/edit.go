@@ -141,7 +141,7 @@ func (e *Edit) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	data, err := os.ReadFile(in.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []Result{{Content: fmt.Sprintf("File does not exist: %s", in.FilePath), IsError: true}}, nil
+			return []Result{{Content: fmt.Sprintf("File does not exist: %s", displayPath(tctx, in.FilePath)), IsError: true}}, nil
 		}
 		return []Result{{Content: fmt.Sprintf("Error reading file: %v", err), IsError: true}}, nil
 	}
@@ -188,7 +188,7 @@ func (e *Edit) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	if in.ReplaceAll {
 		n = count
 	}
-	msg := fmt.Sprintf("Edited %s (%d replacement(s))", in.FilePath, n)
+	msg := fmt.Sprintf("Edited %s (%d replacement(s))", displayPath(tctx, in.FilePath), n)
 	if flexible {
 		msg += " — old_string was matched ignoring surrounding whitespace; verify the result with Read if it matters."
 	}
