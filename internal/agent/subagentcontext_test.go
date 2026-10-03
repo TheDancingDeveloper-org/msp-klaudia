@@ -42,7 +42,8 @@ func turnFromJSON(t *testing.T, raw string) anthropic.BetaMessage {
 // TodoWrite (and its store), AskUserQuestion with nobody to answer it, and a
 // system prompt holding only the type's own paragraph.
 func TestSpawnGivesTheChildContextItsOwnTodosAndNoQuestions(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // keep a real ~/.claude/CLAUDE.md out of it
+	t.Setenv("HOME", t.TempDir())      // keep a real ~/.claude/CLAUDE.md out of it
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("Always run gofmt."), 0o644); err != nil {
 		t.Fatal(err)

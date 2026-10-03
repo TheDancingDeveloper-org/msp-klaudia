@@ -37,6 +37,7 @@ func TestCapMemoryIndex(t *testing.T) {
 
 func TestSystemCapsRecalledMemory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	klaudiaDir := filepath.Join(dir, ".klaudia")
 	if err := os.MkdirAll(klaudiaDir, 0o755); err != nil {

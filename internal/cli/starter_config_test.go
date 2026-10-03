@@ -17,6 +17,7 @@ import (
 func clearProviderEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	for _, name := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "KLAUDIA_CUSTOM_ENDPOINT", "MY_API_KEY"} {
 		t.Setenv(name, "")
 	}

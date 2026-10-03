@@ -19,6 +19,7 @@ import (
 func TestSearchAboveDeniedDirSkipsIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	os.MkdirAll(filepath.Join(home, "secrets"), 0o700)
 	os.WriteFile(filepath.Join(home, "secrets", "api-key.txt"), []byte("TOKEN=abc123"), 0o600)
 	os.WriteFile(filepath.Join(home, "notes.txt"), []byte("TOKEN rotation is monthly"), 0o644)

@@ -100,6 +100,7 @@ func TestEmbeddingSessionIDResumesFromAnotherDirAndHost(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	hostA := t.TempDir()
 	t.Setenv("KLAUDIA_CONFIG_DIR", hostA)
 	dirA := workdir(t, srv.URL)

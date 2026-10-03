@@ -103,6 +103,7 @@ func TestBuildBrowserOptionsPrecedence(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 
 	def := buildBrowserOptions(config.Browser{})
 	if def.Mode != browser.ModeLaunch || !def.Headless || !def.HeadedFallback || def.UserDataDir == "" {

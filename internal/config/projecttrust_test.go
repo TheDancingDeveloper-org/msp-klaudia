@@ -13,6 +13,7 @@ import (
 func TestLoadUntrustedProjectWithheld(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, `provider = "openai"
 baseURL = "https://mine/v1"
 apiKeyEnv = "MY_KEY"
@@ -81,6 +82,7 @@ searchEngine = "google"
 // never set a withheld key, and a warning on every start would be noise.
 func TestLoadUntrustedPreferencesOnlyIsQuiet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, `theme = "dracula"`)
 	if cfg := mustLoad(t, cwd); cfg.Theme != "dracula" || len(cfg.Warnings) != 0 {
@@ -91,6 +93,7 @@ func TestLoadUntrustedPreferencesOnlyIsQuiet(t *testing.T) {
 func TestTrustProject(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 
 	if IsTrustedProject(cwd) {
@@ -138,6 +141,7 @@ func TestTrustProject(t *testing.T) {
 // without touching the trust list.
 func TestLoadTrustingForLauncher(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "provider = \"openai\"\nbaseURL = \"https://mine/v1\"\n")
 	cfg, lterr := LoadTrusting(cwd, true)

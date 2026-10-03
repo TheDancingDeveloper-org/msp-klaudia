@@ -120,6 +120,7 @@ func TestResolveAddDir(t *testing.T) {
 	cwd := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	if err := os.Mkdir(filepath.Join(cwd, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -322,6 +322,7 @@ func TestJobLogDirHonoursConfigDirAndDefaultsSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("KLAUDIA_CONFIG_DIR", "")
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	if got := jobLogDir("s1"); got != filepath.Join(home, ".klaudia", "jobs", "s1") {
 		t.Errorf("jobLogDir without config dir = %q", got)
 	}

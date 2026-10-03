@@ -25,6 +25,7 @@ import (
 func slashModel(t *testing.T) *Model {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	m := newTestModel()
 	m.sess.CWD = t.TempDir()
 	m.ctx = context.Background()

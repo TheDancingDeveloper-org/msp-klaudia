@@ -9,6 +9,7 @@ import (
 func TestLoadUserSkipsProjectSkills(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	os.MkdirAll(filepath.Join(home, ".klaudia", "skills"), 0o755)
 	os.WriteFile(filepath.Join(home, ".klaudia", "skills", "mine.md"), []byte("---\ndescription: mine\n---\nx"), 0o644)
 	cwd := t.TempDir()

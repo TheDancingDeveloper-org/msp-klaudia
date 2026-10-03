@@ -46,6 +46,7 @@ func mustTool[T any](t *testing.T, mk func() (T, error)) T {
 func TestPathRules(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	ssh := filepath.Join(home, ".ssh")
 	os.MkdirAll(ssh, 0o700)
 	os.WriteFile(filepath.Join(ssh, "id_rsa"), []byte("key"), 0o600)
