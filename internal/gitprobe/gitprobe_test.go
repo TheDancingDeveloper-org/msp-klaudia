@@ -15,6 +15,7 @@ func TestProbeDoesNotRunRepoPrograms(t *testing.T) {
 		t.Skip("git not installed")
 	}
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	dir := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "ran")

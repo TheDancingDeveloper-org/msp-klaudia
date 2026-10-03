@@ -21,6 +21,7 @@ func write(t *testing.T, path, body string) {
 // "@AGENTS.md", above the checkout, with shared rules beside it.
 func TestInstructionsWorkspaceShape(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	ws := t.TempDir()
 	write(t, filepath.Join(ws, "CLAUDE.md"), "# Workspace\n\n@AGENTS.md\n")
 	write(t, filepath.Join(ws, "AGENTS.md"), "Record work in Vogt.")
@@ -54,6 +55,7 @@ func TestInstructionsWorkspaceShape(t *testing.T) {
 // AGENTS.md stands in for a missing CLAUDE.md, and only then.
 func TestInstructionsAgentsFallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "AGENTS.md"), "From AGENTS.")
 	if got := loadProjectInstructions(dir); !strings.Contains(got, "From AGENTS.") {
@@ -68,6 +70,7 @@ func TestInstructionsAgentsFallback(t *testing.T) {
 
 func TestInstructionsImports(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "CLAUDE.md"), strings.Join([]string{
 		"<!-- maintainer note: not for the model -->",

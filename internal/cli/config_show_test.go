@@ -36,6 +36,7 @@ func TestConfigShowRedactsAPIKey(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Chdir(cwd)
 
 	const secret = "sk-must-not-appear"
@@ -60,6 +61,7 @@ func TestConfigShowOriginAnnotates(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Chdir(cwd)
 
 	// Home sets model; project overrides it — origin annotation should say so.
@@ -94,6 +96,7 @@ func TestDoctorExitsNonZeroWithoutCredential(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Chdir(cwd)
 	// Force an OpenAI provider with no key so no credential resolves, and clear
 	// any ambient Anthropic credential so the anthropic path can't resolve one.
@@ -114,6 +117,7 @@ func TestDoctorJSONShape(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Chdir(cwd)
 	writeProjectConfig(t, cwd, "provider = \"openai\"\nbaseURL = \"https://x.example/v1\"\n")
 	t.Setenv("ANTHROPIC_API_KEY", "")

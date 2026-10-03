@@ -95,6 +95,7 @@ func TestLSPToolsWithoutAPool(t *testing.T) {
 // installed each come back as an error the model can read — never a spawn.
 func TestLSPToolsExplainAMissingServer(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Setenv("PATH", t.TempDir())
 	root := t.TempDir()
 	cases := []struct {

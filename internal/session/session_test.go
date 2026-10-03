@@ -259,7 +259,6 @@ func TestNewWriterIsLazy(t *testing.T) {
 	}
 }
 
-
 // One line longer than the old 16 MB scanner cap stopped Read there, and the
 // resumed history silently ended before it.
 func TestReadLongLine(t *testing.T) {

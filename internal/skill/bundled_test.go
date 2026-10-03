@@ -89,6 +89,7 @@ func TestBundledSkillsNameRealSubagents(t *testing.T) {
 func TestLoadIncludesBundledAtLowestPrecedence(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 
 	// Nothing on disk: the bundled skills alone.
 	got := Load(cwd, nil)

@@ -30,6 +30,7 @@ func TestMain(m *testing.M) {
 func TestLoadSkipsClaudeSyncedStoreQuietly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Setenv("USERPROFILE", home)
 
 	// The layout Claude Code writes when it syncs skills from claude.ai.
@@ -65,6 +66,7 @@ func TestLoadSyncedElsewhereStillWarns(t *testing.T) {
 func TestLoadSkillNamedSyncedStillLoads(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Setenv("USERPROFILE", home)
 	// A real skill that happens to be called "synced" is not the store.
 	write(t, filepath.Join(home, ".claude", "skills", "synced", "SKILL.md"), "---\ndescription: d\n---\nbody")

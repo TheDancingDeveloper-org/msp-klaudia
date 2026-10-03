@@ -86,6 +86,7 @@ func TestDefaultUserDataDirFallsBackToHome(t *testing.T) {
 		t.Errorf("DefaultUserDataDir = %q, want %q", got, want)
 	}
 	t.Setenv("HOME", "")
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	if got := DefaultUserDataDir(); got != "" {
 		t.Errorf("DefaultUserDataDir with no home = %q, want empty", got)
 	}

@@ -107,7 +107,8 @@ func TestRenderBaseDirectory(t *testing.T) {
 
 func TestLoadSetsSkillDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", t.TempDir()) // isolate from the real ~/.claude skills
+	t.Setenv("HOME", t.TempDir())      // isolate from the real ~/.claude skills
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	skills := filepath.Join(dir, ".klaudia", "skills")
 	mustMkdir(t, filepath.Join(skills, "deploy"))
 	write(t, filepath.Join(skills, "deploy", "SKILL.md"), "---\ndescription: d\n---\nbody")
@@ -268,6 +269,7 @@ body`)
 func isolateHome(t *testing.T) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 }
 
 func mustMkdir(t *testing.T, dir string) {
@@ -319,6 +321,7 @@ body`)
 // do, winning a name collision as the closer directory.
 func TestLoadProjectReadsTheRootThenCWD(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	root := t.TempDir()
 	cwd := filepath.Join(root, "internal", "tui")
 
@@ -352,6 +355,7 @@ func TestLoadProjectReadsTheRootThenCWD(t *testing.T) {
 func TestLoadUserSkillsFollowKlaudiaConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	t.Setenv("KLAUDIA_CONFIG_DIR", dir)
 

@@ -44,7 +44,6 @@ func TestSeverityName(t *testing.T) {
 	}
 }
 
-
 func TestCapEnabled(t *testing.T) {
 	cases := map[string]bool{
 		"true":                      true,

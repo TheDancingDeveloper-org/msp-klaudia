@@ -18,6 +18,7 @@ func writeAgent(t *testing.T, dir, name, body string) {
 func TestLoadAgents(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeAgent(t, filepath.Join(home, ".claude", "agents"), "reviewer.md",
 		"---\nname: reviewer\ndescription: user-level reviewer\ntools: Read, Grep\nmodel: sonnet\n---\nReview it.")
@@ -52,6 +53,7 @@ func TestLoadAgents(t *testing.T) {
 // A user definition with a built-in's name replaces it.
 func TestLoadOverridesBuiltin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeAgent(t, filepath.Join(cwd, ".klaudia", "agents"), "explore.md",
 		"---\nname: Explore\ndescription: our explorer\ntools: [Read]\n---\nExplore carefully.")

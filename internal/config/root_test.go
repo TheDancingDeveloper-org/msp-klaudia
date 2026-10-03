@@ -21,6 +21,7 @@ func TestRootDefaultsToHomeKlaudia(t *testing.T) {
 
 func TestRootHonoursKlaudiaConfigDir(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	t.Setenv("KLAUDIA_CONFIG_DIR", dir)
 
@@ -37,6 +38,7 @@ func TestRootHonoursKlaudiaConfigDir(t *testing.T) {
 func TestLoadReadsGlobalConfigFromKlaudiaConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, `model = "from-home"`)
 
 	dir := t.TempDir()

@@ -19,6 +19,7 @@ func TestOriginsLayeringAndPrecedence(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 
 	// Home sets provider, model, baseURL and sandbox.mode.
 	writeConfig(t, home, `
@@ -61,6 +62,7 @@ func TestOriginsDefaults(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	// No config files at all: provider and sandbox.mode still report their
 	// built-in defaults with origin=default.
 	settings := Origins(cwd)
@@ -80,6 +82,7 @@ func TestOriginsAPIKeyRedactionInline(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	// An inline apiKey in a file must never be printed: the value is a
 	// redaction note, and the origin is the file that set it.
 	const secret = "sk-do-not-print-me"
@@ -108,6 +111,7 @@ func TestOriginsAPIKeyFromEnv(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	// apiKeyEnv names a variable; when that variable is set, the key resolves
 	// from the environment → origin=env, value redacted.
 	writeConfig(t, cwd, `apiKeyEnv = "KLAUDIA_TEST_KEY"`+"\n")
@@ -134,6 +138,7 @@ func TestOriginsListAccumulates(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "[permissions]\nallow = [\"Edit\"]\n")
 	writeConfig(t, cwd, "[permissions]\nallow = [\"Bash(go test:*)\"]\n")
 

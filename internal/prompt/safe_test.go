@@ -10,6 +10,7 @@ import (
 func TestSafeSystemLeavesOutTheProject(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
 	os.WriteFile(filepath.Join(home, ".claude", "CLAUDE.md"), []byte("USER RULE"), 0o644)
 	dir := t.TempDir()

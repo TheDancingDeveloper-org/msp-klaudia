@@ -12,6 +12,7 @@ import (
 func TestHiddenCredentials(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	hide, keep := hiddenCredentials(config.Sandbox{Mode: config.SandboxOS})
 	if !slices.Contains(hide, filepath.Join(home, ".ssh")) || !slices.Contains(hide, filepath.Join(home, ".aws")) {
 		t.Errorf("hide = %v, want ~/.ssh and ~/.aws", hide)

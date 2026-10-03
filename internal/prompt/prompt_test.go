@@ -26,7 +26,8 @@ func TestSystemIncludesEnvAndSecurity(t *testing.T) {
 }
 
 func TestSystemLoadsProjectClaudeMd(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate from a real ~/.claude/CLAUDE.md
+	t.Setenv("HOME", t.TempDir())      // isolate from a real ~/.claude/CLAUDE.md
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	body := "# Klaudia repo\nAlways run gofmt before committing."
 	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte(body), 0o644); err != nil {
@@ -43,6 +44,7 @@ func TestSystemLoadsProjectClaudeMd(t *testing.T) {
 
 func TestSystemRecallsMemory(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	klaudiaDir := filepath.Join(dir, ".klaudia")
 	if err := os.MkdirAll(klaudiaDir, 0o755); err != nil {
@@ -63,6 +65,7 @@ func TestSystemRecallsMemory(t *testing.T) {
 
 func TestSystemRecallsLinkedMemoryFiles(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, ".klaudia", "memory")
 	if err := os.MkdirAll(memDir, 0o755); err != nil {
@@ -93,6 +96,7 @@ func TestSystemRecallsLinkedMemoryFiles(t *testing.T) {
 
 func TestSystemRecallsLegacyMemoryPath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	memDir := filepath.Join(dir, ".klaudia", "memory")
 	if err := os.MkdirAll(memDir, 0o755); err != nil {
@@ -172,6 +176,7 @@ func TestSystemRecallsUserAndProjectMemory(t *testing.T) {
 
 func TestSystemRecallsKnowledge(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, ".klaudia"), 0o755)
 	os.WriteFile(filepath.Join(dir, ".klaudia", "KNOWLEDGE.md"),
@@ -222,7 +227,8 @@ func TestCompose(t *testing.T) {
 }
 
 func TestSystemNoClaudeMd(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate from a real ~/.claude/CLAUDE.md
+	t.Setenv("HOME", t.TempDir())      // isolate from a real ~/.claude/CLAUDE.md
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	p := System(t.TempDir(), "")
 	if strings.Contains(p, "Project instructions (from CLAUDE.md)") {
 		t.Error("should not emit CLAUDE.md section when none exists")
@@ -234,6 +240,7 @@ func TestSystemNoClaudeMd(t *testing.T) {
 // main agent's own persona.
 func TestSubagentAddsEnvAndProjectContext(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	klaudiaDir := filepath.Join(dir, ".klaudia")
 	if err := os.MkdirAll(klaudiaDir, 0o755); err != nil {

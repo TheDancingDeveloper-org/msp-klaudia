@@ -17,6 +17,7 @@ func isolateToolchain(t *testing.T) (pathDir, home string) {
 	pathDir, home = t.TempDir(), t.TempDir()
 	t.Setenv("PATH", pathDir)
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Setenv("GOBIN", "")
 	return pathDir, home
 }

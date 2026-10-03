@@ -58,6 +58,7 @@ baseURL = "https://x/v1"
 func TestLoadFallbackModelProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, `fallbackModel = "haiku"`)
 
 	if cfg := mustLoad(t, t.TempDir()); cfg.FallbackModel != "haiku" {
@@ -93,6 +94,7 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 func TestLoadTUINotifyOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "[tui]\nnotify = \"bell\"\n")
 
 	// Global-only: inherited.
@@ -217,6 +219,7 @@ allow = ["Bash(go test:*)"]
 
 func TestAppendProjectPermission(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	trust(t, cwd)
 	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || ok {
@@ -250,6 +253,7 @@ func TestAppendProjectPermission(t *testing.T) {
 func TestLoadInputEnterProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "[input]\nenter = \"newline\"\n")
 
 	// Global-only: inherited.
@@ -283,6 +287,7 @@ func mustLoad(t *testing.T, cwd string) Config {
 
 func TestLoadSyntaxErrorNamesFileAndLine(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "model = \"sonnet\"\n[sandbox\nmode = \"os\"\n")
 
@@ -299,6 +304,7 @@ func TestLoadSyntaxErrorNamesFileAndLine(t *testing.T) {
 func TestLoadHomeParseErrorFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "model = 5\n")
 
 	_, err := Load(t.TempDir())
@@ -312,6 +318,7 @@ func TestLoadUnpositionedErrorNamesFile(t *testing.T) {
 	// go-toml reports a duplicate key without a position; the file must
 	// still be named.
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "model = \"a\"\nmodel = \"b\"\n")
 
@@ -324,6 +331,7 @@ func TestLoadUnpositionedErrorNamesFile(t *testing.T) {
 func TestLoadUnknownKeysWarnAndKnownKeysApply(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "theme = \"nord\"\nfutureSetting = true\n")
 	cwd := t.TempDir()
 	writeConfig(t, cwd, "modle = \"x\"\nmodel = \"sonnet\"\n\n[sandbox]\nmdoe = \"os\"\n")
@@ -438,6 +446,7 @@ func TestSessionMaxAge(t *testing.T) {
 func TestLoadSessionProjectOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, "[session]\nautoResumeMaxAge = \"12h\"\n")
 	if cfg := mustLoad(t, t.TempDir()); cfg.Session.AutoResumeMaxAge != "12h" {
 		t.Errorf("autoResumeMaxAge = %q, want 12h (from home)", cfg.Session.AutoResumeMaxAge)
@@ -452,6 +461,7 @@ func TestLoadSessionProjectOverridesHome(t *testing.T) {
 func TestLoadUserHooksParsed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, `
 [[hooks.PreToolUse]]
 matcher = "Bash"
@@ -486,6 +496,7 @@ command = "echo stop"
 func TestLoadDropsProjectHooks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	writeConfig(t, home, `
 [[hooks.PreToolUse]]
 [[hooks.PreToolUse.hooks]]

@@ -33,6 +33,7 @@ func gitRepo(t *testing.T) (repo, sub string) {
 
 func TestProjectRootIsTheGitTopLevel(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	repo, sub := gitRepo(t)
 	if got := projectRoot(sub); got != repo {
 		t.Errorf("projectRoot(subdir) = %q, want the top-level %q", got, repo)
@@ -44,6 +45,7 @@ func TestProjectRootIsTheGitTopLevel(t *testing.T) {
 
 func TestProjectRootOutsideARepositoryIsCWD(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	if got := projectRoot(dir); got != dir {
@@ -55,6 +57,7 @@ func TestProjectRootOutsideARepositoryIsCWD(t *testing.T) {
 // session dir of an existing repo-root launch does not move.
 func TestProjectRootKeepsTheSymlinkedSpelling(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	repo, _ := gitRepo(t)
 	link := filepath.Join(t.TempDir(), "checkout")
 	if err := os.Symlink(repo, link); err != nil {
@@ -73,6 +76,7 @@ func TestProjectRootKeepsTheSymlinkedSpelling(t *testing.T) {
 func TestProjectRootIgnoresARepositoryAtHome(t *testing.T) {
 	repo, sub := gitRepo(t)
 	t.Setenv("HOME", repo)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	if got := projectRoot(sub); got != sub {
 		t.Errorf("projectRoot under a $HOME repo = %q, want cwd %q", got, sub)
 	}
@@ -112,6 +116,7 @@ func TestSubdirectoryLaunchSharesTheProjectState(t *testing.T) {
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	cfgDir := t.TempDir()
 	t.Setenv("KLAUDIA_CONFIG_DIR", cfgDir)
 

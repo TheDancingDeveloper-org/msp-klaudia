@@ -123,7 +123,13 @@ func TestOpenAIProviderConfigErrors(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tc.config), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			r := e.Run("-p", "hi")
+			args := []string{"-p", "hi"}
+			if !tc.global {
+				// A project config applies only in a trusted folder; this test is about its
+				// validation, so trust the file it wrote.
+				args = append(args, "--trusted-project-config")
+			}
+			r := e.Run(args...)
 			if r.ExitCode != 1 || !strings.Contains(r.Stderr, tc.want) {
 				t.Errorf("want exit 1 with %q\n%s", tc.want, r.dump())
 			}

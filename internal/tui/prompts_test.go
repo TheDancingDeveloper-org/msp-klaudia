@@ -623,6 +623,7 @@ func TestTurnSummaryCountsChangedLines(t *testing.T) {
 
 func TestNewWiresJobExitsAndMCPReloadsIntoTheEventLoop(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Cleanup(func() { applyChromeTheme(defaultChromePalette) })
 	jobs := &fakeJobs{}
 	var reload func(MCPReloadEvent)
@@ -664,6 +665,7 @@ func TestNewWiresJobExitsAndMCPReloadsIntoTheEventLoop(t *testing.T) {
 
 func TestNewInADirtyRepoWarnsAboutExistingChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	t.Cleanup(func() { applyChromeTheme(defaultChromePalette) })
 	dir := gitRepo(t)
 	write(t, dir, "app.go", "the user's work in progress\n")

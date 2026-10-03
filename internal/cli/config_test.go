@@ -111,6 +111,7 @@ func TestThemeOrWarn(t *testing.T) {
 func TestStarterConfigExamplesAreKnownKeys(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	path, err := createConfig("local", cwd)
 	if err != nil {
 		t.Fatal(err)
@@ -238,6 +239,7 @@ func TestUnknownConfigKeyWarnsAndRuns(t *testing.T) {
 func TestCreateConfigGlobalHonoursKlaudiaConfigDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := filepath.Join(t.TempDir(), "klaudia-config")
 	t.Setenv("KLAUDIA_CONFIG_DIR", dir)
 	cwd := t.TempDir()

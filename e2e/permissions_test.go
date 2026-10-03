@@ -165,7 +165,9 @@ func TestConfigRulesStartTheGuardrailObserving(t *testing.T) {
 	if err := os.WriteFile(e.Path(".klaudia", "config.toml"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := e.Headless("x", "--permission-mode", "autonomous")
+	// The rules are in a project config, which applies only when trusted (this is about the
+	// guardrail, not trust).
+	r := e.Headless("x", "--permission-mode", "autonomous", "--trusted-project-config")
 	if r.ExitCode != 2 || !strings.Contains(r.Stderr, "observe") {
 		t.Errorf("exit %d, want 2 naming the observe guardrail\n%s", r.ExitCode, r.dump())
 	}
