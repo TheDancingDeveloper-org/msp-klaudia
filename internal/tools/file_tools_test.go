@@ -55,7 +55,7 @@ func TestEditResolvesRelativePathAndKeepsMode(t *testing.T) {
 
 	e, _ := NewEdit()
 	res := runTool(t, e, Context{WorkingDir: dir}, EditInput{FilePath: "secret.env", OldString: "old", NewString: "new"})
-	if res.IsError || res.Content != "Edited "+path+" (1 replacement(s))" {
+	if res.IsError || res.Content != "Edited secret.env (1 replacement(s))" { // relative: inside the working dir
 		t.Fatalf("res = %+v", res)
 	}
 	if got := readFile(t, path); got != "TOKEN=new\n" {
@@ -149,7 +149,7 @@ func TestWriteResolvesRelativePathAndOverwrites(t *testing.T) {
 	writeFile(t, path, "old contents that are longer", 0o644)
 	w := mustWrite(t)
 	res := runTool(t, w, Context{WorkingDir: dir}, WriteInput{FilePath: "out.txt", Content: "new"})
-	if res.IsError || res.Content != "File written successfully to "+path {
+	if res.IsError || res.Content != "File written successfully to out.txt" { // relative: inside the working dir
 		t.Fatalf("res = %+v", res)
 	}
 	if got := readFile(t, path); got != "new" {
