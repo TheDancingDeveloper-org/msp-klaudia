@@ -1816,22 +1816,22 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 				Trusting: func() bool { return hostGate.Policy() == agent.HostEnforce },
 			}
 			return loop.Run(ctx, agent.Options{
-				WorkingDir:      cwd,
-				Prompt:          prompt,
-				PromptImages:    images,
-				Model:           api.ResolveModelFor(cfg.Provider, sess.Model), // resolved fresh each turn
-				Effort:          sess.Effort,                                   // read per turn, like the model
-				Thinking:        thinking,
-				ProviderName:    cfg.Provider,
-				System:          withExtraDirs(sysPrompt, sess.ExtraDirs),
-				MaxTurns:        opts.maxTurns,
-				MaxBudgetUSD:    opts.maxBudgetUSD,
-				ContextWindow:   cfg.ContextWindow,
-				MaxTokens:       int64(cfg.MaxTokens),
-				Permission:      turnPerm,
-				Host:            hostGate,
-				Hooks:           hookRunner,
-				Interject:       interject,
+				WorkingDir:    cwd,
+				Prompt:        prompt,
+				PromptImages:  images,
+				Model:         api.ResolveModelFor(cfg.Provider, sess.Model), // resolved fresh each turn
+				Effort:        sess.Effort,                                   // read per turn, like the model
+				Thinking:      thinking,
+				ProviderName:  cfg.Provider,
+				System:        withExtraDirs(sysPrompt, sess.ExtraDirs),
+				MaxTurns:      opts.maxTurns,
+				MaxBudgetUSD:  opts.maxBudgetUSD,
+				ContextWindow: cfg.ContextWindow,
+				MaxTokens:     int64(cfg.MaxTokens),
+				Permission:    turnPerm,
+				Host:          hostGate,
+				Hooks:         hookRunner,
+				Interject:     interject,
 				// Deliver finished background sub-agents into the next turn.
 				CollectBackground: wiring.spawner.Background().PendingReport,
 				BeforeEdit:        beforeEdit,
