@@ -547,30 +547,49 @@ const repeatFailureLimit = 2
 // `line_start`/`line_end` (wrong field names) but new line numbers each time.
 //
 // `firstInput`/`varied` track whether the model actually changed its inputs
-// across the failing calls. If it did, the failure is almost certainly
-// environmental (shell wedged, network down, disk full) rather than a
-// tool-input bug — the model is varying its guesses in good faith and still
-// hitting the same wall. shortCircuit uses the flag to choose between two
-// directive messages.
+// across the failing calls. If it did, and the tool actually RAN, the failure
+// is almost certainly environmental (shell wedged, network down, disk full) —
+// the model is varying its guesses in good faith and still hitting the same
+// wall. `preExec` is the veto on that inference: a call rejected before the
+// tool ran cannot have been defeated by the environment. shortCircuit uses the
+// two flags to choose between the directive messages.
 type errStreak struct {
 	sig        string // last error message text
 	count      int    // consecutive occurrences of sig
 	firstInput string // raw JSON of the input on the first failure in this streak
 	varied     bool   // true once a same-sig failure arrived with a different input
+	preExec    bool   // the failures never reached the tool: bad name, bad input, denied
 }
+
+// failureKind says where a failure came from, which is what decides the
+// conclusion the loop-breakers are allowed to draw from a run of them.
+type failureKind int
+
+const (
+	// failureExec: the tool ran and failed. A wedged environment is a candidate.
+	failureExec failureKind = iota
+	// failurePreExec: refused before the tool ran — unrecognised name, input
+	// that doesn't validate, permission denied. Nothing about the environment
+	// is implicated, so these must never produce the "shell wedged" directive.
+	failurePreExec
+	// failureHostGate: refused by the host gate. A decision about one call,
+	// not a malfunction; kept out of the shape streak entirely.
+	failureHostGate
+)
 
 // bumpErrStreak records a new failure for tool. If the message matches the
 // prior signature, the count grows and the input-varied flag tracks whether
 // the model is changing inputs across calls. Otherwise the streak starts over.
-func bumpErrStreak(streaks map[string]errStreak, tool, msg, input string) {
+func bumpErrStreak(streaks map[string]errStreak, tool, msg, input string, preExec bool) {
 	prev := streaks[tool]
 	if prev.sig == msg {
 		prev.count++
 		if input != prev.firstInput {
 			prev.varied = true
 		}
+		prev.preExec = prev.preExec || preExec
 	} else {
-		prev = errStreak{sig: msg, count: 1, firstInput: input}
+		prev = errStreak{sig: msg, count: 1, firstInput: input, preExec: preExec}
 	}
 	streaks[tool] = prev
 }
@@ -586,12 +605,17 @@ func repeatedShapeFailureMsg(tool string, n int, sig string) string {
 	)
 }
 
-// envFailureMsg is the directive returned when loop-breaker B fires but the
-// model HAD varied its inputs across the failing calls. The error shape is
-// stable while the inputs aren't — the env, not the call, is broken. Telling
-// the model to "stop guessing" in this case is actively misleading (it WAS
-// trying different things) and pushes it into useless workaround loops.
-// Suggest concrete recovery moves instead.
+// envFailureMsg is the directive returned when loop-breaker B fires, the model
+// HAD varied its inputs across the failing calls, and the tool actually ran
+// each time. The error shape is stable while the inputs aren't — the env, not
+// the call, is broken. Telling the model to "stop guessing" in this case is
+// actively misleading (it WAS trying different things) and pushes it into
+// useless workaround loops. Suggest concrete recovery moves instead.
+//
+// This must not fire for failures that never reached the tool. A rejected input
+// is stable across varied inputs for the obvious reason, and answering it with
+// "the shell may be wedged, try KillShell" sends the model to reset a substrate
+// that was never involved instead of reading the error.
 func envFailureMsg(tool string, n int, sig string) string {
 	return fmt.Sprintf(
 		"%s has failed %d times in a row with the same error shape across DIFFERENT inputs. This looks like an environment issue (shell wedged, leaked background process, network unreachable, filesystem broken) rather than a tool-input problem — varying the inputs more won't help. Options: (a) reset the relevant state (e.g. KillShell for a stuck Bash; restart a stuck server); (b) try a different tool that doesn't depend on the broken substrate; (c) ask the user. Stop retrying %s with new inputs.\n\n--- recurring error ---\n%s",
@@ -683,7 +707,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 
 	key := tu.Name + "\x00" + string(raw)
 	rawStr := string(raw)
-	errResultTagged := func(msg string, hostBlocked bool) anthropic.BetaContentBlockParamUnion {
+	errResultKind := func(msg string, kind failureKind) anthropic.BetaContentBlockParamUnion {
 		failures[key]++
 		// A refusal by the host gate is a decision, not a malfunction. Its text
 		// is identical whatever the command was, so feeding it to the same-shape
@@ -693,19 +717,25 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		// reset is a successful execution and B is what prevents one. Count the
 		// exact call (breaker A still stops a literal retry) but leave the shape
 		// streak out of it.
-		if !hostBlocked {
-			bumpErrStreak(errStreaks, tu.Name, msg, rawStr)
+		if kind != failureHostGate {
+			bumpErrStreak(errStreaks, tu.Name, msg, rawStr, kind == failurePreExec)
 		}
 		if emit != nil {
 			emit(Event{
 				Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID,
-				Content: msg, IsError: true, HostBlocked: hostBlocked,
+				Content: msg, IsError: true, HostBlocked: kind == failureHostGate,
 			})
 		}
 		return anthropic.NewBetaToolResultBlock(tu.ID, msg, true)
 	}
+	// errResult: the tool ran and failed.
 	errResult := func(msg string) anthropic.BetaContentBlockParamUnion {
-		return errResultTagged(msg, false)
+		return errResultKind(msg, failureExec)
+	}
+	// errBadCall: the call was refused before the tool ran, so no conclusion
+	// about the environment may be drawn from a run of these.
+	errBadCall := func(msg string) anthropic.BetaContentBlockParamUnion {
+		return errResultKind(msg, failurePreExec)
 	}
 
 	// Loop-breaker A: this exact call has already failed repeatedly. Don't run
@@ -724,7 +754,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		// Use shortCircuit() so we don't keep growing the streak on each fired
 		// short-circuit (the model isn't actually trying — we're refusing).
 		msg := repeatedShapeFailureMsg(tu.Name, streak.count, streak.sig)
-		if streak.varied {
+		if streak.varied && !streak.preExec {
 			msg = envFailureMsg(tu.Name, streak.count, streak.sig)
 		}
 		// Clear the streak as the directive goes out, because the only other
@@ -741,7 +771,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 
 	tool, ok := l.tools.Lookup(tu.Name)
 	if !ok {
-		return errResult(l.unknownToolMsg(tu.Name))
+		return errBadCall(l.unknownToolMsg(tu.Name))
 	}
 
 	// The host gate runs BEFORE the allow/deny rules, not after. An allow rule
@@ -755,10 +785,10 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		hd := opts.Host.Check(tu.Name, raw, opts.WorkingDir)
 		switch {
 		case hd.Refuse != "":
-			return errResultTagged(hd.Refuse, true)
+			return errResultKind(hd.Refuse, failureHostGate)
 		case len(hd.Ask) > 0:
 			if !l.approveHostChange(ctx, tu, raw, opts, hd) {
-				return errResultTagged(hostDeclinedMsg(hd), true)
+				return errResultKind(hostDeclinedMsg(hd), failureHostGate)
 			}
 			// Approval is new information about the tool's prospects. Anything
 			// it was carrying from earlier refusals — this call's own count and
@@ -777,7 +807,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		if msg == "" {
 			msg = fmt.Sprintf("Permission denied for tool %s", tu.Name)
 		}
-		return errResult(msg)
+		return errBadCall(msg)
 	case permission.Ask:
 		// Delegate the decision to the frontend's Approver.
 		approver := opts.Approver
@@ -796,7 +826,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 			if msg == "" {
 				msg = fmt.Sprintf("Permission denied for tool %s", tu.Name)
 			}
-			return errResult(msg)
+			return errBadCall(msg)
 		}
 	}
 
@@ -808,7 +838,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		if fields := schemaFieldList(tool.InputSchema()); fields != "" {
 			msg += fmt.Sprintf(" — %s accepts: %s.", tu.Name, fields)
 		}
-		return errResult(msg)
+		return errBadCall(msg)
 	}
 
 	if opts.BeforeEdit != nil {
@@ -867,7 +897,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 	}
 	if isErr {
 		failures[key]++
-		bumpErrStreak(errStreaks, tu.Name, content, rawStr)
+		bumpErrStreak(errStreaks, tu.Name, content, rawStr, false)
 	} else {
 		// A clean run resets both counters: this exact call's retry count and
 		// the per-tool same-shape streak (the tool clearly isn't fundamentally

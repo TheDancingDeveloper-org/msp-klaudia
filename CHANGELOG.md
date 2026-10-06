@@ -53,6 +53,38 @@ port mirrors (see `internal/version`).
   print a line each time an unrelated key in the file was saved.
 
 ### Fixed
+- **A tool call carrying one extra property is no longer thrown away.** Tool
+  input schemas are generated with `additionalProperties: false`, and that was
+  enforced at dispatch, so a model that supplied every field correctly plus one
+  the tool has no field for got `Input validation error` instead of a tool run.
+  From a live session: four consecutive `AskUserQuestion` calls with a valid
+  question and valid options, rejected for a stray top-level `description`.
+  Rejecting it bought nothing — `json.Unmarshal` drops unknown fields anyway, so
+  the call would have worked.
+
+  The advertised schema still says the shape is closed, because telling the
+  model the exact shape is useful; the validator compiled from it no longer
+  does. Field names the tool cares about are still protected: a missing
+  `required` property or a wrong type fails as before, so the case the
+  field-list hint was written for (`line_start` in place of `offset`, which
+  leaves `file_path` missing) still self-corrects.
+
+- **A rejected input is no longer diagnosed as a wedged environment.** The
+  second loop-breaker splits on whether the model varied its inputs across a
+  run of same-shape failures: varied inputs read as the environment being
+  broken, identical ones as a guessing loop. But a call refused *before* the
+  tool runs — unrecognised name, input that doesn't validate, permission denied
+  — produces character-identical text however much the input varies, so varying
+  inputs steered straight into the environment directive. The `AskUserQuestion`
+  loop above was answered with "This looks like an environment issue (shell
+  wedged, leaked background process, network unreachable, filesystem broken)"
+  and advised to run `KillShell`, for a schema error.
+
+  Failures are now classified by where they came from, and only ones where the
+  tool actually ran can be blamed on the environment. Pre-execution failures
+  get the same-shape directive, which quotes the recurring error — the thing
+  the model needed to read.
+
 - **The repeated-failure breaker latched, and bricked Bash for the rest of the
   run.** From a live session: after two failures of the same shape, every
   subsequent Bash call — including `true`, `pwd` and `echo hello` — was refused
