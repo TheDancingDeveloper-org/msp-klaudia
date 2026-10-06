@@ -53,10 +53,8 @@ func TestToolDiff(t *testing.T) {
 
 func TestShortMode(t *testing.T) {
 	cases := map[permission.Mode]string{
-		permission.ModeDefault:           "ask",
-		permission.ModeAcceptEdits:       "auto-edit",
+		permission.ModeAutonomous:        "autonomous",
 		permission.ModePlan:              "plan",
-		permission.ModeDontAsk:           "deny",
 		permission.ModeBypassPermissions: "bypass",
 	}
 	for mode, want := range cases {
@@ -105,11 +103,8 @@ func TestLooksLineNumbered(t *testing.T) {
 func TestStatusLineShowsOnlyDeviatingModes(t *testing.T) {
 	for mode, want := range map[permission.Mode]string{
 		permission.ModeAutonomous:        "", // the default: silent
-		permission.ModeDefault:           "", // the pre-collapse default: also silent
 		permission.ModePlan:              "plan",
 		permission.ModeBypassPermissions: "bypass",
-		permission.ModeAcceptEdits:       "auto-edit",
-		permission.ModeDontAsk:           "deny",
 	} {
 		if got := deviatingMode(mode); got != want {
 			t.Errorf("deviatingMode(%s) = %q, want %q", mode, got, want)
@@ -178,7 +173,7 @@ func TestBypassIsStyledAsAWarning(t *testing.T) {
 	}
 	// Everything else stays quiet.
 	for _, mode := range []permission.Mode{
-		permission.ModePlan, permission.ModeAutonomous, permission.ModeAcceptEdits,
+		permission.ModePlan, permission.ModeAutonomous,
 	} {
 		if modeSegmentStyle(mode).GetBold() {
 			t.Errorf("%s is styled as a warning; only bypass should be", mode)

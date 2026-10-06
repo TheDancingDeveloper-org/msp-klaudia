@@ -24,7 +24,7 @@ func TestToolsReadsEveryPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := ConnectTransport(ctx, "s", clientT)
+	server, err := ConnectTransport(ctx, "s", clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestToolsRecordsListFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := ConnectTransport(ctx, "s", clientT)
+	server, err := ConnectTransport(ctx, "s", clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

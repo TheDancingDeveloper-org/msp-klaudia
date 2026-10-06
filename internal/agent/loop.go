@@ -33,7 +33,7 @@ type Emitter func(event Event)
 
 // Event is a streaming event emitted during a run (stream-json mode).
 type Event struct {
-	Type      string `json:"type"`                  // "assistant" | "tool_use" | "tool_progress" | "tool_result" | "usage" | "compaction" | "warning" | "notice"
+	Type      string `json:"type"`                  // "assistant" | "tool_use" | "tool_progress" | "tool_result" | "usage" | "compaction" | "warning" | "notice" | "permission_mode"
 	Text      string `json:"text,omitempty"`        // assistant text
 	ToolName  string `json:"tool_name,omitempty"`   // tool_use / tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"` // tool_use / tool_result
@@ -137,6 +137,10 @@ type Options struct {
 	Asker tools.Asker
 	// Planner, if set, handles ExitPlanMode approval.
 	Planner tools.Planner
+	// ReadText, if set, is where the Read tool gets a text file's contents
+	// instead of from disk. See Turn.ReadText for why a frontend would want
+	// that; nil reads disk.
+	ReadText func(ctx context.Context, path string, line, limit int) (string, error)
 	// DeferredTools names tools withheld from the initial request (loaded on
 	// demand once ToolSearch reveals them). Typically the MCP tools.
 	DeferredTools map[string]bool
@@ -168,10 +172,18 @@ type Options struct {
 	// caller that has not wired it) makes it a no-op. It is a passthrough into
 	// tools.Context — the loop does not decide anything with it.
 	Diagnostics tools.DiagnosticsFunc
-	// Hooks, if set, runs user-configured lifecycle hooks (PreToolUse,
-	// PostToolUse, UserPromptSubmit, Stop). Nil disables the feature entirely,
-	// which is what every caller that has not been wired up gets.
+	// Hooks, if set, runs the user's configured shell commands at the four
+	// lifecycle points. Nil — the common case — costs nothing: see hooks.go.
 	Hooks *hooks.Runner
+	// SubAgent marks a child run spawned by the Agent tool.
+	//
+	// Its only effect is on hooks, and only on UserPromptSubmit: a sub-agent's
+	// prompt was written by the model, not the user, so a hook that pastes the
+	// current ticket in front of what the user typed has nothing to attach
+	// itself to. The tool hooks do fire for a child's calls, because the
+	// alternative is a formatter that runs on every edit except the ones a
+	// sub-agent made.
+	SubAgent bool
 }
 
 // Result is the outcome of a Run.
@@ -292,20 +304,23 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 	if opts.WebTools {
 		betas = append(append([]string{}, betas...), api.WebToolBetas...)
 	}
-	revealed := map[string]bool{}
+	revealed := newRevealSet()
 
-	var system []anthropic.BetaTextBlockParam
-	if opts.System != "" {
-		system = []anthropic.BetaTextBlockParam{{Text: opts.System}}
-	}
+	// The system prompt is rebuilt per turn because the permission mode can
+	// change mid-run — approving a plan flips it — and the model has to be
+	// told; see mode.go.
+	var modes modeTracker
 
-	// failures tracks how many times each IDENTICAL tool call (name+input) has
-	// failed within this Run; errStreaks tracks how many consecutive failures
-	// of the same SHAPE a tool has produced (regardless of input). Together
-	// they break a model out of retry loops where either the same call or the
-	// same kind of mistake keeps recurring.
-	failures := map[string]int{}
-	errStreaks := map[string]errStreak{}
+	// The loop-breaker counters: how many times each IDENTICAL tool call
+	// (name+input) has failed within this Run, and how many consecutive
+	// failures of the same SHAPE a tool has produced regardless of input.
+	// Together they break a model out of retry loops where either the same
+	// call or the same kind of mistake keeps recurring. Behind a mutex because
+	// a concurrent group's calls reach them together; see failureState.
+	fs := newFailureState()
+	// Server-tool exchanges already announced as dropped, so an inherited
+	// broken transcript is mentioned once rather than every turn.
+	reportedDrops := map[string]bool{}
 
 	// rec records a message and says so, once per run, when the transcript
 	// cannot be written. The error used to be discarded: a full disk or a
@@ -324,27 +339,47 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 
 	var res Result
 	messages := append([]anthropic.BetaMessageParam{}, opts.InitialMessages...)
-	if opts.Prompt != "" || len(opts.PromptImages) > 0 {
-		prompt := opts.Prompt
-		// UserPromptSubmit hooks see the prompt before it is added. A block
-		// aborts the turn with the reason; additionalContext is appended to the
-		// user message so the model sees it alongside the prompt.
-		if opts.Hooks != nil {
-			hd, _ := opts.Hooks.Run(ctx, hooks.UserPromptSubmit, hooks.Input{Prompt: prompt})
-			if hd.Block {
-				res.StopReason = "hook_block"
-				res.Text = hookBlockText(hd.Reason)
-				res.Messages = messages
-				if emit != nil {
-					emit(Event{Type: "assistant", Text: res.Text})
-				}
-				return res, nil
-			}
-			if hd.AdditionalContext != "" {
-				prompt = prompt + "\n\n" + hd.AdditionalContext
-			}
+
+	// The two hooks that run before anything is sent. SessionStart fires once
+	// for the process; UserPromptSubmit on every turn that carries a prompt.
+	//
+	// Their output is prepended to the user message rather than spliced into the
+	// system prompt. Injected context is part of the conversation — it is true
+	// at the moment it was gathered, and a branch name or ticket summary that
+	// silently updated itself in the system prompt would retroactively rewrite
+	// what the model was told three turns ago. Prepending also keeps the cached
+	// prefix stable.
+	var injected []string
+	if opts.Hooks != nil {
+		if opts.Hooks.ClaimSessionStart() {
+			injected = appendHookContext(injected, fireHooks(ctx, opts, emit, hooks.Input{Event: hooks.SessionStart}))
 		}
-		userMsg := userMessageWithImages(prompt, opts.PromptImages)
+		if opts.Prompt != "" && !opts.SubAgent {
+			hr := fireHooks(ctx, opts, emit, hooks.Input{Event: hooks.UserPromptSubmit, Prompt: opts.Prompt})
+			if hr.Blocked {
+				// The prompt is not sent. This is the one refusal the model is
+				// never told about, because there is nothing to tell: no request
+				// was made. The user is told, because they are the one whose
+				// message was dropped and the hook they wrote is why.
+				reason := strings.TrimSpace(hr.Reason)
+				if reason == "" {
+					reason = "a UserPromptSubmit hook refused it without giving a reason"
+				}
+				if emit != nil {
+					emit(Event{Type: "notice", Content: "prompt not sent — " + reason})
+				}
+				return Result{StopReason: "blocked_by_hook", Text: reason, Messages: messages}, nil
+			}
+			injected = appendHookContext(injected, hr)
+		}
+	}
+	if opts.Prompt != "" || len(opts.PromptImages) > 0 || len(injected) > 0 {
+		// Hook context first, then the prompt, then any attached images.
+		blocks := promptBlocks(opts.Prompt, injected)
+		if len(opts.PromptImages) > 0 {
+			blocks = append(blocks, userMessageWithImages("", opts.PromptImages).Content...)
+		}
+		userMsg := anthropic.NewBetaUserMessage(blocks...)
 		messages = append(messages, userMsg)
 		rec("user", userMsg)
 	}
@@ -355,10 +390,6 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 	// most once per Run, so a genuinely oversized request still surfaces.
 	var calib compaction.Calibration
 	overflowRecovered := false
-	// stopBlocks counts how many times a Stop hook has forced the loop to
-	// re-enter after a tool-less final answer. Capped by stopBlockLimit so a
-	// hook that always blocks cannot loop forever.
-	stopBlocks := 0
 	for {
 		res.NumTurns++
 
@@ -392,7 +423,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Build the tool list for this turn: eager tools plus any deferred tools
 		// revealed so far (via ToolSearch). Rebuilt per turn so reveals take
 		// effect on the next request.
-		toolParams, terr := l.buildToolParams(ctx, opts.DeferredTools, revealed)
+		toolParams, terr := l.buildToolParams(ctx, opts.DeferredTools, revealed.snapshot())
 		if terr != nil {
 			res.Messages = messages
 			return res, terr
@@ -400,6 +431,10 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		if opts.WebTools {
 			toolParams = append(toolParams, webToolParams()...)
 		}
+		mode := permission.CurrentMode(opts.Permission)
+		announceMode(mode, emit, &modes)
+		system := systemFor(opts.System, mode)
+
 		prefix := requestPrefix{system: system, tools: toolParams, betas: betas}
 
 		// Compaction runs at the top of every turn (docs/compaction.md):
@@ -407,6 +442,10 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// near the context limit. The summary request carries this turn's
 		// system prompt and tools so it shares the conversation's cached prefix.
 		messages = l.compact(ctx, messages, opts, emit, &calib, prefix, false, &res.APIDuration)
+
+		// Say so when a web search or fetch has gone missing, before the
+		// repair quietly papers over it; see servertool.go.
+		announceDroppedServerTools(messages, emit, reportedDrops)
 
 		// Repair any message with empty content (e.g. an old refusal recorded with
 		// content: null) before sending — the Anthropic API otherwise rejects the
@@ -505,31 +544,6 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Collect tool_use blocks from this turn.
 		toolUses := toolUseBlocks(assistant)
 		if len(toolUses) == 0 {
-			// Stop hooks fire when the model is about to return a tool-less final
-			// answer. A block re-enters the loop with the hook's reason injected
-			// as a user message so the model keeps working. A user halt wins over
-			// any Stop hook, and stopBlockLimit bounds the re-entries so a hook
-			// that always blocks cannot loop forever.
-			if opts.Hooks != nil && !halted && stopBlocks < stopBlockLimit {
-				hd, _ := opts.Hooks.Run(ctx, hooks.Stop, hooks.Input{})
-				if hd.Block {
-					stopBlocks++
-					reason := strings.TrimSpace(hd.Reason)
-					if reason == "" {
-						reason = "A Stop hook requested that you keep working rather than stop here."
-					}
-					// The assistant turn is complete and tool-less, so it is safe
-					// to record now; then append and record the injected message.
-					record(opts.Recorder, "assistant", assistant)
-					stopMsg := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(reason))
-					messages = append(messages, stopMsg)
-					record(opts.Recorder, "user", stopMsg)
-					if emit != nil {
-						emit(Event{Type: "steer", Content: reason})
-					}
-					continue
-				}
-			}
 			// Final (tool-less) answer: structurally fine on its own, record now.
 			rec("assistant", assistant)
 			res.Messages = messages
@@ -550,11 +564,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 
 		// Dispatch tools and append their results. reveal lets ToolSearch mark
 		// deferred tools active for subsequent turns.
-		reveal := func(names ...string) {
-			for _, n := range names {
-				revealed[n] = true
-			}
-		}
+		reveal := revealed.add
 		// A tool_use the model never finished emitting because the turn hit the
 		// output-token limit arrives here with empty ("{}") arguments — the
 		// stream layer patches its truncated, invalid JSON so Accumulate doesn't
@@ -563,7 +573,21 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// user saw as a cryptic schema error and a retry loop). Return an
 		// actionable result instead so the model shortens or continues.
 		truncID, wasTruncated := truncatedToolUseID(assistant)
-		resultBlocks := l.dispatchToolUses(ctx, toolUses, truncID, wasTruncated, maxTokens, opts, emit, reveal, failures, errStreaks)
+		preempt := func(tu anthropic.BetaToolUseBlock) (string, bool) {
+			if wasTruncated && tu.ID == truncID {
+				return truncatedToolNote(maxTokens), true
+			}
+			return "", false
+		}
+		resultBlocks := l.dispatchAll(ctx, toolUses, opts, emit, reveal, fs, preempt)
+		// The aggregate cap, after the per-result one. Results that each pass
+		// the 30 KB budget still add up, and a turn is not limited to a few
+		// calls; see batchcap.go.
+		names := make([]string, len(toolUses))
+		for i, tu := range toolUses {
+			names[i] = tu.Name
+		}
+		capMessage(resultBlocks, names)
 		toolResultMsg := anthropic.NewBetaUserMessage(resultBlocks...)
 		messages = append(messages, toolResultMsg)
 
@@ -626,6 +650,14 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 	}
 }
 
+// elisionSpiller gives microcompact somewhere to put the tool results it
+// removes, so an elision stays recoverable: the placeholder names the file and
+// the model can read it. It uses the same store as the per-result cap, under
+// the same 24h prune.
+func elisionSpiller(content string) (string, bool) {
+	return tools.Spill("elided", content)
+}
+
 // compact applies microcompact then (if near the limit) autocompact to the
 // message list. Honors DISABLE_COMPACT / DISABLE_MICROCOMPACT /
 // DISABLE_AUTO_COMPACT, matching the JS env switches. The autocompact request's
@@ -642,7 +674,7 @@ func (l *Loop) compact(ctx context.Context, messages []anthropic.BetaMessagePara
 	// models the conversation runs unpruned until autocompact replaces it
 	// with a summary, which the check does accept.
 	if os.Getenv("DISABLE_MICROCOMPACT") == "" && !api.PreservesThinking(string(opts.Model)) {
-		if out, res := compaction.Microcompact(messages); res.Compacted {
+		if out, res := compaction.Microcompact(messages, elisionSpiller); res.Compacted {
 			messages = out
 			if emit != nil {
 				emit(Event{Type: "compaction", Content: fmt.Sprintf("microcompact: elided %d old tool results (~%d tokens saved)", res.ElidedCount, res.TokensSaved)})
@@ -854,30 +886,49 @@ const repeatFailureLimit = 2
 // `line_start`/`line_end` (wrong field names) but new line numbers each time.
 //
 // `firstInput`/`varied` track whether the model actually changed its inputs
-// across the failing calls. If it did, the failure is almost certainly
-// environmental (shell wedged, network down, disk full) rather than a
-// tool-input bug — the model is varying its guesses in good faith and still
-// hitting the same wall. shortCircuit uses the flag to choose between two
-// directive messages.
+// across the failing calls. If it did, and the tool actually RAN, the failure
+// is almost certainly environmental (shell wedged, network down, disk full) —
+// the model is varying its guesses in good faith and still hitting the same
+// wall. `preExec` is the veto on that inference: a call rejected before the
+// tool ran cannot have been defeated by the environment. shortCircuit uses the
+// two flags to choose between the directive messages.
 type errStreak struct {
 	sig        string // last error message text
 	count      int    // consecutive occurrences of sig
 	firstInput string // raw JSON of the input on the first failure in this streak
 	varied     bool   // true once a same-sig failure arrived with a different input
+	preExec    bool   // the failures never reached the tool: bad name, bad input, denied
 }
+
+// failureKind says where a failure came from, which is what decides the
+// conclusion the loop-breakers are allowed to draw from a run of them.
+type failureKind int
+
+const (
+	// failureExec: the tool ran and failed. A wedged environment is a candidate.
+	failureExec failureKind = iota
+	// failurePreExec: refused before the tool ran — unrecognised name, input
+	// that doesn't validate, permission denied. Nothing about the environment
+	// is implicated, so these must never produce the "shell wedged" directive.
+	failurePreExec
+	// failureHostGate: refused by the host gate. A decision about one call,
+	// not a malfunction; kept out of the shape streak entirely.
+	failureHostGate
+)
 
 // bumpErrStreak records a new failure for tool. If the message matches the
 // prior signature, the count grows and the input-varied flag tracks whether
 // the model is changing inputs across calls. Otherwise the streak starts over.
-func bumpErrStreak(streaks map[string]errStreak, tool, msg, input string) {
+func bumpErrStreak(streaks map[string]errStreak, tool, msg, input string, preExec bool) {
 	prev := streaks[tool]
 	if prev.sig == msg {
 		prev.count++
 		if input != prev.firstInput {
 			prev.varied = true
 		}
+		prev.preExec = prev.preExec || preExec
 	} else {
-		prev = errStreak{sig: msg, count: 1, firstInput: input}
+		prev = errStreak{sig: msg, count: 1, firstInput: input, preExec: preExec}
 	}
 	streaks[tool] = prev
 }
@@ -893,12 +944,17 @@ func repeatedShapeFailureMsg(tool string, n int, sig string) string {
 	)
 }
 
-// envFailureMsg is the directive returned when loop-breaker B fires but the
-// model HAD varied its inputs across the failing calls. The error shape is
-// stable while the inputs aren't — the env, not the call, is broken. Telling
-// the model to "stop guessing" in this case is actively misleading (it WAS
-// trying different things) and pushes it into useless workaround loops.
-// Suggest concrete recovery moves instead.
+// envFailureMsg is the directive returned when loop-breaker B fires, the model
+// HAD varied its inputs across the failing calls, and the tool actually ran
+// each time. The error shape is stable while the inputs aren't — the env, not
+// the call, is broken. Telling the model to "stop guessing" in this case is
+// actively misleading (it WAS trying different things) and pushes it into
+// useless workaround loops. Suggest concrete recovery moves instead.
+//
+// This must not fire for failures that never reached the tool. A rejected input
+// is stable across varied inputs for the obvious reason, and answering it with
+// "the shell may be wedged, try KillShell" sends the model to reset a substrate
+// that was never involved instead of reading the error.
 func envFailureMsg(tool string, n int, sig string) string {
 	return fmt.Sprintf(
 		"%s has failed %d times in a row with the same error shape across DIFFERENT inputs. This looks like an environment issue (shell wedged, leaked background process, network unreachable, filesystem broken) rather than a tool-input problem — varying the inputs more won't help. Options: (a) reset the relevant state (e.g. KillShell for a stuck Bash; restart a stuck server); (b) try a different tool that doesn't depend on the broken substrate; (c) ask the user. Stop retrying %s with new inputs.\n\n--- recurring error ---\n%s",
@@ -975,31 +1031,6 @@ func truncatedToolNote(maxTokens int64) string {
 		"then continue.", maxTokens)
 }
 
-// stopBlockLimit bounds how many times a Stop hook may force the loop to
-// re-enter after a tool-less answer. A hook that unconditionally blocks would
-// otherwise spin forever; after this many re-entries the answer is allowed
-// through regardless.
-const stopBlockLimit = 8
-
-// hookBlockText renders the message a blocked action reports back. A hook that
-// blocks without a reason still needs to say something actionable.
-func hookBlockText(reason string) string {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
-		return "Blocked by a hook."
-	}
-	return reason
-}
-
-// feedbackIf returns reason when block is set and reason is non-empty, else "".
-// It keeps the PostToolUse append expression readable.
-func feedbackIf(block bool, reason string) string {
-	if !block {
-		return ""
-	}
-	return strings.TrimSpace(reason)
-}
-
 func shortCircuit(emit Emitter, tu anthropic.BetaToolUseBlock, msg string) anthropic.BetaContentBlockParamUnion {
 	if emit != nil {
 		emit(Event{Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID, Content: msg, IsError: true})
@@ -1007,192 +1038,7 @@ func shortCircuit(emit Emitter, tu anthropic.BetaToolUseBlock, msg string) anthr
 	return anthropic.NewBetaToolResultBlock(tu.ID, msg, true)
 }
 
-// readOnlyConcurrency bounds how many read-only tool Execute calls run at once
-// within a single turn's batch. It is deliberately small: the win here is
-// overlapping I/O-bound latency (file reads, directory greps, LSP round-trips),
-// not saturating the CPU, and a turn that emits dozens of reads should not spawn
-// dozens of goroutines — and, for Grep/Glob, dozens of concurrent filesystem
-// walks — at once.
-const readOnlyConcurrency = 8
-
-// readOnlyForConcurrency reports whether a tool is safe to run concurrently with
-// other read-only tools in the same turn: it neither changes the machine nor
-// touches shared loop/registry state, so overlapping its Execute with a
-// sibling's cannot reorder any observable side effect. Kept next to dispatch
-// (like editedPaths) because "which tools may run in parallel" is a property of
-// the loop, not of any one tool.
-//
-// This is a deliberate allowlist, not a reuse of the permission classification.
-// allowAlways() — the read-only permission decision — is ALSO returned by tools
-// that have side effects or shared state (TaskCreate/TaskUpdate, KillShell,
-// RestartJob, Memory, TodoWrite, Skill, Agent, ToolSearch), so it is not a safe
-// concurrency signal. Bash is intentionally excluded: a shell command is not
-// read-only in general (it can write files, kill processes, reach the network),
-// so it always runs sequentially and in order. Edit/Write/NotebookEdit are
-// mutating and likewise absent. ToolSearch is absent because its Execute calls
-// Reveal(), which mutates the loop's shared `revealed` map. The listed tools
-// (verified not to use tctx.Progress or tctx.Reveal) only read.
-func readOnlyForConcurrency(name string) bool {
-	switch name {
-	case "Read", "Grep", "Glob", "Diagnostics", "Definition", "References":
-		return true
-	default:
-		return false
-	}
-}
-
-// dispatchToolUses runs a turn's tool_use blocks and returns their tool_result
-// blocks in the SAME order as toolUses, so each result pairs with its call.
-//
-// A maximal run of two or more consecutive read-only tools is executed
-// concurrently to overlap their latency; a lone read-only tool and every
-// non-read-only tool are dispatched sequentially and in order, exactly as
-// before (so a single-tool turn is byte-for-byte the old behavior). A
-// mutating/side-effecting tool ends the current read-only run: the run before it
-// is fully joined before it is dispatched, so observable side effects never
-// reorder. A truncated tool_use (arguments cut off by the output-token limit) is
-// never run and never joins a group.
-func (l *Loop) dispatchToolUses(ctx context.Context, toolUses []anthropic.BetaToolUseBlock, truncID string, wasTruncated bool, maxTokens int64, opts Options, emit Emitter, reveal func(...string), failures map[string]int, errStreaks map[string]errStreak) []anthropic.BetaContentBlockParamUnion {
-	out := make([]anthropic.BetaContentBlockParamUnion, len(toolUses))
-	truncated := func(tu anthropic.BetaToolUseBlock) bool { return wasTruncated && tu.ID == truncID }
-
-	i := 0
-	for i < len(toolUses) {
-		tu := toolUses[i]
-		if truncated(tu) {
-			out[i] = shortCircuit(emit, tu, truncatedToolNote(maxTokens))
-			i++
-			continue
-		}
-		// Extend a maximal run of consecutive, non-truncated read-only tools.
-		j := i
-		for j < len(toolUses) && readOnlyForConcurrency(toolUses[j].Name) && !truncated(toolUses[j]) {
-			j++
-		}
-		if j-i > 1 {
-			l.dispatchReadOnlyGroup(ctx, toolUses[i:j], out[i:j], opts, emit, reveal, failures, errStreaks)
-			i = j
-			continue
-		}
-		out[i] = l.dispatch(ctx, tu, opts, emit, reveal, failures, errStreaks)
-		i++
-	}
-	return out
-}
-
-// dispatchReadOnlyGroup handles a run of read-only tools: it gates each call in
-// order on THIS goroutine (loop-breakers, host gate, permission, validation —
-// all fast, and all reading and writing the shared failures/errStreaks maps),
-// runs the surviving Execute calls concurrently (bounded by readOnlyConcurrency),
-// then finalizes results in order (updating the shared maps and emitting
-// tool_result). Only Execute overlaps; every access to shared loop state stays
-// on this single goroutine, so no locking is needed and `go test -race` is
-// clean. out is the destination slice (same length/order as group).
-func (l *Loop) dispatchReadOnlyGroup(ctx context.Context, group []anthropic.BetaToolUseBlock, out []anthropic.BetaContentBlockParamUnion, opts Options, emit Emitter, reveal func(...string), failures map[string]int, errStreaks map[string]errStreak) {
-	prepared := make([]*preparedCall, len(group))
-	for k := range group {
-		p, done := l.prepareCall(ctx, group[k], opts, emit, reveal, failures, errStreaks)
-		if done != nil {
-			out[k] = *done
-			continue
-		}
-		prepared[k] = p
-	}
-
-	type execOutcome struct {
-		results []tools.Result
-		err     error
-	}
-	outcomes := make([]execOutcome, len(group))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, readOnlyConcurrency)
-	for k := range prepared {
-		p := prepared[k]
-		if p == nil {
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(k int, p *preparedCall) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			r, err := p.tool.Execute(ctx, p.tctx, p.raw)
-			outcomes[k] = execOutcome{results: r, err: err}
-		}(k, p)
-	}
-	wg.Wait()
-
-	for k := range prepared {
-		p := prepared[k]
-		if p == nil {
-			continue
-		}
-		out[k] = l.finalizeCall(p, outcomes[k].results, outcomes[k].err, emit, failures, errStreaks)
-	}
-}
-
-// preparedCall is a tool_use that has cleared every per-call gate and is ready
-// to Execute. It is produced on the loop goroutine; only its Execute may then be
-// run off-goroutine (concurrent read-only group).
-type preparedCall struct {
-	tu     anthropic.BetaToolUseBlock
-	tool   tools.Tool
-	tctx   tools.Context
-	raw    json.RawMessage
-	key    string // failures-map key: name + NUL + raw input
-	rawStr string // raw input JSON, for errStreak input-varied tracking
-	// ctx and hooks carry what PostToolUse hooks need in finalizeCall, which
-	// runs on the loop goroutine after the tool executed.
-	ctx   context.Context
-	hooks *hooks.Runner
-}
-
-// dispatch runs one tool_use sequentially: gate (prepareCall) → Execute →
-// finalize (finalizeCall), returning the tool_result block to append to the
-// conversation. The concurrent read-only path reuses these same three steps, so
-// a call behaves identically whichever way it is dispatched.
-func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts Options, emit Emitter, reveal func(...string), failures map[string]int, errStreaks map[string]errStreak) anthropic.BetaContentBlockParamUnion {
-	p, done := l.prepareCall(ctx, tu, opts, emit, reveal, failures, errStreaks)
-	if done != nil {
-		return *done
-	}
-	results, err := p.tool.Execute(ctx, p.tctx, p.raw)
-	return l.finalizeCall(p, results, err, emit, failures, errStreaks)
-}
-
-// recordFailure registers a failed or refused call: it bumps this exact call's
-// retry count and — unless the host gate refused it — the tool's same-shape
-// error streak, emits an error tool_result, and returns the block. It mutates
-// the shared maps, so it is only ever called on the loop goroutine (prepareCall
-// gating and finalizeCall), never from a concurrent Execute.
-//
-// A refusal by the host gate is a decision, not a malfunction. Its text is
-// identical whatever the command was, so feeding it to the same-shape streak
-// makes two unrelated refused commands look like proof the environment is
-// wedged, and loop-breaker B then latches the tool for the rest of the Run — a
-// latch nothing can clear, because the only reset is a successful execution and
-// B is what prevents one. Count the exact call (breaker A still stops a literal
-// retry) but leave the shape streak out of it.
-func recordFailure(tu anthropic.BetaToolUseBlock, key, rawStr, msg string, hostBlocked bool, emit Emitter, failures map[string]int, errStreaks map[string]errStreak) anthropic.BetaContentBlockParamUnion {
-	failures[key]++
-	if !hostBlocked {
-		bumpErrStreak(errStreaks, tu.Name, msg, rawStr)
-	}
-	if emit != nil {
-		emit(Event{
-			Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID,
-			Content: msg, IsError: true, HostBlocked: hostBlocked,
-		})
-	}
-	return anthropic.NewBetaToolResultBlock(tu.ID, msg, true)
-}
-
-// prepareCall runs the per-call gating (emit tool_use, loop-breakers, host gate,
-// permission/approval, validation, BeforeEdit) and returns either a ready-to-run
-// preparedCall (done == nil) or a finished tool_result block that short-circuits
-// the call (p == nil). It runs on the loop goroutine only: it reads and writes
-// the shared failures/errStreaks maps and must stay serialized.
-func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, opts Options, emit Emitter, reveal func(...string), failures map[string]int, errStreaks map[string]errStreak) (*preparedCall, *anthropic.BetaContentBlockParamUnion) {
+func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts Options, emit Emitter, reveal func(...string), fs *failureState) anthropic.BetaContentBlockParamUnion {
 	raw, _ := json.Marshal(tu.Input)
 	if emit != nil {
 		emit(Event{Type: "tool_use", ToolName: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
@@ -1200,9 +1046,35 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 
 	key := tu.Name + "\x00" + string(raw)
 	rawStr := string(raw)
-	errResult := func(msg string) *anthropic.BetaContentBlockParamUnion {
-		b := recordFailure(tu, key, rawStr, msg, false, emit, failures, errStreaks)
-		return &b
+	errResultKind := func(msg string, kind failureKind) anthropic.BetaContentBlockParamUnion {
+		fs.fail(key)
+		// A refusal by the host gate is a decision, not a malfunction. Its text
+		// is identical whatever the command was, so feeding it to the same-shape
+		// streak makes two unrelated refused commands look like proof the
+		// environment is wedged, and loop-breaker B then latches the tool for
+		// the rest of the Run — a latch nothing can clear, because the only
+		// reset is a successful execution and B is what prevents one. Count the
+		// exact call (breaker A still stops a literal retry) but leave the shape
+		// streak out of it.
+		if kind != failureHostGate {
+			fs.bumpStreak(tu.Name, msg, rawStr, kind == failurePreExec)
+		}
+		if emit != nil {
+			emit(Event{
+				Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID,
+				Content: msg, IsError: true, HostBlocked: kind == failureHostGate,
+			})
+		}
+		return anthropic.NewBetaToolResultBlock(tu.ID, msg, true)
+	}
+	// errResult: the tool ran and failed.
+	errResult := func(msg string) anthropic.BetaContentBlockParamUnion {
+		return errResultKind(msg, failureExec)
+	}
+	// errBadCall: the call was refused before the tool ran, so no conclusion
+	// about the environment may be drawn from a run of these.
+	errBadCall := func(msg string) anthropic.BetaContentBlockParamUnion {
+		return errResultKind(msg, failurePreExec)
 	}
 
 	// Loop-breaker A: this exact call has already failed repeatedly. Don't run
@@ -1210,19 +1082,18 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 	// same reason B does: we are declining to run the call, not observing it
 	// fail, and recording our own refusal as a failure would let A feed B until
 	// B latches the tool outright.
-	if failures[key] >= repeatFailureLimit {
-		b := shortCircuit(emit, tu, repeatedFailureMsg(tu.Name, failures[key]))
-		return nil, &b
+	if n := fs.count(key); n >= repeatFailureLimit {
+		return shortCircuit(emit, tu, repeatedFailureMsg(tu.Name, n))
 	}
 	// Loop-breaker B: the same tool has produced the same KIND of error for
 	// `repeatFailureLimit` consecutive calls. Two cases — identical inputs (the
 	// model is in a guessing loop) or varied inputs (the environment is wedged
 	// and the same error shape comes back regardless). Different directives.
-	if streak := errStreaks[tu.Name]; streak.count >= repeatFailureLimit {
+	if streak := fs.streak(tu.Name); streak.count >= repeatFailureLimit {
 		// Use shortCircuit() so we don't keep growing the streak on each fired
 		// short-circuit (the model isn't actually trying — we're refusing).
 		msg := repeatedShapeFailureMsg(tu.Name, streak.count, streak.sig)
-		if streak.varied {
+		if streak.varied && !streak.preExec {
 			msg = envFailureMsg(tu.Name, streak.count, streak.sig)
 		}
 		// Clear the streak as the directive goes out, because the only other
@@ -1233,23 +1104,20 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 		// Firing once per streak keeps the anti-loop property — a model that
 		// keeps failing gets the directive again after another
 		// repeatFailureLimit failures — without making the tool unusable.
-		delete(errStreaks, tu.Name)
-		b := shortCircuit(emit, tu, msg)
-		return nil, &b
+		fs.clearStreak(tu.Name)
+		return shortCircuit(emit, tu, msg)
 	}
 
 	tool, ok := l.tools.Lookup(tu.Name)
 	if !ok {
-		return nil, errResult(l.unknownToolMsg(tu.Name))
+		return errBadCall(l.unknownToolMsg(tu.Name))
 	}
 
 	// Validate the arguments FIRST — before the host gate and the approval
 	// step. An obviously-malformed call (bad or missing arguments) cannot run
 	// whatever the gate or the user decides, so rejecting it here spares the
 	// host gate the work and, more importantly, spares the user an approval
-	// prompt for a call that was never viable. This returns the same
-	// errResult(...) it did when it ran later, so the failure counters and
-	// loop-breakers see an identical bump; only its position moved.
+	// prompt for a call that was never viable.
 	if err := tool.ValidateInput(raw); err != nil {
 		msg := fmt.Sprintf("Input validation error: %v", err)
 		// Tell the model what the tool actually accepts. Smaller models hallucinate
@@ -1258,23 +1126,24 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 		if fields := schemaFieldList(tool.InputSchema()); fields != "" {
 			msg += fmt.Sprintf(" — %s accepts: %s.", tu.Name, fields)
 		}
-		return nil, errResult(msg)
+		return errBadCall(msg)
 	}
 
-	// The command guard is a data-safety check, not a permission: no mode and
-	// no rule waives it. It is tagged like a host refusal (a decision, not a
-	// malfunction) so repeated refusals do not latch the tool.
+	// The command guard is a data-safety check, not a permission: no mode
+	// waives it, bypassPermissions included. The goal loop sets it so the model
+	// cannot discard (or sweep into its commits) uncommitted work that predates
+	// the run (gitguard, #250). Classified like a host refusal — a decision, not
+	// a malfunction — so repeated refusals do not latch the tool.
 	if opts.CommandGuard != nil {
 		if msg := opts.CommandGuard(tu.Name, raw, opts.WorkingDir); msg != "" {
-			b := recordFailure(tu, key, rawStr, msg, true, emit, failures, errStreaks)
-			return nil, &b
+			return errResultKind(msg, failureHostGate)
 		}
 	}
 
-	// The host gate runs BEFORE the allow/deny rules, not after. An allow rule
-	// says a command prefix is fine; it does not say that anything sharing that
-	// prefix may change the machine. Checking rules first would let one launder
-	// the other. See hostgate.go.
+	// The host gate runs BEFORE the permission check, not after. The check is
+	// per-tool and mode-driven, and in autonomous — the default — it allows
+	// everything, so a gate running second would never see the calls that most
+	// need it. See hostgate.go.
 	//
 	// bypassPermissions skips it, because that mode's entire contract is "no
 	// checks" and honouring half of it would be worse than honouring none.
@@ -1282,19 +1151,16 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 		hd := opts.Host.Check(tu.Name, raw, opts.WorkingDir)
 		switch {
 		case hd.Refuse != "":
-			b := recordFailure(tu, key, rawStr, hd.Refuse, true, emit, failures, errStreaks)
-			return nil, &b
+			return errResultKind(hd.Refuse, failureHostGate)
 		case len(hd.Ask) > 0:
 			if !l.approveHostChange(ctx, tu, raw, opts, hd) {
-				b := recordFailure(tu, key, rawStr, hostDeclinedMsg(hd), true, emit, failures, errStreaks)
-				return nil, &b
+				return errResultKind(hostDeclinedMsg(hd), failureHostGate)
 			}
 			// Approval is new information about the tool's prospects. Anything
 			// it was carrying from earlier refusals — this call's own count and
 			// the tool's shape streak — is now stale, and leaving it in place
 			// is how "permission granted" still leaves the tool unusable.
-			delete(failures, key)
-			delete(errStreaks, tu.Name)
+			fs.clear(key, tu.Name)
 		}
 	}
 
@@ -1306,7 +1172,7 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 		if msg == "" {
 			msg = fmt.Sprintf("Permission denied for tool %s", tu.Name)
 		}
-		return nil, errResult(msg)
+		return errBadCall(msg)
 	case permission.Ask:
 		// Delegate the decision to the frontend's Approver.
 		approver := opts.Approver
@@ -1314,34 +1180,18 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 			approver = DenyAll
 		}
 		ad := approver.Approve(ctx, ApprovalRequest{
-			ToolName:       tu.Name,
-			ToolUseID:      tu.ID,
-			Input:          raw,
-			Specifier:      req.Specifier,
-			RuleSpecifiers: req.RuleSpecifiers,
-			Commands:       req.Commands,
-			Opaque:         req.Opaque,
-			Suggestion:     decision.Message,
+			ToolName:   tu.Name,
+			ToolUseID:  tu.ID,
+			Input:      raw,
+			Specifier:  req.Specifier,
+			Suggestion: decision.Message,
 		})
 		if ad.Behavior != permission.Allow {
 			msg := ad.Message
 			if msg == "" {
 				msg = fmt.Sprintf("Permission denied for tool %s", tu.Name)
 			}
-			return nil, errResult(msg)
-		}
-	}
-
-	// PreToolUse hooks run just before the tool executes, on a call that has
-	// passed permission and validation. A block returns an error tool_result
-	// carrying the reason and the tool never runs. It is tagged like a host
-	// refusal (a decision, not a malfunction) so a repeatedly-blocking hook does
-	// not feed the same-shape streak breaker and latch the tool.
-	if opts.Hooks != nil {
-		hd, _ := opts.Hooks.Run(ctx, hooks.PreToolUse, hooks.Input{ToolName: tu.Name, ToolInput: raw})
-		if hd.Block {
-			b := recordFailure(tu, key, rawStr, hookBlockText(hd.Reason), true, emit, failures, errStreaks)
-			return nil, &b
+			return errBadCall(msg)
 		}
 	}
 
@@ -1351,11 +1201,28 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 		}
 	}
 
+	// PreToolUse. Last, after the gate, the permission check and validation, so
+	// a hook is only ever asked about a call Klaudia was otherwise going to
+	// make — it can narrow, never widen. See hooks.go.
+	//
+	// A refusal is classified as a host-gate failure for the same reason the
+	// gate's own is: the text is identical every time the hook fires, so feeding
+	// it to the same-shape streak would make two unrelated blocked calls look
+	// like a wedged environment and latch the tool.
+	if hookEnabled(opts, hooks.PreToolUse) {
+		hr := fireHooks(ctx, opts, emit, hooks.Input{
+			Event:     hooks.PreToolUse,
+			ToolName:  tu.Name,
+			ToolInput: toolInputFor(raw),
+		})
+		if hr.Blocked {
+			return errResultKind(hookBlockedMsg(tu.Name, hr.Reason), failureHostGate)
+		}
+	}
+
 	// Progress is only wired when someone is listening. A long-running tool (the
 	// Agent tool, which runs a whole child loop) reports through this so the
-	// frontend can show movement instead of an unexplained pause. No tool in the
-	// concurrent read-only allowlist uses it, so it is never called off the loop
-	// goroutine.
+	// frontend can show movement instead of an unexplained pause.
 	var progress func(string)
 	if emit != nil {
 		progress = func(line string) {
@@ -1367,36 +1234,18 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 			})
 		}
 	}
-
-	return &preparedCall{
-		tu:   tu,
-		tool: tool,
-		tctx: tools.Context{
-			WorkingDir:  opts.WorkingDir,
-			Ask:         opts.Asker,
-			Plan:        opts.Planner,
-			Reveal:      reveal,
-			HostChange:  hostChangeFor(opts),
-			Progress:    progress,
-			Diagnostics: opts.Diagnostics,
-			Hidden:      readDenied(opts.Permission.Deny),
-		},
-		raw:    raw,
-		key:    key,
-		rawStr: rawStr,
-		ctx:    ctx,
-		hooks:  opts.Hooks,
-	}, nil
-}
-
-// finalizeCall turns an Execute outcome into a tool_result block: it collapses
-// the result text/images, updates the shared failure counters, and emits the
-// tool_result event. It mutates the shared maps, so it is only ever called on
-// the loop goroutine (after the concurrent group has joined).
-func (l *Loop) finalizeCall(p *preparedCall, results []tools.Result, err error, emit Emitter, failures map[string]int, errStreaks map[string]errStreak) anthropic.BetaContentBlockParamUnion {
-	tu := p.tu
+	results, err := tool.Execute(ctx, tools.Context{
+		WorkingDir:  opts.WorkingDir,
+		Ask:         opts.Asker,
+		Plan:        opts.Planner,
+		Reveal:      reveal,
+		HostChange:  hostChangeFor(opts),
+		Progress:    progress,
+		ReadText:    opts.ReadText,
+		Diagnostics: opts.Diagnostics,
+	}, raw)
 	if err != nil {
-		return recordFailure(tu, p.key, p.rawStr, fmt.Sprintf("Tool execution error: %v", err), false, emit, failures, errStreaks)
+		return errResult(fmt.Sprintf("Tool execution error: %v", err))
 	}
 
 	// Collapse the result text, and collect any image blocks (vision). `full`
@@ -1421,39 +1270,51 @@ func (l *Loop) finalizeCall(p *preparedCall, results []tools.Result, err error, 
 		isErr = isErr || r.IsError
 		images = append(images, r.Images...)
 	}
+
+	// The backstop. Tools that understand their own output clamp it better
+	// than this can — Bash keeps a tail because that is where the verdict is —
+	// but most tools do not clamp at all, and before this every one of them
+	// could put its entire output into the window. A 980 KB Grep result or a
+	// chatty MCP server was one call away from an unusable session. Content
+	// already within budget comes back untouched, so self-clamping tools are
+	// unaffected.
+	if capped, cut := tools.Cap(tu.Name, content); cut {
+		content = capped
+		clamped = true
+	}
+
+	// PostToolUse. After the cap, so a hook's feedback cannot be the part that
+	// gets truncated away, and after the result is final so a hook reading the
+	// file on disk sees what the model will be told about.
+	//
+	// A hook here can also refuse, which does not undo anything — the tool has
+	// already run. What it buys is the result arriving as an error with the
+	// reason attached, which is the difference between the model believing its
+	// write succeeded and knowing the linter rejected it.
+	if hookEnabled(opts, hooks.PostToolUse) {
+		hr := fireHooks(ctx, opts, emit, hooks.Input{
+			Event:      hooks.PostToolUse,
+			ToolName:   tu.Name,
+			ToolInput:  toolInputFor(raw),
+			ToolResult: content,
+			ToolError:  isErr,
+		})
+		if hr.Blocked {
+			isErr = true
+			content = hookFeedback(content, hr.Reason)
+		} else {
+			content = hookFeedback(content, hr.Context)
+		}
+	}
 	if isErr {
-		failures[p.key]++
-		bumpErrStreak(errStreaks, tu.Name, content, p.rawStr)
+		fs.fail(key)
+		fs.bumpStreak(tu.Name, content, rawStr, false)
 	} else {
 		// A clean run resets both counters: this exact call's retry count and
 		// the per-tool same-shape streak (the tool clearly isn't fundamentally
 		// broken for the caller).
-		delete(failures, p.key)
-		delete(errStreaks, tu.Name)
+		fs.clear(key, tu.Name)
 	}
-
-	// PostToolUse hooks see the completed call and its result. A block adds its
-	// reason as additional feedback appended to the tool_result; any
-	// additionalContext is appended the same way. This never turns a successful
-	// result into an error — it only adds guidance the model reads next turn.
-	if p.hooks != nil {
-		resp, _ := json.Marshal(struct {
-			Content string `json:"content"`
-			IsError bool   `json:"is_error"`
-		}{Content: content, IsError: isErr})
-		hd, _ := p.hooks.Run(p.ctx, hooks.PostToolUse, hooks.Input{
-			ToolName:     tu.Name,
-			ToolInput:    p.raw,
-			ToolResponse: resp,
-		})
-		for _, extra := range []string{feedbackIf(hd.Block, hd.Reason), hd.AdditionalContext} {
-			if extra != "" {
-				content += "\n\n" + extra
-				full += "\n\n" + extra
-			}
-		}
-	}
-
 	if emit != nil {
 		ev := Event{Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID, Content: content, IsError: isErr}
 		if clamped {
@@ -1649,15 +1510,4 @@ func finalAssistantText(m anthropic.BetaMessage) string {
 		}
 	}
 	return s
-}
-
-// readDenied reports, for tools that walk directories, whether a path is
-// covered by a Read deny rule. Nil when there are no deny rules.
-func readDenied(deny []permission.Rule) func(string) bool {
-	if len(deny) == 0 {
-		return nil
-	}
-	return func(abs string) bool {
-		return permission.DeniedBy(deny, "Read", permission.PermissionRequest{Commands: [][]string{{abs}}})
-	}
 }

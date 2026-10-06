@@ -227,24 +227,26 @@ func TestStreamJSONInputMultiTurnConversation(t *testing.T) {
 	}
 }
 
-// A tool the permission mode asks about is put to the client as a
+// A call the permission flow asks about is put to the client as a
 // can_use_tool control_request carrying the tool's input; allowing it runs it.
+// In autonomous (there are no per-command modes any more) a write to project
+// knowledge is such a call: it is loaded into every later session.
 func TestStreamJSONInputPermissionAllowed(t *testing.T) {
 	m := NewFakeModel(t,
-		Use("Write", map[string]any{"file_path": "granted.txt", "content": "yes"}),
+		Use("Memory", map[string]any{"operation": "add", "scope": "project", "content": "KNOW-GRANTED"}),
 		Say("written"),
 	)
 	e := NewEnv(t, m)
-	s := e.StartStream("--permission-mode", "default")
+	s := e.StartStream()
 
 	s.SendUser("write the file")
 	req := s.Next("control_request")
 	body, _ := req["request"].(map[string]any)
 	input, _ := body["input"].(map[string]any)
-	if body["subtype"] != "can_use_tool" || body["tool_name"] != "Write" || input["file_path"] != "granted.txt" {
+	if body["subtype"] != "can_use_tool" || body["tool_name"] != "Memory" || input["scope"] != "project" {
 		t.Fatalf("control_request = %v", req)
 	}
-	if _, err := os.Stat(e.Path("granted.txt")); err == nil {
+	if _, err := os.Stat(e.Path(".klaudia/KNOWLEDGE.md")); err == nil {
 		t.Fatal("the tool ran before the client answered")
 	}
 	s.Allow(req)
@@ -254,8 +256,8 @@ func TestStreamJSONInputPermissionAllowed(t *testing.T) {
 	if code := s.Close(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if got, err := os.ReadFile(e.Path("granted.txt")); err != nil || string(got) != "yes" {
-		t.Errorf("granted.txt = %q, %v", got, err)
+	if got, err := os.ReadFile(e.Path(".klaudia/KNOWLEDGE.md")); err != nil || !strings.Contains(string(got), "KNOW-GRANTED") {
+		t.Errorf("KNOWLEDGE.md = %q, %v", got, err)
 	}
 }
 
@@ -263,11 +265,11 @@ func TestStreamJSONInputPermissionAllowed(t *testing.T) {
 // tool's error result.
 func TestStreamJSONInputPermissionDenied(t *testing.T) {
 	m := NewFakeModel(t,
-		Use("Write", map[string]any{"file_path": "refused.txt", "content": "no"}),
+		Use("Memory", map[string]any{"operation": "add", "scope": "project", "content": "KNOW-REFUSED"}),
 		Say("understood"),
 	)
 	e := NewEnv(t, m)
-	s := e.StartStream("--permission-mode", "default")
+	s := e.StartStream()
 
 	s.SendUser("write the file")
 	s.Deny(s.Next("control_request"), "CLIENT-SAYS-NO")
@@ -277,8 +279,8 @@ func TestStreamJSONInputPermissionDenied(t *testing.T) {
 	if code := s.Close(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if _, err := os.Stat(e.Path("refused.txt")); err == nil {
-		t.Error("a denied Write ran")
+	if _, err := os.Stat(e.Path(".klaudia/KNOWLEDGE.md")); err == nil {
+		t.Error("a denied knowledge write ran")
 	}
 	results := toolResults(s.Seen("user"))
 	if len(results) != 1 || results[0]["is_error"] != true || !strings.Contains(resultText(results[0]), "CLIENT-SAYS-NO") {
@@ -293,11 +295,11 @@ func TestStreamJSONInputPermissionDenied(t *testing.T) {
 // the ask is denied, the model is told why, and the turn finishes.
 func TestStreamJSONInputUnansweredAskTimesOut(t *testing.T) {
 	m := NewFakeModel(t,
-		Use("Write", map[string]any{"file_path": "late.txt", "content": "x"}),
+		Use("Memory", map[string]any{"operation": "add", "scope": "project", "content": "KNOW-LATE"}),
 		Say("moving on"),
 	)
 	e := NewEnv(t, m)
-	s := e.StartStream("--permission-mode", "default", "--ask-timeout", "200ms")
+	s := e.StartStream("--ask-timeout", "200ms")
 
 	s.SendUser("write the file")
 	req := s.Next("control_request") // never answered
@@ -309,34 +311,11 @@ func TestStreamJSONInputUnansweredAskTimesOut(t *testing.T) {
 	if code := s.Close(); code != 0 {
 		t.Fatalf("exit %d", code)
 	}
-	if _, err := os.Stat(e.Path("late.txt")); err == nil {
-		t.Error("the timed-out Write ran")
+	if _, err := os.Stat(e.Path(".klaudia/KNOWLEDGE.md")); err == nil {
+		t.Error("the timed-out knowledge write ran")
 	}
 	if reqs := m.Requests(); len(reqs) != 2 || !strings.Contains(reqs[1].Raw(), "no control_response arrived within 200ms") {
 		t.Error("the model was not told the ask timed out")
-	}
-}
-
-// A tool on the allow list never reaches the client: an allow rule is the
-// client's standing answer.
-func TestStreamJSONInputAllowRuleSkipsTheAsk(t *testing.T) {
-	m := NewFakeModel(t,
-		Use("Write", map[string]any{"file_path": "ruled.txt", "content": "ok"}),
-		Say("done"),
-	)
-	e := NewEnv(t, m)
-	s := e.StartStream("--permission-mode", "default", "--allowedTools", "Write", "--ask-timeout", "5s")
-
-	s.SendUser("write the file")
-	s.Next("result")
-	if code := s.Close(); code != 0 {
-		t.Fatalf("exit %d", code)
-	}
-	if n := len(s.Seen("control_request")); n != 0 {
-		t.Errorf("%d control_requests for an allow-listed tool", n)
-	}
-	if got, err := os.ReadFile(e.Path("ruled.txt")); err != nil || string(got) != "ok" {
-		t.Errorf("ruled.txt = %q, %v", got, err)
 	}
 }
 

@@ -83,7 +83,7 @@ func TestRenderToolResultIncludesStatusAndToolName(t *testing.T) {
 func TestRenderConfigDefaults(t *testing.T) {
 	m := &Model{sess: &Session{}}
 	got := m.renderConfig()
-	for _, want := range []string{"provider=anthropic", "model=(default)", "sandbox=local", "Ask before risky operations"} {
+	for _, want := range []string{"provider=anthropic", "model=(default)", "sandbox=local", "Autonomous"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderConfig missing %q in:\n%s", want, got)
 		}
@@ -91,9 +91,9 @@ func TestRenderConfigDefaults(t *testing.T) {
 }
 
 func TestRenderConfigResolved(t *testing.T) {
-	m := &Model{sess: &Session{Provider: "openai", ResolvedModel: "openai/gpt-5.5", SandboxMode: "os", PermissionMode: "acceptEdits", Notify: NotifyModes{Bell: true, OSC9: true}}}
+	m := &Model{sess: &Session{Provider: "openai", ResolvedModel: "openai/gpt-5.5", SandboxMode: "os", PermissionMode: "plan", Notify: NotifyModes{Bell: true, OSC9: true}}}
 	got := m.renderConfig()
-	for _, want := range []string{"provider=openai", "model=openai/gpt-5.5", "sandbox=os", "Auto-accept file edits", "notify=bell, osc9"} {
+	for _, want := range []string{"provider=openai", "model=openai/gpt-5.5", "sandbox=os", "Plan mode", "notify=bell, osc9"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderConfig missing %q in:\n%s", want, got)
 		}
@@ -101,7 +101,7 @@ func TestRenderConfigResolved(t *testing.T) {
 }
 
 func TestModeChoicesMarksCurrent(t *testing.T) {
-	m := &Model{sess: &Session{PermissionMode: "plan", Trust: &fakeTrust{policy: agent.HostEnforce}}}
+	m := &Model{sess: &Session{PermissionMode: "plan", Trust: &fakeTrust{}}}
 	items := m.modeChoices()
 	var marked int
 	for _, it := range items {
@@ -308,9 +308,6 @@ func TestShortModeNamesEveryMode(t *testing.T) {
 		permission.ModeAutonomous:        "autonomous",
 		permission.ModePlan:              "plan",
 		permission.ModeBypassPermissions: "bypass",
-		permission.ModeAcceptEdits:       "auto-edit",
-		permission.ModeDontAsk:           "deny",
-		permission.ModeDefault:           "ask",
 	}
 	seen := map[string]permission.Mode{}
 	for mode, label := range want {

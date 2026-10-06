@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
@@ -98,7 +96,8 @@ func isResult(m map[string]any) bool { return m["type"] == "result" }
 
 // blockUntilCancelled is a turn that runs until its context is cancelled.
 func blockUntilCancelled(started chan<- string) RunFunc {
-	return func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, _ agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	return func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		prompt := turn.Prompt
 		if started != nil {
 			started <- prompt
 		}
@@ -142,7 +141,8 @@ func TestInterruptReleasesAPendingAsk(t *testing.T) {
 	out := &lineSink{}
 	d := NewDriver(out)
 	decided := make(chan permission.Decision, 1)
-	s := startSession(t, d, out, func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	s := startSession(t, d, out, func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		ap := turn.Approver
 		dec := ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`)})
 		decided <- dec
 		return agent.Result{}, ctx.Err()
@@ -173,7 +173,8 @@ func TestInterruptCoversQueuedTurnsOnly(t *testing.T) {
 	d := NewDriver(out)
 	var ran []string
 	started := make(chan string, 4)
-	s := startSession(t, d, out, func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, _ agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	s := startSession(t, d, out, func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		prompt := turn.Prompt
 		ran = append(ran, prompt)
 		if prompt == "first" {
 			started <- prompt
@@ -217,7 +218,8 @@ func TestReaderKeepsReadingWhileTurnsQueue(t *testing.T) {
 	out := &lineSink{}
 	d := NewDriver(out)
 	var calls atomic.Int32
-	s := startSession(t, d, out, func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	s := startSession(t, d, out, func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		ap := turn.Approver
 		if calls.Add(1) == 1 {
 			dec := ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{}`)})
 			return agent.Result{Text: "asked:" + string(dec.Behavior)}, nil
@@ -343,7 +345,7 @@ func TestResultLineCarriesSessionAndDuration(t *testing.T) {
 	d := NewDriver(out)
 	d.SessionID = "sess-r"
 	in := strings.NewReader(`{"type":"user","message":{"role":"user","content":"hi"}}` + "\n")
-	err := d.Run(context.Background(), in, func(context.Context, string, []anthropic.BetaMessageParam, agent.Approver, agent.Recorder, agent.Emitter) (agent.Result, error) {
+	err := d.Run(context.Background(), in, func(context.Context, agent.Turn) (agent.Result, error) {
 		time.Sleep(20 * time.Millisecond)
 		return agent.Result{Text: "ok"}, nil
 	})

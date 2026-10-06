@@ -52,4 +52,46 @@ func TestValidateAcceptsAndRejects(t *testing.T) {
 	if err := s.Validate([]byte(`{not json`)); err == nil {
 		t.Error("expected malformed JSON to be rejected")
 	}
+	// A missing required field must still fail: leniency is about properties we
+	// never asked for, not about the ones the tool needs.
+	if err := s.Validate([]byte(`{"limit":10}`)); err == nil {
+		t.Error("expected missing file_path to be rejected")
+	}
+}
+
+// Advertise strictly, accept liberally. Raw still tells the model the shape is
+// closed, but a property the tool doesn't know about is dropped rather than
+// turning an otherwise-valid call into a failure (json.Unmarshal ignores it
+// anyway, so the call would have worked).
+func TestValidateIgnoresUnknownProperties(t *testing.T) {
+	type nested struct {
+		Label string `json:"label"`
+	}
+	type input struct {
+		Question string   `json:"question"`
+		Options  []nested `json:"options"`
+	}
+	s, err := For[input]()
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+
+	if !strings.Contains(string(s.Raw), `"additionalProperties":false`) {
+		t.Errorf("advertised schema should stay closed: %s", s.Raw)
+	}
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"extra top-level property", `{"question":"q","description":"stray","options":[{"label":"a"}]}`},
+		{"extra nested property", `{"question":"q","options":[{"label":"a","header":"stray"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := s.Validate([]byte(tc.input)); err != nil {
+				t.Errorf("otherwise-valid input rejected: %v", err)
+			}
+		})
+	}
 }

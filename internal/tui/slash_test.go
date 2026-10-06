@@ -16,7 +16,6 @@ import (
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
-	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 // slashModel is a model with a working directory, an event channel and a
@@ -58,9 +57,8 @@ type scriptedRun struct {
 	err     error
 }
 
-func (s *scriptedRun) run(_ context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam,
-	_ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter,
-	_ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
+func (s *scriptedRun) run(_ context.Context, turn agent.Turn) (agent.Result, error) {
+	prompt := turn.Prompt
 	s.mu.Lock()
 	s.prompts = append(s.prompts, prompt)
 	s.mu.Unlock()
@@ -523,57 +521,18 @@ func TestStatsAndStatus(t *testing.T) {
 	}
 }
 
-func TestDeprecatedAllowAndDenyStillWork(t *testing.T) {
+// /allow and /deny were removed with the per-command permission model
+// (upstream 0fa00a6): they are unknown commands now, not rules.
+func TestAllowAndDenyAreGone(t *testing.T) {
 	m := slashModel(t)
-	m.handleSlash("/allow")
-	if !strings.Contains(shown(m), "usage: /allow <rule>") {
-		t.Errorf("/allow with no rule:\n%s", shown(m))
-	}
-	m.handleSlash("/deny Bash(rm -rf")
-	if !strings.Contains(shown(m), "invalid rule") {
-		t.Errorf("an unparseable rule was accepted:\n%s", shown(m))
-	}
 	m.handleSlash("/allow Bash(git status)")
 	m.handleSlash("/deny Bash(git push)")
-	if len(m.sessionAllow) != 1 || len(m.sessionDeny) != 1 {
-		t.Fatalf("allow=%v deny=%v", m.sessionAllow, m.sessionDeny)
-	}
 	out := shown(m)
-	if !strings.Contains(out, "/allow is deprecated") || !strings.Contains(out, "/deny is deprecated") {
-		t.Errorf("the deprecation hint is missing:\n%s", out)
+	if strings.Count(strings.ToLower(out), "unknown command") != 2 {
+		t.Errorf("/allow and /deny should be unknown commands:\n%s", out)
 	}
 	if strings.Contains(out, "saved to .klaudia/config.toml") {
-		t.Errorf("a project without .klaudia/ had a rule persisted:\n%s", out)
-	}
-
-	// The rules now answer matching permission asks without prompting.
-	allowReply := make(chan permission.Decision, 1)
-	m.Update(permissionMsg{req: agent.ApprovalRequest{ToolName: "Bash", Specifier: "git status"}, reply: allowReply})
-	if d := <-allowReply; d.Behavior != permission.Allow {
-		t.Errorf("session allow rule gave %v", d.Behavior)
-	}
-	denyReply := make(chan permission.Decision, 1)
-	m.Update(permissionMsg{req: agent.ApprovalRequest{ToolName: "Bash", Specifier: "git push"}, reply: denyReply})
-	if d := <-denyReply; d.Behavior != permission.Deny || d.Message != "denied by session rule" {
-		t.Errorf("session deny rule gave %+v", d)
-	}
-	if m.state == stateAwaitingPermission {
-		t.Error("a rule-answered ask still prompted the user")
-	}
-}
-
-func TestAllowPersistsWhenTheProjectOptsIn(t *testing.T) {
-	m := slashModel(t)
-	if err := os.MkdirAll(filepath.Join(m.sess.CWD, ".klaudia"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	m.handleSlash("/allow Bash(go test ./...)")
-	if !strings.Contains(shown(m), "saved to .klaudia/config.toml") {
-		t.Errorf("the rule was not persisted:\n%s", shown(m))
-	}
-	data, err := os.ReadFile(filepath.Join(m.sess.CWD, ".klaudia", "config.toml"))
-	if err != nil || !strings.Contains(string(data), "go test ./...") {
-		t.Errorf("config.toml = %q, %v", data, err)
+		t.Errorf("a rule was persisted:\n%s", out)
 	}
 }
 
@@ -583,12 +542,11 @@ func TestModeCommand(t *testing.T) {
 	if !strings.Contains(shown(m), "unknown mode sideways") {
 		t.Errorf("an invalid mode was accepted:\n%s", shown(m))
 	}
+	// The host gate always enforces now (its postures were removed upstream),
+	// so autonomous needs no guardrail check of its own.
 	m.handleSlash("/mode autonomous")
-	if m.sess.PermissionMode == string(permission.ModeAutonomous) {
-		t.Error("autonomous was allowed without a host guardrail")
-	}
-	if !strings.Contains(shown(m), "autonomous needs the host guardrail") {
-		t.Errorf("the refusal did not say why:\n%s", shown(m))
+	if m.sess.PermissionMode != string(permission.ModeAutonomous) {
+		t.Errorf("mode = %q, want autonomous", m.sess.PermissionMode)
 	}
 	m.handleSlash("/mode plan")
 	if m.sess.PermissionMode != string(permission.ModePlan) {
@@ -606,10 +564,10 @@ func TestModeCommand(t *testing.T) {
 	if !strings.Contains(strings.Join(modeLabels, "\n"), "(current)") {
 		t.Errorf("the picker should mark the current mode: %v", modeLabels)
 	}
-	// Autonomous is first and still refused through the picker.
+	// Autonomous is first.
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	if m.sess.PermissionMode != string(permission.ModePlan) {
-		t.Errorf("the picker bypassed the autonomous refusal: %q", m.sess.PermissionMode)
+	if m.sess.PermissionMode != string(permission.ModeAutonomous) {
+		t.Errorf("picker choice 1 gave %q", m.sess.PermissionMode)
 	}
 	m.handleSlash("/mode")
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
@@ -644,8 +602,8 @@ func TestPlanModeOnAndOff(t *testing.T) {
 		t.Errorf("mode = %q, want plan", m.sess.PermissionMode)
 	}
 	m.handleSlash("/plan off")
-	if m.sess.PermissionMode != string(permission.ModeDefault) {
-		t.Errorf("mode = %q, want default", m.sess.PermissionMode)
+	if m.sess.PermissionMode != string(permission.ModeAutonomous) {
+		t.Errorf("mode = %q, want autonomous", m.sess.PermissionMode)
 	}
 	if !strings.Contains(shown(m), "Left plan mode") {
 		t.Errorf("leaving plan mode was not reported:\n%s", shown(m))
@@ -1011,9 +969,7 @@ func TestGoalRunOverUncommittedWork(t *testing.T) {
 	m := slashModel(t)
 	m.sess.CWD = dir
 	var guards []func(string, []byte, string) string
-	m.run = func(ctx context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam,
-		_ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter,
-		_ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
+	m.run = func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
 		guards = append(guards, agent.CommandGuardFrom(ctx))
 		return agent.Result{}, nil
 	}

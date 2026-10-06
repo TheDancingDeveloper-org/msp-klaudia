@@ -34,6 +34,9 @@ func NewGlob() (*Glob, error) {
 
 func (g *Glob) Name() string { return "Glob" }
 
+// ConcurrencySafe: a pure directory walk with no shared state.
+func (g *Glob) ConcurrencySafe() bool { return true }
+
 func (g *Glob) Description(context.Context) (string, error) {
 	return "Fast file pattern matching. Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". " +
 		"Returns matching file paths sorted by modification time (newest first). " +

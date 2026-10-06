@@ -103,7 +103,7 @@ func TestPlanRejectsUnknownArgument(t *testing.T) {
 		t.Errorf("/plan should enter plan mode, got %q", m.sess.PermissionMode)
 	}
 	m.handleSlash("/plan off")
-	if m.sess.PermissionMode != "default" {
+	if m.sess.PermissionMode != "autonomous" {
 		t.Errorf("/plan off should leave plan mode, got %q", m.sess.PermissionMode)
 	}
 }

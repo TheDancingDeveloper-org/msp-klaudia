@@ -51,7 +51,8 @@ func TestDriverPermissionRoundTrip(t *testing.T) {
 	defer func() { _ = pw.Close() }()
 
 	decisionCh := make(chan permission.Decision, 1)
-	runFn := func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, emit agent.Emitter) (agent.Result, error) {
+	runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		ap, emit := turn.Approver, turn.Emit
 		emit(agent.Event{Type: "assistant", Text: "working"})
 		dec := ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`)})
 		decisionCh <- dec
@@ -128,7 +129,8 @@ func TestDriverUnansweredAskTimesOutAsDeny(t *testing.T) {
 
 	var dec permission.Decision
 	turnDone := make(chan struct{})
-	runFn := func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		ap := turn.Approver
 		dec = ap.Approve(ctx, agent.ApprovalRequest{ToolName: "mcp__loki__loki_query", Input: json.RawMessage(`{}`)})
 		close(turnDone)
 		return agent.Result{Text: "done:" + string(dec.Behavior), NumTurns: 1, StopReason: "end_turn"}, nil
@@ -156,7 +158,7 @@ func TestDriverUnansweredAskTimesOutAsDeny(t *testing.T) {
 	if dec.Behavior != permission.Deny {
 		t.Fatalf("behavior = %q, want deny", dec.Behavior)
 	}
-	for _, want := range []string{"mcp__loki__loki_query", "no control_response", "50ms", "[permissions] allow"} {
+	for _, want := range []string{"mcp__loki__loki_query", "no control_response", "50ms", "autonomous"} {
 		if !strings.Contains(dec.Message, want) {
 			t.Errorf("deny message missing %q:\n%s", want, dec.Message)
 		}
@@ -182,7 +184,8 @@ func TestDriverLateAnswerAfterTimeoutIsDropped(t *testing.T) {
 	defer func() { _ = pw.Close() }()
 
 	decisions := make(chan permission.Decision, 2)
-	runFn := func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		prompt, ap := turn.Prompt, turn.Approver
 		dec := ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{"command":"` + prompt + `"}`)})
 		decisions <- dec
 		return agent.Result{Text: "done:" + string(dec.Behavior), NumTurns: 1, StopReason: "end_turn"}, nil
@@ -237,7 +240,8 @@ func TestDriverEmitsMessageEnvelopesNotFlatEvents(t *testing.T) {
 	assistant := json.RawMessage(`{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"x"}}]}`)
 	toolResult := json.RawMessage(`{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"body"}]}`)
 
-	runFn := func(_ context.Context, _ string, _ []anthropic.BetaMessageParam, _ agent.Approver, rec agent.Recorder, emit agent.Emitter) (agent.Result, error) {
+	runFn := func(_ context.Context, turn agent.Turn) (agent.Result, error) {
+		rec, emit := turn.Recorder, turn.Emit
 		// What the loop does: record each message, and emit the flat events.
 		_ = rec.Record("assistant", assistant)
 		emit(agent.Event{Type: "assistant", Text: "hello"})
@@ -301,7 +305,8 @@ func TestResultLineCarriesUsage(t *testing.T) {
 	d := NewDriver(out)
 	d.SessionID = "sess-usage"
 
-	runFn := func(_ context.Context, _ string, _ []anthropic.BetaMessageParam, _ agent.Approver, _ agent.Recorder, emit agent.Emitter) (agent.Result, error) {
+	runFn := func(_ context.Context, turn agent.Turn) (agent.Result, error) {
+		emit := turn.Emit
 		emit(agent.Event{Type: "usage", InputDelta: 1200, OutputDelta: 40, TurnDelta: 1})
 		emit(agent.Event{Type: "usage", InputDelta: 300, OutputDelta: 5, TurnDelta: 1})
 		return agent.Result{
@@ -356,7 +361,8 @@ func TestDriverSeedsResumedHistoryAndAnnouncesInit(t *testing.T) {
 	d.Init = &Init{CWD: "/w", Model: "m", PermissionMode: "dontAsk", ResumedFrom: "sess-7"}
 
 	var seen [][]anthropic.BetaMessageParam
-	runFn := func(_ context.Context, _ string, history []anthropic.BetaMessageParam, _ agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	runFn := func(_ context.Context, turn agent.Turn) (agent.Result, error) {
+		history := turn.History
 		seen = append(seen, history)
 		next := append(append([]anthropic.BetaMessageParam(nil), history...),
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock("q")),

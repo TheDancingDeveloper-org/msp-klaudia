@@ -44,6 +44,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -56,16 +57,14 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
-// RunFunc runs one user turn to completion, seeded with prior conversation
-// history, using the supplied approver, recorder and emitter. It returns the
-// agent Result whose Messages field carries the updated history forward. The
-// CLI provides this, wiring in the API client, tools, model, and permission
-// context. rec must be given to the loop as (part of) its Recorder: it is how
-// the conversation reaches the peer, and a run that drops it streams no
+// RunFunc runs one user turn to completion. It is the shared frontend contract
+// — see agent.Turn. The driver passes itself as the turn's Recorder: that is
+// how the conversation reaches the peer, and a run that drops it streams no
 // assistant text at all.
-type RunFunc func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, approver agent.Approver, rec agent.Recorder, emit agent.Emitter) (agent.Result, error)
+type RunFunc = agent.RunFunc
 
 // inMessage is a decoded stdin line.
 type inMessage struct {
@@ -88,9 +87,27 @@ type controlResp struct {
 	Error     string          `json:"error,omitempty"`
 }
 
+// ok reports whether the peer answered rather than failed. A missing subtype is
+// treated as success so that a peer which only ever echoes request_id and a
+// payload still works; an explicit error is not.
+func (r *controlResp) ok() bool {
+	return r != nil && r.Error == "" && (r.Subtype == "" || r.Subtype == "success")
+}
+
 // permissionAnswer is the payload inside a can_use_tool control response.
 type permissionAnswer struct {
 	Behavior string `json:"behavior"`
+	Message  string `json:"message,omitempty"`
+}
+
+// askAnswer is the payload inside an ask_user control response.
+type askAnswer struct {
+	Label string `json:"label"`
+}
+
+// planAnswer is the payload inside an exit_plan control response.
+type planAnswer struct {
+	Approved bool   `json:"approved"`
 	Message  string `json:"message,omitempty"`
 }
 
@@ -111,7 +128,7 @@ const DefaultAskTimeout = 10 * time.Minute
 type Driver struct {
 	out     io.Writer
 	mu      sync.Mutex // serializes writes to out
-	pending sync.Map   // request_id -> chan permission.Decision
+	pending sync.Map   // request_id -> chan *controlResp
 
 	// SessionID is stamped on every message envelope, as the JS reference does,
 	// so a peer can tell which conversation a line belongs to. The CLI sets it
@@ -257,7 +274,15 @@ func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
 			}
 			d.write(ev)
 		}
-		res, err := run(turnCtx, prompt, history, approver, d, emit)
+		res, err := run(turnCtx, agent.Turn{
+			Prompt:   prompt,
+			History:  history,
+			Emit:     emit,
+			Approver: approver,
+			Asker:    &controlAsker{driver: d},
+			Planner:  &controlPlanner{driver: d},
+			Recorder: d,
+		})
 		interrupted := d.endTurn(m.seq) && err != nil
 		cancel()
 		if res.Messages != nil {
@@ -518,7 +543,7 @@ func (d *Driver) write(v any) {
 	_, _ = d.out.Write([]byte("\n"))
 }
 
-// deliverControlResponse resolves a pending permission request.
+// deliverControlResponse hands a peer's answer to the request waiting on it.
 func (d *Driver) deliverControlResponse(resp *controlResp) {
 	if resp == nil || resp.RequestID == "" {
 		return
@@ -527,8 +552,92 @@ func (d *Driver) deliverControlResponse(resp *controlResp) {
 	if !ok {
 		return
 	}
+	ch.(chan *controlResp) <- resp
+}
+
+// errNoAnswer is returned when the turn was cancelled before the peer replied.
+var errNoAnswer = errors.New("cancelled")
+
+// errAskTimeout is returned when no answer arrived within AskTimeout.
+var errAskTimeout = errors.New("no control_response arrived in time")
+
+// request emits one control_request and blocks until the peer answers it, ctx
+// is cancelled, or AskTimeout passes. The payload's "subtype" selects the
+// request kind (can_use_tool, ask_user, exit_plan).
+func (d *Driver) request(ctx context.Context, payload map[string]any) (*controlResp, error) {
+	id := uuid.NewString()
+	ch := make(chan *controlResp, 1)
+	d.pending.Store(id, ch)
+	// The deferred Delete drops the waiter, so an answer that arrives after a
+	// timeout is discarded by deliverControlResponse rather than misapplied.
+	defer d.pending.Delete(id)
+
+	d.write(map[string]any{
+		"type":       "control_request",
+		"request_id": id,
+		"request":    payload,
+	})
+
+	// A nil channel never fires, so no timeout means an unbounded wait.
+	var timeout <-chan time.Time
+	if d.AskTimeout > 0 {
+		timer := time.NewTimer(d.AskTimeout)
+		defer timer.Stop()
+		timeout = timer.C
+	}
+	select {
+	case <-ctx.Done():
+		return nil, errNoAnswer
+	case resp := <-ch:
+		return resp, nil
+	case <-timeout:
+		return nil, errAskTimeout
+	}
+}
+
+// controlApprover emits a can_use_tool request and waits for the peer's answer.
+type controlApprover struct {
+	driver *Driver
+}
+
+func (a *controlApprover) Approve(ctx context.Context, req agent.ApprovalRequest) permission.Decision {
+	payload := map[string]any{
+		"subtype":   "can_use_tool",
+		"tool_name": req.ToolName,
+		"input":     json.RawMessage(req.Input),
+	}
+	// The fields below used to be dropped on the floor, which made every ask
+	// look the same. The host-change one is the damaging omission: "allow Bash?"
+	// is the wrong question to put to someone about `systemctl restart nginx`,
+	// and a peer that cannot tell the two apart cannot render the right card.
+	if req.ToolUseID != "" {
+		payload["tool_use_id"] = req.ToolUseID
+	}
+	if req.Specifier != "" {
+		payload["specifier"] = req.Specifier
+	}
+	if req.Suggestion != "" {
+		payload["suggestion"] = req.Suggestion
+	}
+	if req.HostChange != nil {
+		payload["host_change"] = req.HostChange.Fields()
+	}
+
+	resp, err := a.driver.request(ctx, payload)
+	switch {
+	case errors.Is(err, errAskTimeout):
+		return permission.Decision{
+			Behavior: permission.Deny,
+			Message: fmt.Sprintf("Permission for tool %s was requested from the embedding client "+
+				"(control_request can_use_tool) but no control_response arrived within %s; denied. "+
+				"The client must answer can_use_tool requests, or run in a mode that does not ask "+
+				"(autonomous asks only about changes to this machine).", req.ToolName, a.driver.AskTimeout),
+		}
+	case err != nil:
+		return permission.Decision{Behavior: permission.Deny, Message: "cancelled"}
+	}
 	decision := permission.Decision{Behavior: permission.Deny, Message: "denied"}
-	if resp.Subtype == "success" && len(resp.Response) > 0 {
+	if resp.ok() && len(resp.Response) > 0 {
 		var ans permissionAnswer
 		if json.Unmarshal(resp.Response, &ans) == nil {
 			if ans.Behavior == "allow" {
@@ -538,54 +647,78 @@ func (d *Driver) deliverControlResponse(resp *controlResp) {
 			}
 		}
 	}
-	ch.(chan permission.Decision) <- decision
+	return decision
 }
 
-// controlApprover emits a control_request and waits for the peer's answer.
-type controlApprover struct {
+// controlAsker emits an ask_user request for AskUserQuestion and for MCP
+// elicitation, which is pointed at the same Asker.
+type controlAsker struct {
 	driver *Driver
 }
 
-func (a *controlApprover) Approve(ctx context.Context, req agent.ApprovalRequest) permission.Decision {
-	id := uuid.NewString()
-	ch := make(chan permission.Decision, 1)
-	a.driver.pending.Store(id, ch)
-	defer a.driver.pending.Delete(id)
-
-	a.driver.write(map[string]any{
-		"type":       "control_request",
-		"request_id": id,
-		"request": map[string]any{
-			"subtype":   "can_use_tool",
-			"tool_name": req.ToolName,
-			"input":     json.RawMessage(req.Input),
-		},
-	})
-
-	// A nil channel never fires, so no timeout means the old unbounded wait.
-	var timeout <-chan time.Time
-	if a.driver.AskTimeout > 0 {
-		timer := time.NewTimer(a.driver.AskTimeout)
-		defer timer.Stop()
-		timeout = timer.C
-	}
-
-	select {
-	case <-ctx.Done():
-		return permission.Decision{Behavior: permission.Deny, Message: "cancelled"}
-	case dec := <-ch:
-		return dec
-	case <-timeout:
-		// The deferred Delete drops the waiter, so an answer that arrives after
-		// this is discarded by deliverControlResponse rather than misapplied.
-		return permission.Decision{
-			Behavior: permission.Deny,
-			Message: fmt.Sprintf("Permission for tool %s was requested from the embedding client "+
-				"(control_request can_use_tool) but no control_response arrived within %s; denied. "+
-				"The client must answer can_use_tool requests, or pre-approve the tool with a "+
-				"[permissions] allow rule so it is never asked.", req.ToolName, a.driver.AskTimeout),
+func (a *controlAsker) Ask(ctx context.Context, question string, options []tools.AskOption) (string, error) {
+	opts := make([]map[string]string, 0, len(options))
+	for _, o := range options {
+		entry := map[string]string{"label": o.Label}
+		if o.Description != "" {
+			entry["description"] = o.Description
 		}
+		opts = append(opts, entry)
 	}
+	resp, err := a.driver.request(ctx, map[string]any{
+		"subtype":  "ask_user",
+		"question": question,
+		"options":  opts,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !resp.ok() {
+		// A peer that has not implemented ask_user lands here. Returning an
+		// error rather than picking the first option matters: the model is told
+		// the question could not be put, and carries on without inventing an
+		// answer the user never gave.
+		msg := resp.Error
+		if msg == "" {
+			msg = "the client could not ask the user"
+		}
+		return "", errors.New(msg)
+	}
+	var ans askAnswer
+	if err := json.Unmarshal(resp.Response, &ans); err != nil || ans.Label == "" {
+		return "", errors.New("the client returned no answer")
+	}
+	return ans.Label, nil
+}
+
+// controlPlanner emits an exit_plan request for ExitPlanMode.
+type controlPlanner struct {
+	driver *Driver
+}
+
+func (p *controlPlanner) ExitPlan(ctx context.Context, plan string) (bool, error) {
+	resp, err := p.driver.request(ctx, map[string]any{
+		"subtype": "exit_plan",
+		"plan":    plan,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !resp.ok() {
+		msg := resp.Error
+		if msg == "" {
+			msg = "the client could not review the plan"
+		}
+		return false, errors.New(msg)
+	}
+	var ans planAnswer
+	if err := json.Unmarshal(resp.Response, &ans); err != nil {
+		return false, errors.New("the client returned no decision")
+	}
+	if !ans.Approved && ans.Message != "" {
+		return false, errors.New(ans.Message)
+	}
+	return ans.Approved, nil
 }
 
 // decodeUserContent extracts the text of a user message whose content is either
@@ -658,6 +791,15 @@ func (d *Driver) resultEvent(res agent.Result, err error, dur time.Duration, int
 	case err != nil:
 		m["subtype"] = "error_during_execution"
 		m["result"] = "Error: " + api.FriendlyError(err)
+	case agent.TurnEndedEmpty(res.Text):
+		// A refusal or a limit completes cleanly at the protocol level and says
+		// nothing. Reporting subtype "success" with an empty result let a
+		// pipeline treat a refusal as a finished task.
+		if note := agent.TurnNote(res.StopReason, false); note != "" {
+			m["subtype"] = res.StopReason
+			m["is_error"] = true
+			m["result"] = note
+		}
 	}
 	return m
 }

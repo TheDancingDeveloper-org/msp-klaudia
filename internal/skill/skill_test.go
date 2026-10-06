@@ -17,6 +17,12 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+// isolateHome points HOME at an empty directory. Load searches
+// ~/.claude/skills and ~/.klaudia/skills, so without this a test asserting on
+// counts or warnings is really asserting on the developer's home directory —
+// TestLoadDirWarnsOnSkillDirWithoutDefinition failed on a machine whose
+// ~/.claude/skills held a `synced` folder with no SKILL.md, which is a correct
+// warning about the wrong filesystem.
 func TestParseFrontmatterAndBody(t *testing.T) {
 	sk, err := parse([]byte("---\nname: review\ndescription: Review the diff\ntype: prompt\ntools: [Bash, Read]\n---\nReview this: $ARGUMENTS\n"), "review.md")
 	if err != nil {

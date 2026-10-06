@@ -70,25 +70,15 @@ func TestIntrinsicPermissionClassOfEveryTool(t *testing.T) {
 		rows  []row
 	}{
 		{"read-only", readOnly, []row{
-			{permission.ModeDefault, permission.Allow},
-			{permission.ModeAcceptEdits, permission.Allow},
 			{permission.ModePlan, permission.Allow},
-			{permission.ModeDontAsk, permission.Allow},
 			{permission.ModeAutonomous, permission.Allow},
 		}},
 		{"edit", edits, []row{
-			{permission.ModeDefault, permission.Ask},
-			{permission.ModeAcceptEdits, permission.Allow},
 			{permission.ModePlan, permission.Deny},
-			{permission.ModeDontAsk, permission.Deny},
 			{permission.ModeAutonomous, permission.Allow},
 		}},
 		{"exec", execs, []row{
-			{permission.ModeDefault, permission.Ask},
-			// acceptEdits is about file edits; it must not wave commands through.
-			{permission.ModeAcceptEdits, permission.Ask},
 			{permission.ModePlan, permission.Deny},
-			{permission.ModeDontAsk, permission.Deny},
 			{permission.ModeAutonomous, permission.Allow},
 		}},
 	}
@@ -138,30 +128,5 @@ func TestPermissionRequestSpecifiers(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s: specifier = %q, want %q", c.tool.Name(), got, c.want)
 		}
-	}
-}
-
-// A Bash rule written as a prefix must catch the command however it is
-// spelled after the prefix, and a deny rule must beat the mode.
-func TestBashRulesMatchTheParsedPrefix(t *testing.T) {
-	b, _ := NewBash(sandbox.NewLocal())
-	req := b.PermissionRequest(json.RawMessage(`{"command":"git push --force origin main"}`))
-
-	deny := permission.Context{
-		Mode: permission.StaticMode(permission.ModeAutonomous),
-		Deny: []permission.Rule{{Tool: "Bash", Specifier: "git push:*"}},
-	}
-	if got := permission.Check(deny, b, req); got.Behavior != permission.Deny {
-		t.Errorf("deny rule: behavior = %q, want deny", got.Behavior)
-	}
-
-	allow := permission.Context{Allow: []permission.Rule{{Tool: "Bash", Specifier: "git push:*"}}}
-	if got := permission.Check(allow, b, req); got.Behavior != permission.Allow {
-		t.Errorf("allow rule: behavior = %q, want allow", got.Behavior)
-	}
-
-	other := b.PermissionRequest(json.RawMessage(`{"command":"git status"}`))
-	if got := permission.Check(allow, b, other); got.Behavior != permission.Ask {
-		t.Errorf("unmatched command: behavior = %q, want ask", got.Behavior)
 	}
 }

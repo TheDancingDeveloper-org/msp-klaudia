@@ -92,7 +92,7 @@ func TestPermissionPromptDescribesTheAction(t *testing.T) {
 					t.Errorf("missing %q:\n%s", w, out)
 				}
 			}
-			if !strings.Contains(m.permissionPrompt(), "(y)es once / (a)lways / (n)o") {
+			if !strings.Contains(m.permissionPrompt(), "(y)es / (n)o / (s)omething else") {
 				t.Errorf("prompt = %q", m.permissionPrompt())
 			}
 		})
@@ -125,18 +125,15 @@ func TestPermissionAnswers(t *testing.T) {
 		t.Fatal("an unrelated key answered the prompt")
 	}
 	// "s" (redirect) now applies to every permission ask, not just host
-	// changes — see redirect_test.go for that path.
+	// changes — see redirect_test.go for that path. There is no "always":
+	// standing rules were removed upstream, so "a" is not an answer.
 	m.onKey(runeKey("a"))
-	if d := <-reply; d.Behavior != permission.Allow {
-		t.Errorf("a gave %v", d.Behavior)
+	if m.state != stateAwaitingPermission {
+		t.Fatal("'a' answered the prompt; there is no always-allow any more")
 	}
-	if len(m.sessionAllow) != 1 || !strings.Contains(shown(m), "always allow Bash(go vet ./...)") {
-		t.Errorf("always-allow was not remembered (%v):\n%s", m.sessionAllow, shown(m))
-	}
-	// And the next identical ask is answered without the user.
-	reply = askPermission(m, req)
+	m.onKey(runeKey("y"))
 	if d := <-reply; d.Behavior != permission.Allow {
-		t.Errorf("remembered rule gave %v", d.Behavior)
+		t.Errorf("y gave %v", d.Behavior)
 	}
 }
 
@@ -173,7 +170,7 @@ func TestHostChangeCardAndApproval(t *testing.T) {
 
 	// No standing permission for a host change.
 	m.onKey(runeKey("a"))
-	if m.state != stateAwaitingPermission || len(m.sessionAllow) != 0 {
+	if m.state != stateAwaitingPermission {
 		t.Fatal("'always' was accepted for a host change")
 	}
 	m.onKey(runeKey("y"))
@@ -277,7 +274,7 @@ func TestPlanApproval(t *testing.T) {
 	if ok := <-reply; !ok {
 		t.Error("Y did not approve the plan")
 	}
-	if m.sess.PermissionMode != string(permission.ModeAcceptEdits) || m.state != stateRunning {
+	if m.sess.PermissionMode != string(permission.ModeAutonomous) || m.state != stateRunning {
 		t.Errorf("approval: mode=%q state=%v", m.sess.PermissionMode, m.state)
 	}
 }
@@ -627,7 +624,7 @@ func TestNewWiresJobExitsAndMCPReloadsIntoTheEventLoop(t *testing.T) {
 	t.Cleanup(func() { applyChromeTheme(defaultChromePalette) })
 	jobs := &fakeJobs{}
 	var reload func(MCPReloadEvent)
-	ft := &fakeTrust{policy: agent.HostEnforce}
+	ft := &fakeTrust{}
 	history := []anthropic.BetaMessageParam{
 		anthropic.NewBetaUserMessage(anthropic.NewBetaToolResultBlock("tu_1", "Started job dev (bash_1) on :3000.", false)),
 	}

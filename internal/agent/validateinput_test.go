@@ -51,9 +51,8 @@ func (invalidInputBash) Execute(context.Context, tools.Context, json.RawMessage)
 // reorder removes.
 func TestInvalidInputSkipsGateAndApproval(t *testing.T) {
 	g, proj := gateFixture(t)
-	// Observe mode so a host-relevant call is recorded (Observed fires) but
-	// still allowed — proving whether Check was reached without stopping flow.
-	g.SetPolicy(HostObserve)
+	// If the gate classified the call, it would record a report and (for a
+	// host change) ask the approver; either proves Check was reached.
 	gateChecked := false
 	g.Observed = func(HostReport) { gateChecked = true }
 
@@ -64,7 +63,7 @@ func TestInvalidInputSkipsGateAndApproval(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(context.Context, ApprovalRequest) permission.Decision {
 			approverCalled = true
 			return permission.Decision{Behavior: permission.Allow}
@@ -75,7 +74,7 @@ func TestInvalidInputSkipsGateAndApproval(t *testing.T) {
 	tu := anthropic.BetaToolUseBlock{
 		ID: "t1", Name: "Bash", Input: json.RawMessage(bashInput("sudo systemctl restart nginx")),
 	}
-	res := l.dispatch(context.Background(), tu, opts, nil, nil, map[string]int{}, map[string]errStreak{})
+	res := l.dispatch(context.Background(), tu, opts, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "Input validation error") {
@@ -85,7 +84,7 @@ func TestInvalidInputSkipsGateAndApproval(t *testing.T) {
 	if !strings.Contains(body, "accepts") {
 		t.Errorf("validation error dropped the accepted-field list: %q", body)
 	}
-	if gateChecked {
+	if gateChecked || len(g.Reports()) > 0 {
 		t.Error("the host gate processed an invalid tool call")
 	}
 	if approverCalled {
@@ -103,16 +102,16 @@ func TestInvalidInputStillCountsAsAFailure(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 	}
 	tu := anthropic.BetaToolUseBlock{
 		ID: "t1", Name: "Bash", Input: json.RawMessage(bashInput("sudo reboot")),
 	}
-	failures := map[string]int{}
-	l.dispatch(context.Background(), tu, opts, nil, nil, failures, map[string]errStreak{})
+	fs := newFailureState()
+	l.dispatch(context.Background(), tu, opts, nil, nil, fs)
 
 	key := "Bash\x00" + string(bashInput("sudo reboot"))
-	if failures[key] != 1 {
-		t.Fatalf("invalid input did not bump the failure counter: %v", failures)
+	if n := fs.count(key); n != 1 {
+		t.Fatalf("invalid input did not bump the failure counter: %d", n)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/doctor"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/mcp"
 )
 
@@ -38,7 +39,7 @@ func newDoctorCommand() *cobra.Command {
 			// reflects what an unflagged `klaudia` would use.
 			model := api.ResolveModel(cfg.Model)
 			mcpCfg, _ := mcp.LoadConfig(cwd)
-			checks := doctor.Run(buildDoctorInput(cfg, model, cwd, projectRoot(cwd), len(mcpCfg.MCPServers)))
+			checks := doctor.Run(buildDoctorInput(cfg, model, cwd, projectRoot(cwd), mcpCfg, hooks.Load(cwd, "")))
 
 			out := cmd.OutOrStdout()
 			if asJSON {

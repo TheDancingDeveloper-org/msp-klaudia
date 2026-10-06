@@ -155,10 +155,7 @@ func Origins(cwd string) []Setting {
 	list("lsp.disabled", home.LSP.Disabled, proj.LSP.Disabled)
 
 	scalar("permissions.mode", home.Permissions.Mode, proj.Permissions.Mode, "")
-	list("permissions.allow", home.Permissions.Allow, proj.Permissions.Allow)
-	list("permissions.deny", home.Permissions.Deny, proj.Permissions.Deny)
 
-	scalar("trust.mode", home.Trust.Mode, proj.Trust.Mode, "")
 	scalar("input.enter", home.Input.Enter, proj.Input.Enter, "")
 
 	return out

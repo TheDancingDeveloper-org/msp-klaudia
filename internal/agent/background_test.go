@@ -81,7 +81,7 @@ func backgroundSpawner(t *testing.T, provider api.Provider, dir string, wt Workt
 		t.Fatal(err)
 	}
 	return NewSpawner(provider, tools.NewRegistry(read, write), "claude-opus-4-8",
-		bypassPerm(), nil, 0).WithWorkingDir(dir).WithWorktrees(wt)
+		bypassPerm(), nil, 0).WithWorkingDir(dir).WithBackgroundWorktrees(wt)
 }
 
 // A background launch must return a handle promptly and not block on the child.

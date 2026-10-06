@@ -114,6 +114,96 @@ revertible and committable: `git checkout -- <file it wrote>` and
 This exists because the first production run undid a one-line change of its own
 with `git checkout -- <14 files>`, reverting a day of uncommitted work in the
 other thirteen.
+## Sub-agents get a checkout of their own
+
+Two sub-agents editing one working tree is not a race in the usual sense. No
+file is corrupted and nothing reports an error: one writes a file, the other
+reads a half-finished version and reasons about it, a third rewrites the first
+one's edit, and every step succeeds. The alternative is running children one at
+a time, which is the thing concurrency was for.
+
+So a sub-agent whose toolset can write — anything holding Write, Edit,
+NotebookEdit or Bash — is given its own `git worktree`:
+
+```
+~/.klaudia/worktrees/<project>/<agent-type>-<timestamp>/
+```
+
+Not inside the project. A checkout under the project root is walked by the
+parent's own Glob and Grep, so the model finds two of every file and reads a
+copy of the code it is editing.
+
+Explore and Plan do not get one. They hold Read, Glob and Grep, so there is
+nothing to isolate them from, and their entire output is paths — which a
+checkout would make wrong.
+
+### It holds your uncommitted work, not HEAD
+
+`git worktree add <dir> HEAD` on its own would hand the child the last commit:
+the one state nobody asked about. A child told to "test the function I just
+wrote" would look at a tree without it and report, convincingly, that there is
+no such function.
+
+The checkout is therefore seeded with the tracked delta (`git diff HEAD`,
+staged and unstaged together) and the untracked, non-ignored files, and that
+state is committed on the checkout's detached HEAD as the baseline the child's
+work is measured against. The commit skips hooks and signing: a repository's
+pre-commit hook is aimed at the user's commits, and running their linter every
+time a sub-agent spawns is a side effect nobody asked for.
+
+**Ignored files are not copied.** `node_modules`, `target/`, `.venv` — build
+output is what makes a copy expensive, and a tree that builds is a different
+promise from a tree that matches. The consequence is real and worth knowing: a
+child that must run an install step before it can test will pay for it, or
+fail. That is what `[subagents] worktree = false` is for.
+
+### Coming back
+
+When the child finishes, its work is diffed against the baseline and applied to
+your tree with `git apply` — which touches files and not the index, the same
+reason `/undo` writes loose objects instead of stashing. Your staging area is
+exactly as you left it.
+
+`git apply` is all-or-nothing, and that is the behaviour worth having: a patch
+that no longer fits is one whose file changed underneath us. It is then retried
+file by file, so one collision does not discard four good files, and what did
+not fit is reported to both you and the model:
+
+```
+[Working tree: 3 files applied to the working tree; 1 file NOT applied
+ (changed meanwhile): internal/api/client.go. The sub-agent's versions of
+ those files are in ~/.klaudia/worktrees/…]
+```
+
+The model is told because it has to be: it asked a child to change files, and
+a silent conflict would have it carry on describing work that is not there.
+The checkout survives when anything conflicted — it holds the only copy of that
+version — and is removed when everything landed.
+
+Adoption is serialised per repository. Two children finishing at the same
+instant would otherwise each read, compute and write the same file, and the
+loser's version could land on top of the winner's with neither reporting a
+conflict: the precise failure the feature exists to remove. Measured, not
+assumed — without the lock, two concurrent adoptions of one file reported
+success twice and kept one version.
+
+### When the child fails
+
+A failed or interrupted sub-agent keeps its checkout, and the error says where
+it is. Half a change applied to your tree is the outcome isolation exists to
+prevent, and nobody has looked at what that child left behind. Abandoned
+checkouts are pruned after seven days, lazily, the next time one is created.
+
+### Two sharp edges
+
+- `.git` inside the checkout is a *file* pointing into the main repository, not
+  a directory. Everything git works; a tool that looks for a `.git` directory
+  to decide "is this a repo" may disagree.
+- Under `sandbox.mode = "os"`, the writable roots follow the child's working
+  directory, so the checkout is writable — but the object database it needs is
+  back in the project's `.git`, which is not. A child that runs git commands
+  under OS confinement is the combination to watch.
+
 
 ## Resume
 

@@ -1,0 +1,135 @@
+package session
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// Info describes one persisted transcript, enough to show it in a picker
+// without reading the conversation back.
+type Info struct {
+	ID       string
+	Path     string
+	Modified time.Time
+	// Title is the session's first user prompt flattened to one line, or "" when
+	// the transcript opens with an assistant turn (a replayed summary) or the
+	// prompt was not text.
+	Title string
+}
+
+// maxTitle bounds Info.Title. A prompt can be a whole pasted file; a picker
+// entry cannot.
+const maxTitle = 200
+
+// ListProject returns the transcripts for cwd that hold a conversation, newest first.
+//
+// Contentless files are skipped for the same reason MostRecent skips them: a
+// launch creates its transcript eagerly but only records on a real turn, so an
+// abandoned session leaves a zero-message file with the newest mtime. Offering
+// that as something to resume is offering an empty conversation.
+func ListProject(cwd string) []Info {
+	matches, _ := filepath.Glob(filepath.Join(Dir(cwd), "*.jsonl"))
+	legacy, _ := filepath.Glob(filepath.Join(legacyDir(cwd), "*.jsonl"))
+	matches = append(matches, legacy...)
+
+	out := make([]Info, 0, len(matches))
+	seen := map[string]bool{}
+	for _, path := range matches {
+		st, err := os.Stat(path)
+		if err != nil || st.Size() == 0 {
+			continue
+		}
+		id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		// The current and legacy roots can both hold the same id mid-migration.
+		// The current root is globbed first, so the first one wins.
+		if seen[id] {
+			continue
+		}
+		title, ok := firstPrompt(path)
+		if !ok {
+			continue
+		}
+		seen[id] = true
+		out = append(out, Info{ID: id, Path: path, Modified: st.ModTime(), Title: title})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Modified.After(out[j].Modified) })
+	return out
+}
+
+// firstPrompt scans a transcript up to its first message line and returns that
+// line's text if it is a user turn. ok reports whether any message was found at
+// all, which is this file's answer to "does this transcript hold a
+// conversation".
+//
+// It stops at the first message rather than reading the file: transcripts run to
+// megabytes, and List is called for every session in the project.
+func firstPrompt(path string) (title string, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		if len(sc.Bytes()) == 0 {
+			continue
+		}
+		var e struct {
+			Type    string          `json:"type"`
+			Message json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(sc.Bytes(), &e) != nil {
+			continue
+		}
+		switch e.Type {
+		case "user":
+			return messageTitle(e.Message), true
+		case "assistant":
+			return "", true
+		}
+	}
+	return "", false
+}
+
+// messageTitle pulls display text out of a recorded Anthropic message. Content
+// is either a bare string or a block list, and both shapes are on disk: the
+// recorder stores whatever the API took.
+func messageTitle(raw json.RawMessage) string {
+	var m struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(m.Content, &s) == nil {
+		return oneline(s)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(m.Content, &blocks) != nil {
+		return ""
+	}
+	for _, b := range blocks {
+		if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+			return oneline(b.Text)
+		}
+	}
+	return ""
+}
+
+func oneline(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > maxTitle {
+		s = string(r[:maxTitle-1]) + "…"
+	}
+	return s
+}

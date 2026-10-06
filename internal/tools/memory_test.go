@@ -255,8 +255,7 @@ func TestParseMemoryDuration(t *testing.T) {
 }
 
 // A write to KNOWLEDGE.md is injected into every later session, so it asks —
-// in autonomous mode too — while session notes stay autonomous. Without anyone
-// to ask (dontAsk) it is refused with a message that says what to do instead.
+// in autonomous mode too — while session notes stay autonomous.
 func TestMemoryKnowledgeWritesNeedApproval(t *testing.T) {
 	mt := newMemTool(t)
 	call := func(in MemoryInput) json.RawMessage {
@@ -276,46 +275,30 @@ func TestMemoryKnowledgeWritesNeedApproval(t *testing.T) {
 		call(MemoryInput{Operation: "supersede", Name: "a", Replacement: "b"}),
 	}
 
-	decide := func(mode permission.Mode, allow []permission.Rule, raw json.RawMessage) permission.Decision {
-		pctx := permission.Context{Mode: permission.StaticMode(mode), Allow: allow}
+	decide := func(mode permission.Mode, raw json.RawMessage) permission.Decision {
+		pctx := permission.Context{Mode: permission.StaticMode(mode)}
 		return permission.Check(pctx, mt, mt.PermissionRequest(raw))
 	}
 
 	for _, raw := range []json.RawMessage{projectAdd, promote} {
-		for _, mode := range []permission.Mode{permission.ModeAutonomous, permission.ModeDefault, permission.ModeAcceptEdits} {
-			if d := decide(mode, nil, raw); d.Behavior != permission.Ask {
-				t.Errorf("%s in %s: behavior = %s, want ask", raw, mode, d.Behavior)
-			}
+		d := decide(permission.ModeAutonomous, raw)
+		if d.Behavior != permission.Ask || !strings.Contains(d.Message, "KNOWLEDGE.md") {
+			t.Errorf("%s in autonomous: %+v, want an ask naming KNOWLEDGE.md", raw, d)
 		}
-		d := decide(permission.ModeDontAsk, nil, raw)
-		if d.Behavior != permission.Deny || !strings.Contains(d.Message, "KNOWLEDGE.md") || !strings.Contains(d.Message, "Memory(project)") {
-			t.Errorf("%s in dontAsk: %+v, want a deny naming KNOWLEDGE.md and the allow rule", raw, d)
-		}
-		if d := decide(permission.ModePlan, nil, raw); d.Behavior != permission.Deny {
+		if d := decide(permission.ModePlan, raw); d.Behavior != permission.Deny {
 			t.Errorf("%s in plan: behavior = %s, want deny", raw, d.Behavior)
 		}
-		if d := decide(permission.ModeBypassPermissions, nil, raw); d.Behavior != permission.Allow {
+		if d := decide(permission.ModeBypassPermissions, raw); d.Behavior != permission.Allow {
 			t.Errorf("%s in bypass: behavior = %s, want allow", raw, d.Behavior)
-		}
-		rule, err := permission.ParseRule("Memory(project)")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if d := decide(permission.ModeDontAsk, []permission.Rule{rule}, raw); d.Behavior != permission.Allow {
-			t.Errorf("%s with allow rule Memory(project): behavior = %s, want allow", raw, d.Behavior)
 		}
 	}
 
 	for _, raw := range autonomous {
-		for _, mode := range []permission.Mode{permission.ModeAutonomous, permission.ModeDontAsk, permission.ModePlan} {
-			if d := decide(mode, nil, raw); d.Behavior != permission.Allow {
+		for _, mode := range []permission.Mode{permission.ModeAutonomous, permission.ModePlan} {
+			if d := decide(mode, raw); d.Behavior != permission.Allow {
 				t.Errorf("%s in %s: behavior = %s, want allow", raw, mode, d.Behavior)
 			}
 		}
 	}
 
-	// A rule naming a session op must not pre-approve knowledge writes.
-	if d := decide(permission.ModeAutonomous, []permission.Rule{{Tool: "Memory", Specifier: "session"}}, projectAdd); d.Behavior != permission.Ask {
-		t.Errorf("Memory(session) rule approved a knowledge write: %+v", d)
-	}
 }

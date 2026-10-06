@@ -49,7 +49,8 @@ func TestRunSkipsNonPromptsAndCarriesHistory(t *testing.T) {
 
 	var prompts []string
 	var historyLens []int
-	runFn := func(_ context.Context, prompt string, history []anthropic.BetaMessageParam, _ agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	runFn := func(_ context.Context, turn agent.Turn) (agent.Result, error) {
+		prompt, history := turn.Prompt, turn.History
 		prompts = append(prompts, prompt)
 		historyLens = append(historyLens, len(history))
 		if prompt == "two" {
@@ -113,7 +114,8 @@ func TestControlResponseDecisions(t *testing.T) {
 			defer func() { _ = pw.Close() }()
 
 			got := make(chan permission.Decision, 1)
-			runFn := func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+			runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+				ap := turn.Approver
 				got <- ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{}`)})
 				return agent.Result{}, nil
 			}
@@ -157,7 +159,8 @@ func TestRunCancelledMidAsk(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	got := make(chan permission.Decision, 1)
-	runFn := func(ctx context.Context, _ string, _ []anthropic.BetaMessageParam, ap agent.Approver, _ agent.Recorder, _ agent.Emitter) (agent.Result, error) {
+	runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		ap := turn.Approver
 		got <- ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{}`)})
 		return agent.Result{}, ctx.Err()
 	}

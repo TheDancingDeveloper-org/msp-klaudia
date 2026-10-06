@@ -8,14 +8,13 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
 
 // A resumed session must not silently inherit yesterday's approvals. That is
 // exactly the "flaky remembered command permissions" the trust model replaced.
 func TestResumeDoesNotRestoreApprovals(t *testing.T) {
-	st := resumeState{TrustPolicy: agent.HostEnforce, Mode: permission.ModeAutonomous}
+	st := resumeState{HasGuardrail: true, Mode: permission.ModeAutonomous}
 	out := st.render()
 	if !strings.Contains(out, "not restored") {
 		t.Fatalf("resume does not say approvals were dropped:\n%s", out)

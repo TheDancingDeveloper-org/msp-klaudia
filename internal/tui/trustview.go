@@ -14,15 +14,13 @@ import (
 // answer before: what is Klaudia allowed to do to this machine, what has it
 // already been allowed to do, and what has it tried.
 //
-// The third matters most in observe mode, which reports without enforcing.
-// Without a view, "observe" is indistinguishable from "off" — the classifier
-// would be running and telling nobody, which is worse than not running.
+// There is no posture to set here any more. The gate always classifies, so the
+// subcommands are about approvals rather than about whether checking happens:
+// `/mode bypassPermissions` is the way to stop checking, and it says so.
 
-// TrustController lets /trust inspect and change the session's host guardrail
-// without the TUI owning the gate.
+// TrustController lets /trust inspect the session's host guardrail and manage
+// its approvals, without the TUI owning the gate.
 type TrustController interface {
-	Policy() agent.HostPolicy
-	SetPolicy(agent.HostPolicy)
 	Grants() []*trust.Grant
 	Reports() []agent.HostReport
 	// Covers reports whether live grants already authorise these effects. The
@@ -45,10 +43,8 @@ func NewTrustController(g *agent.HostGate) TrustController {
 	return gateController{gate: g}
 }
 
-func (c gateController) Policy() agent.HostPolicy     { return c.gate.Policy() }
-func (c gateController) SetPolicy(p agent.HostPolicy) { c.gate.SetPolicy(p) }
-func (c gateController) Grants() []*trust.Grant       { return c.gate.Grants() }
-func (c gateController) Reports() []agent.HostReport  { return c.gate.Reports() }
+func (c gateController) Grants() []*trust.Grant      { return c.gate.Grants() }
+func (c gateController) Reports() []agent.HostReport { return c.gate.Reports() }
 func (c gateController) Covers(e []trust.Effect) bool {
 	if c.gate == nil || c.gate.Ledger == nil || len(e) == 0 {
 		return false
@@ -70,14 +66,10 @@ func (m *Model) renderTrust() string {
 		return b.String()
 	}
 
-	switch tc.Policy() {
-	case agent.HostEnforce:
+	if m.currentMode() == permission.ModeBypassPermissions {
+		b.WriteString("Host guardrail: BYPASSED — the mode skips it entirely; nothing below is being checked.\n")
+	} else {
 		b.WriteString("Host guardrail: enforcing — Klaudia asks before changing this machine.\n")
-	case agent.HostObserve:
-		b.WriteString("Host guardrail: observing — findings are listed below, but nothing is stopped.\n")
-		b.WriteString("  /trust upgrade switches to enforcing and drops per-action prompts.\n")
-	case agent.HostOff:
-		b.WriteString("Host guardrail: off — nothing below is being checked.\n")
 	}
 	fmt.Fprintf(&b, "Mode: %s\n", m.currentMode().Label())
 
@@ -101,10 +93,6 @@ func (m *Model) renderTrust() string {
 		for _, line := range trustReportSummary(reports) {
 			b.WriteString("  " + line + "\n")
 		}
-	}
-
-	if legacy := m.legacyRuleSummary(); legacy != "" {
-		b.WriteString("\n" + legacy)
 	}
 
 	b.WriteString("\n" + trustHonesty)
@@ -157,51 +145,6 @@ func trustReportSummary(reports []agent.HostReport) []string {
 	return lines
 }
 
-// legacyRuleSummary reports rules carried over from the per-command model.
-//
-// They still work, and Klaudia no longer creates them. Listing them here is how
-// a user finds out they have accumulated a pile of approvals from before the
-// zone model existed.
-func (m *Model) legacyRuleSummary() string {
-	if len(m.sessionAllow) == 0 && len(m.sessionDeny) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("Rules from the per-command model (still honoured; no new ones are created):\n")
-	write := func(kind string, rules []permission.Rule) {
-		for _, r := range rules {
-			spec := r.Specifier
-			if spec != "" {
-				spec = "(" + spec + ")"
-			}
-			fmt.Fprintf(&b, "  %s %s%s\n", kind, r.Tool, spec)
-		}
-	}
-	write("allow", m.sessionAllow)
-	write("deny", m.sessionDeny)
-	return b.String()
-}
-
-// modeRefusal reports why a mode cannot be selected, or "" if it can.
-//
-// Autonomous relies on the host gate to be the thing that stops a host change.
-// Without an enforcing gate it is bypassPermissions with a reassuring name,
-// and offering it in that state would be the single most misleading thing this
-// feature could do.
-func (m *Model) modeRefusal(want permission.Mode) string {
-	if want != permission.ModeAutonomous {
-		return ""
-	}
-	if m.sess.Trust == nil {
-		return "autonomous needs the host guardrail, which this session does not have"
-	}
-	if p := m.sess.Trust.Policy(); p != agent.HostEnforce {
-		return fmt.Sprintf("autonomous needs the host guardrail enforcing (it is %s). "+
-			"Run /trust upgrade first — without it, autonomous would allow everything.", p)
-	}
-	return ""
-}
-
 // trustCommand handles /trust and its subcommands.
 func (m *Model) trustCommand(args []string) {
 	tc := m.sess.Trust
@@ -215,39 +158,6 @@ func (m *Model) trustCommand(args []string) {
 	}
 
 	switch strings.ToLower(args[0]) {
-	case "upgrade":
-		if tc.Policy() == agent.HostEnforce {
-			m.appendLine(bannerStyle.Render("Already enforcing."))
-			return
-		}
-		tc.SetPolicy(agent.HostEnforce)
-		m.sess.PermissionMode = string(permission.ModeAutonomous)
-		m.appendLine(bannerStyle.Render(
-			"Enforcing. Klaudia now works without per-action prompts inside the project " +
-				"and asks before changing this machine.\n" +
-				"Your existing rules still apply. Add [trust] mode = \"enforce\" to " +
-				".klaudia/config.toml to keep this next session."))
-
-	case "off":
-		// Turning the guardrail off while autonomous would leave nothing at all
-		// between the model and the machine, so the mode goes back with it.
-		tc.SetPolicy(agent.HostOff)
-		if m.currentMode() == permission.ModeAutonomous {
-			m.sess.PermissionMode = string(permission.ModeDefault)
-			m.appendLine(bannerStyle.Render(
-				"Host guardrail off. Permission mode is back to asking per action — " +
-					"autonomous without the guardrail would allow everything."))
-			return
-		}
-		m.appendLine(bannerStyle.Render("Host guardrail off for this session."))
-
-	case "observe":
-		tc.SetPolicy(agent.HostObserve)
-		if m.currentMode() == permission.ModeAutonomous {
-			m.sess.PermissionMode = string(permission.ModeDefault)
-		}
-		m.appendLine(bannerStyle.Render("Observing: findings are recorded, nothing is stopped. /trust to see them."))
-
 	case "revoke":
 		if len(args) < 2 {
 			m.appendLine(errStyle.Render("/trust revoke <id> or /trust revoke all"))
@@ -266,6 +176,6 @@ func (m *Model) trustCommand(args []string) {
 		m.appendLine(errStyle.Render("no live approval with id " + args[1]))
 
 	default:
-		m.appendLine(errStyle.Render("/trust [upgrade|observe|off|revoke <id>|revoke all]"))
+		m.appendLine(errStyle.Render("/trust [revoke <id>|revoke all]"))
 	}
 }

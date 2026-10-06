@@ -159,7 +159,36 @@ func TestPruneRemovesStaleSpillsOnly(t *testing.T) {
 		t.Error("a fresh spill should be kept")
 	}
 	if _, err := os.Stat(other); err != nil {
-		t.Error("pruning must only touch its own bash-*.log files")
+		t.Error("pruning must only touch its own .log files")
+	}
+}
+
+// Spill files are named after the tool, and MCP tool names carry separators
+// that CreateTemp rejects outright ("pattern contains path separator").
+func TestSpillPrefixSanitisesToolNames(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"Grep", "Grep"},
+		{"mcp__github__list_issues", "mcp__github__list_issues"},
+		{"weird/name", "weird-name"},
+		{"", "tool"},
+	} {
+		if got := spillPrefix(tc.name); got != tc.want {
+			t.Errorf("spillPrefix(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSpillWritesUnderTheToolName(t *testing.T) {
+	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
+	path, ok := spillOutput("mcp__github__list_issues", "body")
+	if !ok {
+		t.Fatal("spill failed for an MCP-style tool name")
+	}
+	if !strings.Contains(filepath.Base(path), "mcp__github__list_issues") {
+		t.Errorf("spill path %q should name the tool", path)
 	}
 }
 

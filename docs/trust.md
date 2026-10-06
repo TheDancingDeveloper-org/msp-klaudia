@@ -205,50 +205,57 @@ Three, not six:
 | `plan` | Read-only exploration; mutations blocked. |
 | `bypassPermissions` | No checks at all, including the host gate. |
 
-`autonomous` requires the host guardrail to be enforcing. Without it, autonomous
-is `bypassPermissions` with a friendlier name, so Klaudia refuses the
-combination rather than offering it.
-
-The old modes (`default`, `acceptEdits`, `dontAsk`) still work so existing
-configs keep running; they are no longer offered as a choice.
+`bypassPermissions` is the only way to stop the gate classifying. There is no
+separate "guardrail off" setting, because having one meant a session could sit
+in a state where nothing was checking anything while the mode still read as
+something reassuring.
 
 ## `/trust`
 
 Shows the guardrail's state, the approvals live in this session and what they
-reach, what the classifier has found, and any allow/deny rules carried over from
-the per-command model.
+reach, and what the classifier has found.
 
 ```
 /trust                  show everything
-/trust upgrade          switch from observing to enforcing
-/trust observe          classify and report, change no decisions
-/trust off              disable classification for this session
 /trust revoke <id>      withdraw one approval
 /trust revoke all       withdraw all of them
 ```
 
-## Migration
+There is nothing here to turn the guardrail up or down. It always classifies;
+`/mode bypassPermissions` is the off switch, and it is named after what it does.
 
-A config that already has `[permissions]` allow/deny rules starts in **observe**:
-the classifier runs and `/trust` shows what it found, but nothing is refused and
-your existing per-action prompts continue. You get a one-time notice at startup.
-`/trust upgrade` switches over. Rules passed on the command line with
-`--allowedTools`/`--disallowedTools` are still honoured but don't count: they
-are one invocation's choice, not a config to migrate, so they leave the
-guardrail enforcing.
+## What was removed, and why
 
-Everything else starts enforcing.
+The per-command model this replaced is gone rather than deprecated: no
+allow/deny rules, no `--allowedTools`/`--disallowedTools`, no `/allow` and
+`/deny`, no `[permissions] allow` or `[trust]` config, no `default`,
+`acceptEdits` or `dontAsk` modes, and no "always" answer on a prompt.
 
-Existing allow/deny rules keep working, and Klaudia no longer creates new ones —
-approving an operation replaced "allow always". Your rules are listed in
-`/trust`.
+*Fork note (msp-klaudia):* the three retired mode names are still **accepted**
+on `--permission-mode`, in `mode =` config and over stream-json, as deprecated
+aliases for `autonomous`, with a one-line notice. Launchers built against the
+old names (the Vogt Klaudia template passes `acceptEdits`) keep starting rather
+than exiting 2. Rules and `[trust]` are not revived: an alias only picks the
+mode.
 
-Configure it explicitly with:
+Keeping both models running was worse than either on its own, in a way that
+only showed up in use. The two gates could each permit a call and neither
+described the other, and the coupling between them ran backwards: a rule in
+`.klaudia/config.toml` put the next session into observe, observe dropped its
+permission mode to `default`, and `default` asked before every edit and every
+command. So answering "always" — the thing offered to stop a prompt — was what
+guaranteed more prompts the next time, in a project that would otherwise have
+started autonomous. The persistence was also conditional on `.klaudia/`
+already existing, so a project acquired the behaviour the first time anything
+happened to create that directory.
 
-```toml
-[trust]
-mode = "enforce"   # enforce | observe | off
-```
+Approving an operation replaced "allow always". It is session-scoped, it says
+what it covers, and `/trust` lists it.
+
+If a project still has rules in `.klaudia/config.toml`, delete the
+`[permissions]` allow/deny entries and any `[trust]` section — Klaudia no
+longer reads them. `[permissions] mode` is still read, and now takes
+`autonomous`, `plan` or `bypassPermissions`.
 
 ## Unattended runs
 

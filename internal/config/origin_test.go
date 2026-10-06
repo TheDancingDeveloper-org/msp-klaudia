@@ -139,20 +139,20 @@ func TestOriginsListAccumulates(t *testing.T) {
 	cwd := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
-	writeConfig(t, home, "[permissions]\nallow = [\"Edit\"]\n")
-	writeConfig(t, cwd, "[permissions]\nallow = [\"Bash(go test:*)\"]\n")
+	writeConfig(t, home, "[lsp]\ndisabled = [\"gopls\"]\n")
+	writeConfig(t, cwd, "[lsp]\ndisabled = [\"pyright\"]\n")
 
 	settings := Origins(cwd)
-	s, ok := find(settings, "permissions.allow")
+	s, ok := find(settings, "lsp.disabled")
 	if !ok {
-		t.Fatal("permissions.allow absent")
+		t.Fatal("lsp.disabled absent")
 	}
-	// Rules accumulate (home + project), and the origin reflects that project
+	// Lists accumulate (home + project), and the origin reflects that project
 	// contributed.
-	if !strings.Contains(s.Value, "Edit") || !strings.Contains(s.Value, "Bash(go test:*)") {
-		t.Errorf("permissions.allow = %q, want both home and project rules", s.Value)
+	if !strings.Contains(s.Value, "gopls") || !strings.Contains(s.Value, "pyright") {
+		t.Errorf("lsp.disabled = %q, want both home and project entries", s.Value)
 	}
 	if s.Origin != OriginProject {
-		t.Errorf("permissions.allow origin = %q, want project (contributed)", s.Origin)
+		t.Errorf("lsp.disabled origin = %q, want project (contributed)", s.Origin)
 	}
 }

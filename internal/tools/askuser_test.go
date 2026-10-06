@@ -67,3 +67,23 @@ func TestAskUserQuestionValidate(t *testing.T) {
 		t.Error("expected error when no options provided")
 	}
 }
+
+// A real session lost four consecutive calls to this: question and options both
+// correct, plus a top-level "description" the tool has no field for. The schema
+// was closed, so the call was rejected rather than run — and the model, having
+// varied the wording each time, was then told the environment was wedged.
+func TestAskUserQuestionTolerUnknownProperties(t *testing.T) {
+	a := newAsk(t)
+	raw := json.RawMessage(`{"question":"How should login work?","description":"pick one",` +
+		`"options":[{"label":"JWT","description":"local users"},{"label":"OIDC","header":"auth"}]}`)
+	if err := a.ValidateInput(raw); err != nil {
+		t.Fatalf("usable call rejected: %v", err)
+	}
+	asker := &fakeAsker{choice: "JWT"}
+	if _, err := a.Execute(context.Background(), Context{Ask: asker}, raw); err != nil {
+		t.Fatal(err)
+	}
+	if asker.gotQuestion != "How should login work?" || asker.gotOptions != 2 {
+		t.Errorf("asker saw q=%q opts=%d", asker.gotQuestion, asker.gotOptions)
+	}
+}

@@ -32,7 +32,7 @@ func TestHTTPServerHeaders(t *testing.T) {
 
 	m, errs := Connect(context.Background(), Config{MCPServers: map[string]ServerConfig{
 		"auth": {URL: hs.URL, Headers: map[string]string{"Authorization": "Bearer ${MCP_TEST_BEARER}"}, AlwaysLoad: true},
-	}})
+	}}, nil)
 	defer m.Close()
 	if len(errs) > 0 {
 		t.Fatalf("connect with the header: %v", errs)
@@ -44,7 +44,7 @@ func TestHTTPServerHeaders(t *testing.T) {
 		t.Error("AlwaysLoad should reflect the server's config")
 	}
 
-	m2, errs := Connect(context.Background(), Config{MCPServers: map[string]ServerConfig{"auth": {URL: hs.URL}}})
+	m2, errs := Connect(context.Background(), Config{MCPServers: map[string]ServerConfig{"auth": {URL: hs.URL}}}, nil)
 	defer m2.Close()
 	if len(errs) == 0 {
 		t.Error("without the header the server should refuse the connection")

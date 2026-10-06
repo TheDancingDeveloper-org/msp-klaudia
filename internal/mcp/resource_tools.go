@@ -92,9 +92,21 @@ func (t *readResourceTool) Execute(ctx context.Context, _ tools.Context, raw jso
 	}
 	sess := srv.sess()
 	if sess == nil {
-		return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected; reconnect it with /mcp.", in.Server), IsError: true}}, nil
+		if !t.mgr.revive(ctx, srv) {
+			return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected and could not be restarted; reconnect it with /mcp.", in.Server), IsError: true}}, nil
+		}
+		sess = srv.sess()
 	}
 	res, err := sess.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: in.URI})
+	if err != nil {
+		// Reading a resource has no side effects, so the retry needs none of
+		// the care a tool call does (see mcpTool.Execute).
+		if t.mgr.revive(ctx, srv) {
+			if sess = srv.sess(); sess != nil {
+				res, err = sess.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: in.URI})
+			}
+		}
+	}
 	if err != nil {
 		return []tools.Result{{Content: fmt.Sprintf("Read failed: %v", err), IsError: true}}, nil
 	}

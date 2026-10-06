@@ -48,3 +48,53 @@ func TestHostAnswerLineDistinguishesRedirectFromRefusal(t *testing.T) {
 		t.Errorf("redirect does not invite an instruction: %q", redirect)
 	}
 }
+
+// The hooks question shares the card but not its sentences. Each of these was
+// wrong before the card knew the difference: "caught on the way past" blames the
+// model for a config file it never saw, and "for this session only" describes a
+// decision that is in fact remembered.
+func TestHooksCardDoesNotReadLikeAHostChange(t *testing.T) {
+	card := strings.Join(hostCardLines(&agent.HostChange{
+		Hooks:    true,
+		Summary:  "run 2 hooks declared by /repo/.klaudia/config.toml",
+		Paths:    []string{"/repo/.klaudia/config.toml"},
+		Commands: []string{"PostToolUse(Edit|Write): gofmt -w .", "PreToolUse(Bash): ./scripts/guard.sh"},
+	}), "\n")
+
+	for _, wrong := range []string{"caught on the way past", "for this session only", "This changes your machine"} {
+		if strings.Contains(card, wrong) {
+			t.Errorf("card says %q, which is not true of a hook set:\n%s", wrong, card)
+		}
+	}
+	if !strings.Contains(card, "remembered until these hooks change") {
+		t.Errorf("card does not say how long the answer lasts:\n%s", card)
+	}
+	// The commands are the whole point of the prompt: "hooks: yes" is not a
+	// question a person can answer.
+	for _, cmd := range []string{"gofmt -w .", "./scripts/guard.sh"} {
+		if !strings.Contains(card, cmd) {
+			t.Errorf("card does not show %q:\n%s", cmd, card)
+		}
+	}
+	if got := hostPrompt(&agent.HostChange{Hooks: true}); strings.Contains(got, "something else") {
+		t.Errorf("prompt = %q; there is no task to redirect, only a yes or a no", got)
+	}
+}
+
+// Each command on its own line. A list of command lines joined with commas is
+// what a user skims instead of reading, and commas occur inside commands.
+func TestHooksCardListsOneCommandPerLine(t *testing.T) {
+	lines := hostCardLines(&agent.HostChange{
+		Hooks:    true,
+		Commands: []string{"PostToolUse: a, b", "PreToolUse: c"},
+	})
+	count := 0
+	for _, l := range lines {
+		if strings.Contains(l, "PostToolUse: a, b") || strings.Contains(l, "PreToolUse: c") {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("found %d command lines, want one per command:\n%s", count, strings.Join(lines, "\n"))
+	}
+}

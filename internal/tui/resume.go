@@ -7,7 +7,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 
-	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
 
@@ -33,9 +32,12 @@ type resumeState struct {
 	KlaudiaWork []string // still-dirty files Klaudia changed
 	UserWork    []string // still-dirty files it did not
 	DeadJobs    []string // jobs the transcript started, none of which survived
-	TrustPolicy agent.HostPolicy
-	Mode        permission.Mode
-	Messages    int
+	// HasGuardrail is false only when the session was built without a gate at
+	// all. There is no posture to report beyond that: the gate always
+	// classifies, and skipping it is a property of the mode.
+	HasGuardrail bool
+	Mode         permission.Mode
+	Messages     int
 }
 
 // hasContent reports whether there is anything worth showing. A fresh session
@@ -50,9 +52,7 @@ func (m *Model) buildResumeState() resumeState {
 	if m.sess != nil {
 		st.Goal = m.sess.Goal
 		st.Branch = m.sess.GitBranch
-		if m.sess.Trust != nil {
-			st.TrustPolicy = m.sess.Trust.Policy()
-		}
+		st.HasGuardrail = m.sess.Trust != nil
 	}
 
 	// Ownership first: without re-seeding, every file Klaudia wrote yesterday
@@ -110,15 +110,13 @@ func (st resumeState) render() string {
 	}
 
 	b.WriteString("\nTrust\n")
-	switch st.TrustPolicy {
-	case agent.HostEnforce:
-		b.WriteString("  host changes need your agreement\n")
-	case agent.HostObserve:
-		b.WriteString("  observing only — nothing is stopped\n")
-	case agent.HostOff:
-		b.WriteString("  guardrail off\n")
-	default:
+	switch {
+	case !st.HasGuardrail:
 		b.WriteString("  not configured\n")
+	case st.Mode == permission.ModeBypassPermissions:
+		b.WriteString("  guardrail bypassed by the mode\n")
+	default:
+		b.WriteString("  host changes need your agreement\n")
 	}
 	fmt.Fprintf(&b, "  %s mode\n", st.Mode)
 	// The one thing that must NOT come back. Approvals are session-scoped by

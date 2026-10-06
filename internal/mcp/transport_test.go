@@ -125,7 +125,7 @@ func TestConnectReachesEachTransportAndIsolatesFailures(t *testing.T) {
 		"sse":        {Type: "SSE", URL: httpServer(t, "sse").URL},
 		"broken":     {Command: "/nonexistent/klaudia-test-mcp"},
 	}}
-	m, errs := Connect(ctx, cfg)
+	m, errs := Connect(ctx, cfg, nil)
 	defer m.Close()
 
 	if len(errs) != 1 || !strings.Contains(errs[0].Error(), `mcp "broken" connect`) {
@@ -157,7 +157,7 @@ func TestConnectReachesEachTransportAndIsolatesFailures(t *testing.T) {
 func TestToolFailureIsAnErrorResult(t *testing.T) {
 	m, errs := Connect(testCtx(t), Config{MCPServers: map[string]ServerConfig{
 		"s": {URL: httpServer(t, "streamable").URL},
-	}})
+	}}, nil)
 	defer m.Close()
 	if len(errs) != 0 {
 		t.Fatal(errs)
@@ -186,7 +186,7 @@ func TestToolCallToADeadPeerIsAnErrorResult(t *testing.T) {
 func TestReconnectRevivesToolsHandedOutEarlier(t *testing.T) {
 	m, errs := Connect(testCtx(t), Config{MCPServers: map[string]ServerConfig{
 		"stdio": fakeCommandConfig(t),
-	}})
+	}}, nil)
 	defer m.Close()
 	if len(errs) != 0 {
 		t.Fatal(errs)
@@ -222,7 +222,7 @@ func TestReconnectRevivesToolsHandedOutEarlier(t *testing.T) {
 
 func TestReconnectFailureLeavesTheServerDisconnected(t *testing.T) {
 	ts := httpServer(t, "streamable")
-	m, errs := Connect(testCtx(t), Config{MCPServers: map[string]ServerConfig{"s": {URL: ts.URL}}})
+	m, errs := Connect(testCtx(t), Config{MCPServers: map[string]ServerConfig{"s": {URL: ts.URL}}}, nil)
 	defer m.Close()
 	if len(errs) != 0 {
 		t.Fatal(errs)
@@ -259,7 +259,7 @@ func TestResourceToolsListAndRead(t *testing.T) {
 	m, errs := Connect(testCtx(t), Config{MCPServers: map[string]ServerConfig{
 		"docs":  {URL: httpServer(t, "streamable").URL},
 		"ghost": {Command: "/nonexistent/klaudia-test-mcp"},
-	}})
+	}}, nil)
 	defer m.Close()
 	if len(errs) != 1 {
 		t.Fatalf("errs = %v", errs)
@@ -335,9 +335,9 @@ func TestResourceToolContract(t *testing.T) {
 		if err := json.Unmarshal(tl.InputSchema(), &sch); err != nil || sch["type"] != "object" {
 			t.Errorf("%s schema = %s", tl.Name(), tl.InputSchema())
 		}
-		pctx := permission.Context{Mode: permission.StaticMode(permission.ModeDontAsk)}
+		pctx := permission.Context{Mode: permission.StaticMode(permission.ModePlan)}
 		if got := tl.CheckPermissions(pctx, tl.PermissionRequest(nil)).Behavior; got != permission.Allow {
-			t.Errorf("%s permission = %s, want allow even in dontAsk", tl.Name(), got)
+			t.Errorf("%s permission = %s, want allow even in plan mode", tl.Name(), got)
 		}
 		if tl.PermissionRequest(nil).Specifier != "" {
 			t.Errorf("%s has a specifier", tl.Name())

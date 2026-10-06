@@ -189,8 +189,6 @@ func (m *Memory) CheckPermissions(pctx permission.Context, req permission.Permis
 	switch permission.CurrentMode(pctx) {
 	case permission.ModePlan:
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; writing project knowledge (.klaudia/KNOWLEDGE.md) is not allowed"}
-	case permission.ModeDontAsk:
-		return permission.Decision{Behavior: permission.Deny, Message: knowledgeUnapprovedMsg}
 	default:
 		return permission.Decision{Behavior: permission.Ask, Message: knowledgeUnapprovedMsg}
 	}
@@ -202,7 +200,7 @@ func (m *Memory) CheckPermissions(pctx permission.Context, req permission.Permis
 const knowledgeUnapprovedMsg = "Writing project knowledge (.klaudia/KNOWLEDGE.md) needs the user's approval, " +
 	"because it is loaded into every future session, and no one approved this write. " +
 	"Keep the note in session memory instead (operation=add without scope=project), " +
-	"or tell the user what you would add. An allow rule Memory(project) pre-approves these writes."
+	"or tell the user what you would add."
 
 func (m *Memory) Execute(_ context.Context, _ Context, raw json.RawMessage) ([]Result, error) {
 	var in MemoryInput

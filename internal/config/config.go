@@ -16,8 +16,6 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
-
-	"github.com/greenthread-ai/klaudia/internal/hooks"
 )
 
 // Provider names.
@@ -87,10 +85,8 @@ type Config struct {
 	Browser Browser `toml:"browser,omitempty"`
 	// LSP configures language-server code-intelligence tools.
 	LSP LSP `toml:"lsp,omitempty"`
-	// Permissions holds persisted allow/deny rules for this project.
+	// Permissions holds the session's starting stance for this project.
 	Permissions Permissions `toml:"permissions,omitempty"`
-	// Trust configures the host-change guardrail.
-	Trust Trust `toml:"trust,omitempty"`
 	// Input configures the prompt's key handling.
 	Input Input `toml:"input,omitempty"`
 
@@ -103,12 +99,56 @@ type Config struct {
 	Sessions Sessions `toml:"sessions,omitempty"`
 	// TUI configures terminal-UI behaviour.
 	TUI TUI `toml:"tui,omitempty"`
-	// Hooks configures lifecycle hooks (PreToolUse/PostToolUse/UserPromptSubmit/
-	// Stop). Hooks run arbitrary shell commands, so only user-level (~/.klaudia)
-	// hooks are honored: project-level hooks are dropped by Load (see there).
-	Hooks hooks.Config `toml:"hooks,omitempty"`
+	// Subagents configures how sub-agents run.
+	Subagents Subagents `toml:"subagents,omitempty"`
+	// Hooks are lifecycle hooks: shell commands run at fixed points in a turn.
+	//
+	// Note that Load does NOT merge this field, and that is deliberate — see
+	// the comment on merge. Use LoadHooks, which keeps each hook attached to
+	// the file it came from.
+	Hooks []Hook `toml:"hooks,omitempty"`
 	// Banner configures the startup banner.
 	Banner Banner `toml:"banner,omitempty"`
+}
+
+// Hook is one `[[hooks]]` entry.
+//
+// This is the on-disk shape only. internal/hooks compiles it into something
+// runnable (the matcher becomes a regexp, the timeout a duration) and owns
+// every question about what the fields mean.
+type Hook struct {
+	// Event names the lifecycle point: SessionStart, UserPromptSubmit,
+	// PreToolUse or PostToolUse.
+	Event string `toml:"event"`
+	// Matcher is a regexp over the tool name, for the two tool events. Empty
+	// matches every tool.
+	Matcher string `toml:"matcher,omitempty"`
+	// Command is the shell command to run, as `sh -c` would take it.
+	Command string `toml:"command"`
+	// Timeout is a Go duration ("5s", "2m"). Empty uses the package default.
+	Timeout string `toml:"timeout,omitempty"`
+}
+
+// Subagents configures sub-agent execution.
+type Subagents struct {
+	// Worktree gives a sub-agent that can write its own git checkout, applied
+	// back to the working tree when it finishes. On by default: two children
+	// editing one tree both succeed at producing a mess, and the cost of a
+	// second checkout is a directory entry plus the uncommitted delta.
+	//
+	// A pointer so `worktree = false` is distinguishable from the field being
+	// absent — with a bool, turning the default off would be impossible.
+	//
+	// Turn it off for a working tree a second checkout cannot reproduce: one
+	// that needs an install step before anything runs, or whose build output
+	// is gitignored and expensive. A worktree starts from the parent's tracked
+	// and untracked files, never its ignored ones.
+	Worktree *bool `toml:"worktree,omitempty"`
+}
+
+// SubagentWorktrees resolves the default: on unless the config says otherwise.
+func (c Config) SubagentWorktrees() bool {
+	return c.Subagents.Worktree == nil || *c.Subagents.Worktree
 }
 
 // Sessions configures retention of stored session transcripts, pruned once at
@@ -201,33 +241,18 @@ type Input struct {
 	Enter string `toml:"enter,omitempty"`
 }
 
-// Permissions persists allow/deny rule strings (e.g. "Bash(git status:*)",
-// "Edit") loaded into the permission context at startup.
-// Trust configures the host-change guardrail: how Klaudia behaves when a tool
-// call would change the machine it is running on.
+// Permissions sets the session's starting stance.
 //
-// This reads command lines and tool inputs. It is a guardrail against
-// well-intentioned mistakes, not a security boundary — see [Sandbox] for the
-// setting that is actually enforced by the kernel.
-type Trust struct {
-	// Mode is "enforce" (default), "observe" (classify and report, change no
-	// decisions) or "off". Unset means enforce, except for a config that
-	// already has permission rules, which starts in observe.
-	Mode string `toml:"mode,omitempty"`
-}
-
+// There are no allow/deny rules here any more, and no [trust] section either.
+// Per-command rules were the model the host-change guardrail replaced, and the
+// guardrail has no posture to configure: it always classifies, and the way to
+// turn everything off is the mode that says so.
 type Permissions struct {
-	// Mode is the default permission mode when no --permission-mode flag is
-	// given: autonomous | plan | bypassPermissions | dontAsk, or the legacy
-	// default | acceptEdits. dontAsk runs allow-listed tools and denies the
-	// rest without prompting — the mode for headless and embedded runs.
+	// Mode is the starting permission mode when no --permission-mode flag is
+	// given: autonomous (default) | plan | bypassPermissions. The retired
+	// default | acceptEdits | dontAsk are accepted as deprecated aliases for
+	// autonomous (permission.Resolve).
 	Mode string `toml:"mode,omitempty"`
-	// Allow and Deny are rule strings: a tool name ("Edit"), a tool with a
-	// specifier ("Bash(git status:*)"), or for MCP tools "mcp__<server>" /
-	// "mcp__<server>__*" (every tool on that server) or
-	// "mcp__<server>__<tool>" (one tool).
-	Allow []string `toml:"allow,omitempty"`
-	Deny  []string `toml:"deny,omitempty"`
 }
 
 // Sandbox modes.
@@ -324,39 +349,6 @@ func ProjectDirExists(cwd string) bool {
 	return err == nil && st.IsDir()
 }
 
-// AppendProjectPermission appends rule to cwd/.klaudia/config.toml under
-// permissions.allow or permissions.deny. It is a no-op when cwd/.klaudia does
-// not exist, so users opt into project-local persistence by creating the folder.
-func AppendProjectPermission(cwd, kind, rule string) (bool, error) {
-	if !ProjectDirExists(cwd) {
-		return false, nil
-	}
-	path := ProjectPath(cwd)
-	cfg, _, err := read(path)
-	if err != nil {
-		return false, err
-	}
-	switch kind {
-	case "allow":
-		if contains(cfg.Permissions.Allow, rule) {
-			return true, nil
-		}
-		cfg.Permissions.Allow = append(cfg.Permissions.Allow, rule)
-	case "deny":
-		if contains(cfg.Permissions.Deny, rule) {
-			return true, nil
-		}
-		cfg.Permissions.Deny = append(cfg.Permissions.Deny, rule)
-	default:
-		return false, errors.New("permission kind must be allow or deny")
-	}
-	data, err := toml.Marshal(cfg)
-	if err != nil {
-		return false, err
-	}
-	return true, os.WriteFile(path, data, 0o644)
-}
-
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {
@@ -396,6 +388,46 @@ func Load(cwd string) (Config, error) {
 	return LoadTrusting(cwd, IsTrustedProject(cwd))
 }
 
+// HookSources is the hook configuration with its provenance intact.
+type HookSources struct {
+	// User came from ~/.klaudia/config.toml: the user's own machine, written by
+	// the person running Klaudia.
+	User []Hook
+	// Project came from ./.klaudia/config.toml, which arrives with the repo. A
+	// clone can carry hooks its author chose, so these are not the same kind of
+	// instruction as the ones above and callers must not treat them as such.
+	Project []Hook
+	// ProjectPath is the file Project was read from, for a prompt that can name
+	// what it is asking about.
+	ProjectPath string
+}
+
+// LoadHooks reads the hook entries from both config files without merging them.
+//
+// Everything else in Config is a setting, and the only question about a setting
+// is which value wins. A hook is a command that will be executed, so where it
+// came from is part of what it is: the trust decision in internal/hooks needs
+// the project's hooks separable from the user's, and a merged slice cannot
+// answer that.
+func LoadHooks(cwd string) HookSources {
+	src := HookSources{ProjectPath: ProjectPath(cwd)}
+	if home, err := os.UserHomeDir(); err == nil {
+		src.User = readHooks(filepath.Join(home, ".klaudia", "config.toml"))
+	}
+	src.Project = readHooks(src.ProjectPath)
+	return src
+}
+
+// readHooks returns the [[hooks]] entries of the file at path; a missing or
+// unreadable file has none (Load reports a broken file).
+func readHooks(path string) []Hook {
+	c, _, err := read(path)
+	if err != nil {
+		return nil
+	}
+	return c.Hooks
+}
+
 // LoadTrusting is Load with the project's trust decided by the caller. A
 // launcher that writes ./.klaudia/config.toml itself — an embedder rendering
 // a per-session config — passes true (--trusted-project-config), since the
@@ -410,13 +442,6 @@ func LoadTrusting(cwd string, trusted bool) (Config, error) {
 		return Config{}, err
 	}
 	cfg.Warnings = append(cfg.Warnings, warn...)
-	// Hooks run arbitrary shell commands, so a checked-in project
-	// .klaudia/config.toml would be a code-execution vector for anyone who can
-	// commit to the repo — the same escalation risk the repo already gates for
-	// project-supplied executable config (issues #51/#56). Until a project-trust
-	// prompt exists for them, project hooks are dropped: only user-level
-	// (~/.klaudia) hooks are honored. See CHANGELOG / issue #147.
-	proj.Hooks = hooks.Config{}
 	if !trusted {
 		if held := withholdUntrusted(&proj); len(held) > 0 {
 			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf(
@@ -476,6 +501,11 @@ func parseError(path string, err error) error {
 }
 
 // merge overlays non-empty fields of src onto dst.
+//
+// Hooks are left out on purpose. Merging them would produce one slice in which
+// a command from the repo is indistinguishable from a command the user wrote,
+// and the only safe thing to do with such a slice is refuse to run any of it.
+// LoadHooks is the accessor.
 func merge(dst *Config, src Config) {
 	if src.Provider != "" {
 		dst.Provider = src.Provider
@@ -577,11 +607,8 @@ func merge(dst *Config, src Config) {
 	if src.Permissions.Mode != "" {
 		dst.Permissions.Mode = src.Permissions.Mode
 	}
-	// Permission rules accumulate (home rules + project rules).
-	dst.Permissions.Allow = append(dst.Permissions.Allow, src.Permissions.Allow...)
-	dst.Permissions.Deny = append(dst.Permissions.Deny, src.Permissions.Deny...)
-	if src.Trust.Mode != "" {
-		dst.Trust.Mode = src.Trust.Mode
+	if src.Subagents.Worktree != nil {
+		dst.Subagents.Worktree = src.Subagents.Worktree
 	}
 	if src.Input.Enter != "" {
 		dst.Input.Enter = src.Input.Enter
@@ -606,14 +633,6 @@ func merge(dst *Config, src Config) {
 	}
 	// Disabled LSP languages accumulate (union of home + project).
 	dst.LSP.Disabled = append(dst.LSP.Disabled, src.LSP.Disabled...)
-	// Hooks accumulate per event (like permission rules), so a home config and a
-	// project config that both define hooks add their groups rather than one
-	// replacing the other. Load drops project hooks before this runs, so in
-	// practice only user-level groups accumulate here.
-	dst.Hooks.PreToolUse = append(dst.Hooks.PreToolUse, src.Hooks.PreToolUse...)
-	dst.Hooks.PostToolUse = append(dst.Hooks.PostToolUse, src.Hooks.PostToolUse...)
-	dst.Hooks.UserPromptSubmit = append(dst.Hooks.UserPromptSubmit, src.Hooks.UserPromptSubmit...)
-	dst.Hooks.Stop = append(dst.Hooks.Stop, src.Hooks.Stop...)
 }
 
 // ResolveAPIKey returns the inline key, or the value of the named env var.

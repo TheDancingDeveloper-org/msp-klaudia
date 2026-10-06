@@ -114,11 +114,11 @@ func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("KLAUDIA_CONFIG_DIR", "")
-	writeConfig(t, home, "[permissions]\nmode = \"acceptEdits\"\n")
+	writeConfig(t, home, "[permissions]\nmode = \"plan\"\n")
 
 	// Global-only → inherited.
-	if cfg := mustLoad(t, t.TempDir()); cfg.Permissions.Mode != "acceptEdits" {
-		t.Errorf("mode = %q, want acceptEdits (from home)", cfg.Permissions.Mode)
+	if cfg := mustLoad(t, t.TempDir()); cfg.Permissions.Mode != "plan" {
+		t.Errorf("mode = %q, want plan (from home)", cfg.Permissions.Mode)
 	}
 	// Project overrides global.
 	cwd := t.TempDir()
@@ -189,62 +189,6 @@ func TestResolveAPIKey(t *testing.T) {
 	}
 	if (Config{}).ResolveAPIKey() != "" {
 		t.Error("empty config should yield empty key")
-	}
-}
-
-func TestLoadPermissionsAccumulate(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("KLAUDIA_CONFIG_DIR", "")
-	writeConfig(t, home, `
-[permissions]
-allow = ["Edit"]
-deny = ["Bash(rm:*)"]
-`)
-	cwd := t.TempDir()
-	writeConfig(t, cwd, `
-[permissions]
-allow = ["Bash(go test:*)"]
-`)
-	trust(t, cwd)
-
-	cfg := mustLoad(t, cwd)
-	if len(cfg.Permissions.Allow) != 2 {
-		t.Errorf("allow = %v, want home+project merged", cfg.Permissions.Allow)
-	}
-	if len(cfg.Permissions.Deny) != 1 || cfg.Permissions.Deny[0] != "Bash(rm:*)" {
-		t.Errorf("deny = %v", cfg.Permissions.Deny)
-	}
-}
-
-func TestAppendProjectPermission(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
-	cwd := t.TempDir()
-	trust(t, cwd)
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || ok {
-		t.Fatalf("AppendProjectPermission without .klaudia = %v,%v, want false,nil", ok, err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(cwd, ".klaudia"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission allow = %v,%v, want true,nil", ok, err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission duplicate = %v,%v, want true,nil", ok, err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "deny", "Bash(rm:*)"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission deny = %v,%v, want true,nil", ok, err)
-	}
-
-	cfg := mustLoad(t, cwd)
-	if len(cfg.Permissions.Allow) != 1 || cfg.Permissions.Allow[0] != "Edit" {
-		t.Errorf("allow = %v, want [Edit]", cfg.Permissions.Allow)
-	}
-	if len(cfg.Permissions.Deny) != 1 || cfg.Permissions.Deny[0] != "Bash(rm:*)" {
-		t.Errorf("deny = %v, want [Bash(rm:*)]", cfg.Permissions.Deny)
 	}
 }
 
@@ -351,18 +295,6 @@ func TestLoadUnknownKeysWarnAndKnownKeysApply(t *testing.T) {
 	}
 }
 
-func TestAppendProjectPermissionRefusesBrokenFile(t *testing.T) {
-	cwd := t.TempDir()
-	writeConfig(t, cwd, "[permissions\n")
-	if _, err := AppendProjectPermission(cwd, "allow", "Edit"); err == nil {
-		t.Fatal("AppendProjectPermission rewrote a file that does not parse")
-	}
-	data, _ := os.ReadFile(ProjectPath(cwd))
-	if string(data) != "[permissions\n" {
-		t.Errorf("file changed to %q", data)
-	}
-}
-
 func TestLoadMissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("KLAUDIA_CONFIG_DIR", "")
@@ -458,70 +390,72 @@ func TestLoadSessionProjectOverridesHome(t *testing.T) {
 	}
 }
 
-func TestLoadUserHooksParsed(t *testing.T) {
+// Hooks are flat [[hooks]] entries, read with their provenance by LoadHooks
+// and never merged by Load (upstream's shape; the fork's nested per-event
+// tables are gone).
+func TestLoadHooksKeepsProvenance(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
-	writeConfig(t, home, `
-[[hooks.PreToolUse]]
-matcher = "Bash"
-[[hooks.PreToolUse.hooks]]
-type = "command"
-command = "echo hi"
-timeout = 30
+	writeConfig(t, home, "[[hooks]]\nevent = \"PreToolUse\"\nmatcher = \"Bash\"\ncommand = \"echo hi\"\ntimeout = \"30s\"\n")
+	cwd := t.TempDir()
+	writeConfig(t, cwd, "[[hooks]]\nevent = \"PostToolUse\"\ncommand = \"echo proj\"\n")
 
-[[hooks.Stop]]
-[[hooks.Stop.hooks]]
-command = "echo stop"
-`)
-
-	cfg := mustLoad(t, t.TempDir())
-	if len(cfg.Hooks.PreToolUse) != 1 {
-		t.Fatalf("PreToolUse groups = %d, want 1", len(cfg.Hooks.PreToolUse))
+	src := LoadHooks(cwd)
+	if len(src.User) != 1 || src.User[0].Command != "echo hi" || src.User[0].Matcher != "Bash" || src.User[0].Timeout != "30s" {
+		t.Errorf("user hooks = %+v", src.User)
 	}
-	g := cfg.Hooks.PreToolUse[0]
-	if g.Matcher != "Bash" || len(g.Hooks) != 1 {
-		t.Fatalf("group = %+v", g)
+	if len(src.Project) != 1 || src.Project[0].Event != "PostToolUse" {
+		t.Errorf("project hooks = %+v", src.Project)
 	}
-	if h := g.Hooks[0]; h.Type != "command" || h.Command != "echo hi" || h.Timeout != 30 {
-		t.Errorf("hook = %+v", h)
-	}
-	if len(cfg.Hooks.Stop) != 1 {
-		t.Errorf("Stop groups = %d, want 1", len(cfg.Hooks.Stop))
+	if cfg := mustLoad(t, cwd); len(cfg.Hooks) != 0 {
+		t.Errorf("Load merged hooks: %+v", cfg.Hooks)
 	}
 }
 
-// Project-level hooks are a code-execution vector and must be dropped: only
-// user-level (~/.klaudia) hooks survive Load.
-func TestLoadDropsProjectHooks(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
-	writeConfig(t, home, `
-[[hooks.PreToolUse]]
-[[hooks.PreToolUse.hooks]]
-command = "user-hook"
-`)
-
-	cwd := t.TempDir()
-	writeConfig(t, cwd, `
-[[hooks.PreToolUse]]
-[[hooks.PreToolUse.hooks]]
-command = "project-hook"
-
-[[hooks.PostToolUse]]
-[[hooks.PostToolUse.hooks]]
-command = "project-post"
-`)
-
-	cfg := mustLoad(t, cwd)
-	if len(cfg.Hooks.PreToolUse) != 1 {
-		t.Fatalf("PreToolUse groups = %d, want 1 (user only)", len(cfg.Hooks.PreToolUse))
+// The default is on, so the only interesting case is turning it off: with a
+// plain bool, `worktree = false` is indistinguishable from the section being
+// absent and the setting would have no way to work at all.
+func TestSubagentWorktrees(t *testing.T) {
+	tests := []struct {
+		name string
+		home string
+		proj string
+		want bool
+	}{
+		{name: "no config anywhere", want: true},
+		{name: "off in the user's config", home: "[subagents]\nworktree = false\n", want: false},
+		{name: "off in the project", proj: "[subagents]\nworktree = false\n", want: false},
+		{
+			name: "the project turns it back on",
+			home: "[subagents]\nworktree = false\n",
+			proj: "[subagents]\nworktree = true\n",
+			want: true,
+		},
+		{
+			// An unrelated project section must not read as "unset" and lose
+			// the user's choice.
+			name: "a project section that says nothing about it inherits",
+			home: "[subagents]\nworktree = false\n",
+			proj: "model = \"sonnet\"\n",
+			want: false,
+		},
 	}
-	if got := cfg.Hooks.PreToolUse[0].Hooks[0].Command; got != "user-hook" {
-		t.Errorf("surviving hook = %q, want user-hook", got)
-	}
-	if len(cfg.Hooks.PostToolUse) != 0 {
-		t.Errorf("PostToolUse groups = %d, want 0 (project dropped)", len(cfg.Hooks.PostToolUse))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("KLAUDIA_CONFIG_DIR", "")
+			if tt.home != "" {
+				writeConfig(t, home, tt.home)
+			}
+			cwd := t.TempDir()
+			if tt.proj != "" {
+				writeConfig(t, cwd, tt.proj)
+			}
+			if got := mustLoad(t, cwd).SubagentWorktrees(); got != tt.want {
+				t.Errorf("SubagentWorktrees = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

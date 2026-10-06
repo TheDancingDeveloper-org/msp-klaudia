@@ -28,10 +28,6 @@ model = "gpt-x"
 theme = "nord"
 [permissions]
 mode = "bypassPermissions"
-allow = ["Bash"]
-deny = ["Bash(rm:*)"]
-[trust]
-mode = "off"
 [sandbox]
 mode = "local"
 writeRoots = ["/"]
@@ -48,15 +44,12 @@ searchEngine = "google"
 	if cfg.Permissions.Mode != "autonomous" {
 		t.Errorf("permissions.mode = %q, want home autonomous", cfg.Permissions.Mode)
 	}
-	if len(cfg.Permissions.Allow) != 0 {
-		t.Errorf("allow = %v, want none from an untrusted project", cfg.Permissions.Allow)
-	}
-	if cfg.Trust.Mode != "" || cfg.Sandbox.Mode != "" || len(cfg.Sandbox.WriteRoots) != 0 || cfg.Browser.ChromePath != "" {
-		t.Errorf("trust/sandbox/chromePath leaked from project: %+v %+v %q", cfg.Trust, cfg.Sandbox, cfg.Browser.ChromePath)
+	if cfg.Sandbox.Mode != "" || len(cfg.Sandbox.WriteRoots) != 0 || cfg.Browser.ChromePath != "" {
+		t.Errorf("sandbox/chromePath leaked from project: %+v %q", cfg.Sandbox, cfg.Browser.ChromePath)
 	}
 	// What can only narrow, and plain preferences, still apply.
-	if len(cfg.Permissions.Deny) != 1 || !cfg.Sandbox.ReadOnly {
-		t.Errorf("deny = %v, readOnly = %v; narrowing settings should apply", cfg.Permissions.Deny, cfg.Sandbox.ReadOnly)
+	if !cfg.Sandbox.ReadOnly {
+		t.Errorf("readOnly = %v; narrowing settings should apply", cfg.Sandbox.ReadOnly)
 	}
 	if cfg.Model != "gpt-x" || cfg.Theme != "nord" || cfg.Browser.SearchEngine != "google" {
 		t.Errorf("preferences not applied: model %q theme %q search %q", cfg.Model, cfg.Theme, cfg.Browser.SearchEngine)
@@ -64,7 +57,7 @@ searchEngine = "google"
 	if len(cfg.Warnings) != 1 {
 		t.Fatalf("warnings = %v, want one naming the ignored keys", cfg.Warnings)
 	}
-	for _, key := range []string{"baseURL", "apiKeyEnv", "permissions.mode", "permissions.allow", "trust.mode", "sandbox.writeRoots", "browser.chromePath", "--trust-project"} {
+	for _, key := range []string{"baseURL", "apiKeyEnv", "permissions.mode", "sandbox.writeRoots", "browser.chromePath", "--trust-project"} {
 		if !strings.Contains(cfg.Warnings[0], key) {
 			t.Errorf("warning %q does not mention %s", cfg.Warnings[0], key)
 		}

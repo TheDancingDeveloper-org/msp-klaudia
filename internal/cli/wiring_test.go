@@ -38,7 +38,7 @@ func TestBuildDoctorInputReportsWhatItFinds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	in := buildDoctorInput(config.Config{}, "claude-sonnet-4-5", e.Dir, e.Dir, 2)
+	in := buildDoctorInput(config.Config{}, "claude-sonnet-4-5", e.Dir, e.Dir, mcp.Config{MCPServers: map[string]mcp.ServerConfig{"a": {Command: "x"}, "b": {Command: "y"}}}, nil)
 	if in.Provider != "anthropic" || in.SandboxMode != "local" || in.MCPServers != 2 {
 		t.Errorf("defaults = %q/%q/%d", in.Provider, in.SandboxMode, in.MCPServers)
 	}
@@ -58,21 +58,21 @@ func TestBuildDoctorInputReportsWhatItFinds(t *testing.T) {
 
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "oauth-token")
-	if in := buildDoctorInput(config.Config{}, "m", e.Dir, e.Dir, 0); in.AuthKind != "oauth" {
+	if in := buildDoctorInput(config.Config{}, "m", e.Dir, e.Dir, mcp.Config{}, nil); in.AuthKind != "oauth" {
 		t.Errorf("auth kind with a bearer token = %q, want oauth", in.AuthKind)
 	}
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
-	if in := buildDoctorInput(config.Config{}, "m", e.Dir, e.Dir, 0); in.AuthOK || in.AuthKind != "none" {
+	if in := buildDoctorInput(config.Config{}, "m", e.Dir, e.Dir, mcp.Config{}, nil); in.AuthOK || in.AuthKind != "none" {
 		t.Errorf("no credential: auth = %v/%q", in.AuthOK, in.AuthKind)
 	}
 
 	e.write(".klaudia/config.toml", "")
 	openai := config.Config{Provider: config.ProviderOpenAI, APIKey: "k", Sandbox: config.Sandbox{Mode: "container"}}
-	in = buildDoctorInput(openai, "m", e.Dir, e.Dir, 0)
+	in = buildDoctorInput(openai, "m", e.Dir, e.Dir, mcp.Config{}, nil)
 	if in.Provider != "openai" || in.SandboxMode != "container" || !in.ConfigFound || !in.AuthOK || in.AuthKind != "api-key" {
 		t.Errorf("openai input = %+v", in)
 	}
-	if in := buildDoctorInput(config.Config{Provider: config.ProviderOpenAI}, "m", e.Dir, e.Dir, 0); in.AuthOK {
+	if in := buildDoctorInput(config.Config{Provider: config.ProviderOpenAI}, "m", e.Dir, e.Dir, mcp.Config{}, nil); in.AuthOK {
 		t.Error("openai without a key reported auth OK")
 	}
 }
@@ -252,7 +252,7 @@ func TestBuildProviderOpenAI(t *testing.T) {
 // by name.
 func TestMCPControllerWithNoServers(t *testing.T) {
 	ctx := context.Background()
-	mgr, errs := mcp.Connect(ctx, mcp.Config{})
+	mgr, errs := mcp.Connect(ctx, mcp.Config{}, nil)
 	if len(errs) != 0 {
 		t.Fatal(errs)
 	}

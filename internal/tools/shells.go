@@ -127,7 +127,7 @@ func clampJobRead(body string, out ShellOutput) (model, full string) {
 	case out.LogPath != "":
 		clamped += fmt.Sprintf("\n[full log: %s — this read is bytes %d–%d of it]", out.LogPath, out.From, out.To)
 	default:
-		if path, ok := spillOutput(body); ok {
+		if path, ok := spillOutput("BashOutput", body); ok {
 			clamped += "\n" + spillMarker + path + "]"
 		}
 	}

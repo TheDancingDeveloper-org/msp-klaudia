@@ -27,7 +27,7 @@ func callThrough(t *testing.T, result *mcpsdk.CallToolResult) tools.Result {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := ConnectTransport(ctx, "s", clientT)
+	server, err := ConnectTransport(ctx, "s", clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

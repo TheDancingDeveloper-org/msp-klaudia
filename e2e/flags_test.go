@@ -200,51 +200,6 @@ func TestIncludePartialMessages(t *testing.T) {
 	}
 }
 
-// dontAsk with an allow list is the headless least-privilege setup: the
-// allowed tool runs, anything else is denied without a prompt, and the run
-// still completes.
-func TestDontAskRunsOnlyAllowedTools(t *testing.T) {
-	m := NewFakeModel(t,
-		Use("Write", map[string]any{"file_path": "allowed.txt", "content": "ok"}),
-		Use("Bash", map[string]any{"command": "touch denied.txt"}),
-		Say("finished"),
-	)
-	e := NewEnv(t, m)
-	r := e.Headless("x", "--permission-mode", "dontAsk", "--allowedTools", "Write")
-	if r.ExitCode != 0 {
-		t.Fatalf("exit %d\n%s", r.ExitCode, r.dump())
-	}
-	if _, err := os.Stat(e.Path("allowed.txt")); err != nil {
-		t.Errorf("the allowed Write did not run: %v", err)
-	}
-	if _, err := os.Stat(e.Path("denied.txt")); err == nil {
-		t.Error("a Bash call outside the allow list ran")
-	}
-	results := toolResults(r.Events())
-	if len(results) != 2 || results[0]["is_error"] == true || results[1]["is_error"] != true {
-		t.Errorf("tool results = %v, want Write ok and Bash denied", results)
-	}
-}
-
-// --disallowedTools denies a tool even in bypassPermissions.
-func TestDisallowedToolsDeniesInBypass(t *testing.T) {
-	m := NewFakeModel(t,
-		Use("Bash", map[string]any{"command": "touch nope.txt"}),
-		Say("ok"),
-	)
-	e := NewEnv(t, m)
-	r := e.Headless("x", "--dangerously-skip-permissions", "--disallowedTools", "Bash")
-	if r.ExitCode != 0 {
-		t.Fatalf("exit %d\n%s", r.ExitCode, r.dump())
-	}
-	if _, err := os.Stat(e.Path("nope.txt")); err == nil {
-		t.Error("a disallowed Bash call ran")
-	}
-	if results := toolResults(r.Events()); len(results) != 1 || results[0]["is_error"] != true {
-		t.Errorf("tool results = %v, want one denial", results)
-	}
-}
-
 // The project's CLAUDE.md reaches the model as part of the system prompt.
 func TestProjectInstructionsReachTheModel(t *testing.T) {
 	m := NewFakeModel(t, Say("ok"))
