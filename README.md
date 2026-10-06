@@ -338,7 +338,8 @@ With `--output-format json` or `stream-json`, stdout always ends with a
 provider config, a bad flag combination): `is_error` is `true` and `result`
 carries the reason, which is also printed to stderr. `duration_api_ms` is the
 time spent waiting on the model, `duration_ms` the whole run. `total_cost_usd`
-is not computed yet and reads `0`. The exit code says what kind of failure it
+is priced from Klaudia's model table and reads `0` for a model it has no price
+for (every OpenAI-compatible model) — unpriced, not free. The exit code says what kind of failure it
 was — see [Exit codes](docs/jobs.md#exit-codes).
 
 ### Shell completion
@@ -351,7 +352,10 @@ was — see [Exit codes](docs/jobs.md#exit-codes).
 ### Embedding (stream-json over stdin)
 
 A persistent agent driven by newline-delimited JSON over stdin/stdout — the
-channel for editor/SDK integrations (no terminal needed):
+channel for editor/SDK integrations and orchestrators (no terminal needed).
+The full, versioned contract — which lines and fields are stable, the session
+lifecycle, and `klaudia --capabilities` for feature detection — is
+[docs/embedding.md](docs/embedding.md); this is the overview:
 
 ```bash
 ./klaudia --input-format stream-json --verbose

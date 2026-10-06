@@ -16,6 +16,16 @@ port mirrors (see `internal/version`).
   models it serves, names the bare id to use. The README and starter config no
   longer show `model = "openai/gpt-5.5"`, which read as "prefix with the
   provider" and broke every endpoint that lists bare ids.
+### Added
+- **A documented, versioned embedding contract** (#247). `docs/embedding.md`
+  pins the stream-json protocol for drivers and orchestrators: which line types
+  and fields are stable, the control-request round-trips and `--ask-timeout`,
+  the result line's per-turn `usage`, and the `--session-id` / `--resume`
+  lifecycle across restarts, working directories and hosts.
+  `klaudia --capabilities` prints the protocol version and supported features as
+  JSON (before reading any config) so a driver can feature-detect, and
+  `TestEmbeddingContract` fails when an embedded run stops matching the
+  document.
 
 ### Security
 - **The goal loop can no longer discard uncommitted work that predates it.**
