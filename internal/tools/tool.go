@@ -92,6 +92,16 @@ type Context struct {
 	// twenty minutes looked indistinguishable from a hang. It is a plain string
 	// callback rather than an event type because tools must not import agent.
 	Progress func(line string)
+	// ReadText, if non-nil, is where Read gets a text file instead of from
+	// disk: an absolute path, a 1-based start line and a line limit (0 for
+	// "all"), returning that window of the file.
+	//
+	// It exists for one frontend — ACP, where the editor serves the file and so
+	// hands back the user's *unsaved buffer*. Only Read consults it. Glob and
+	// Grep stay on disk: they walk a tree, and the protocol behind this hook is
+	// per-file, so routing them through it would mean asking the editor for
+	// every candidate.
+	ReadText func(ctx context.Context, path string, line, limit int) (string, error)
 }
 
 // Tool is the contract implemented by every local tool (Read, Write, Bash, …).
@@ -113,14 +123,17 @@ type Tool interface {
 	// tool-specific rules, returning a human-readable error if invalid.
 	ValidateInput(raw json.RawMessage) error
 
-	// PermissionRequest derives the rule-matchable action (specifier) from raw
-	// input, e.g. the file path for Edit or the command line for Bash.
+	// PermissionRequest derives the action being requested from raw input, e.g.
+	// the file path for Edit or the command line for Bash. Nothing matches on
+	// it any more — the specifier is what a prompt shows the user.
 	PermissionRequest(raw json.RawMessage) permission.PermissionRequest
 
 	// CheckPermissions returns the tool's intrinsic permission decision for the
-	// current mode. It is consulted by permission.Check after deny/allow rules
-	// and the bypass short-circuit. Read-only tools allow; mutating tools ask
-	// (unless the mode auto-accepts).
+	// current mode. permission.Check consults it after the bypass
+	// short-circuit, and it is now the only thing that decides: plan mode
+	// denies anything that would leave a trace, every other mode allows.
+	// Host changes are stopped upstream by the gate in agent.dispatch, not
+	// here.
 	CheckPermissions(pctx permission.Context, req permission.PermissionRequest) permission.Decision
 
 	// Execute runs the tool and returns one or more tool_result blocks.

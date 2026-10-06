@@ -289,7 +289,7 @@ func formatBashOutput(resp sandbox.Response, command string) (model, full string
 		// The spill file is the *model's* escape hatch to the elided middle —
 		// it can Read or grep the path. The UI doesn't need it: `full` carries
 		// the same text in memory.
-		if path, ok := spillOutput(raw); ok {
+		if path, ok := spillOutput("bash", raw); ok {
 			out += "\n" + spillMarker + path + "]"
 		}
 		full = raw

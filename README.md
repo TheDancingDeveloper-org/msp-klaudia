@@ -19,6 +19,10 @@ extras we lean on day to day:
   recolors, persisted in config.
 - **[Standing goals](#goals--autonomous-iteration)** — `/goal` pins an objective
   that's re-stated to the model every turn.
+- **[Editor integration (ACP)](#editors-acp)** — `--input-format acp` makes
+  Klaudia the agent behind Zed, `acp.nvim` or the JetBrains plugin.
+- **[Isolated sub-agents](#your-changes-and-klaudias)** — children that write
+  get their own git checkout, so two of them can work at once.
 - Plus [OS/container Bash sandboxing](#sandboxing-the-bash-tool), local
   [web search & browsing](#web-search--browsing), [MCP](#mcp), and
   [skills](#skills).
@@ -229,11 +233,53 @@ watcher and keep working. Jobs get a name, a port and a log file; see
 ### Embedding (stream-json over stdin)
 
 A persistent agent driven by newline-delimited JSON over stdin/stdout — the
-channel for editor/SDK integrations (no terminal needed):
+channel for SDK integrations and for an editor without ACP support (no terminal
+needed):
 
 ```bash
 ./klaudia --input-format stream-json --verbose
 ```
+
+Permission asks, the model's questions (`AskUserQuestion`) and plan approvals
+(`ExitPlanMode`) all arrive as `control_request` lines and are answered on the
+matching `request_id`. A peer that has not implemented a subtype should answer
+with an error: that reads as "cancelled" and leaves the model where it was,
+rather than an answer the user never gave being attributed to them.
+
+### Editors (ACP)
+
+```bash
+./klaudia --input-format acp
+```
+
+Klaudia serves the [Agent Client Protocol](https://agentclientprotocol.com) v1
+over stdio, so Zed, Neovim's `acp.nvim` and the JetBrains plugin can drive it as
+their coding agent — the editor's own UI for messages, tool calls, diffs,
+checklists and permission prompts, Klaudia doing the work. In Zed
+(`~/.config/zed/settings.json`):
+
+```json
+{
+  "agent_servers": {
+    "Klaudia": {
+      "type": "custom",
+      "command": "klaudia",
+      "args": ["--input-format", "acp"]
+    }
+  }
+}
+```
+
+Sessions, modes and commands map onto what Klaudia already has: ACP session ids
+*are* transcript ids (so `--resume` and the editor's thread list agree), the
+mode picker is `/mode` and is per thread, `TodoWrite` becomes a native plan,
+`Edit` and `Write` carry diffs, and `.klaudia/skills` appear in the command
+palette. `fs/read_text_file` is used when the editor offers it, so the model
+reads your *unsaved buffer* rather than stale text on disk.
+
+Writing through the client, `terminal/*` and `session/delete` are declined on
+purpose — the reasoning, and the rest of the surface, is in
+[docs/acp.md](docs/acp.md).
 
 ### Resuming
 
@@ -245,9 +291,10 @@ channel for editor/SDK integrations (no terminal needed):
 ./klaudia -r <session-id> --full     # replay the whole transcript (not the summary)
 ```
 
-Auto-resume is an interactive convenience: headless (`-p`) and embedding
-(`--input-format stream-json`) runs stay stateless unless you pass
-`--continue` or `-r <id>`.
+Auto-resume is an interactive convenience: headless (`-p`) and the embedding
+protocols (`--input-format stream-json` and `acp`) stay stateless unless you
+pass `--continue` or `-r <id>`. An ACP client has `session/list` and
+`session/load` for the same job.
 
 Sessions are JSONL transcripts under `~/.klaudia/sessions/<encoded-cwd>/`
 (override the base with `KLAUDIA_CONFIG_DIR`). Klaudia still reads legacy
@@ -291,6 +338,21 @@ Undo stores prior contents as git blobs (`git hash-object -w`). It does not
 touch your index, does not create a stash, and shows the exact `git cat-file`
 commands it would run before doing anything. Full detail:
 [docs/working-tree.md](docs/working-tree.md).
+
+**Sub-agents that can write get a checkout of their own.** Two children editing
+one tree is not a race in the usual sense — nothing errors, and every step
+succeeds: one writes a file, another reads a half-written version and reasons
+about it, a third rewrites the first one's edit. So a sub-agent holding `Write`,
+`Edit`, `NotebookEdit` or `Bash` runs in its own `git worktree` under
+`~/.klaudia/worktrees/`, seeded with your *uncommitted* work rather than `HEAD`,
+and its changes are applied back to your tree with `git apply` when it finishes
+— files only, never your index. `Explore` and `Plan` keep sharing the tree;
+they have nothing to isolate. Anything that could not be applied because the
+file moved underneath is named to you *and* to the model, and the checkout is
+kept so you still have that version. Ignored files are not copied, so a child
+that needs an install step before it can test will pay for it — turn the whole
+thing off with `[subagents] worktree = false` if that is the wrong trade for
+your project.
 
 `/context` shows what Klaudia has actually read rather than a token percentage,
 and `/pin <path>` keeps a file in context every turn so it survives compaction.
@@ -348,14 +410,16 @@ set `[sandbox] mode = "os"`.
 runs do project and remote work but refuse host changes unless you pass
 `--allow-host-changes`.
 
-The per-command model it replaced is **deprecated, not removed**: legacy modes
-(`default`, `acceptEdits`, `dontAsk`), `--allowedTools 'Bash(go test:*)'` and
-the `/allow` and `/deny` commands are still honoured so existing setups keep
-working, but they create nothing new and `/allow`/`/deny` are no longer listed
-in `/help`. `/trust` grants by what an operation *does* rather than by matching
-command text, and shows any surviving rules alongside its own. A config that
-already has permission rules starts in observe mode until you run
-`/trust upgrade`.
+The per-command model it replaced is **removed**. There are no allow/deny
+rules, no `--allowedTools`/`--disallowedTools`, no `/allow` or `/deny`, no
+`default`/`acceptEdits`/`dontAsk` modes, and no "always" answer on a prompt;
+`[permissions] allow`/`deny` and `[trust]` in `.klaudia/config.toml` are no
+longer read. `/trust` grants by what an operation *does* rather than by
+matching command text, and an approval is session-scoped.
+
+Running both models at once was the problem: a rule in a project config
+demoted the next session to a mode that asked before every edit, so "always"
+— the answer offered to stop a prompt — was what produced more of them.
 
 Full detail, including the zone table and what is deliberately *not* protected:
 [docs/trust.md](docs/trust.md).
@@ -518,6 +582,31 @@ is otherwise silent, so check `/mcp` if a server doesn't appear.
 Their tools appear as `mcp__<server>__<tool>`, auto-deferred behind `ToolSearch`.
 In the TUI, `/mcp` lists servers and reconnects/disconnects them.
 
+### Elicitation
+
+Klaudia speaks protocol **2026-07-28**, which lets a server ask *you* for
+something mid-call — a token it has no other way to obtain, a branch name, a
+yes/no before something destructive. The question arrives at the same prompt the
+model's own `AskUserQuestion` uses, labelled with the server that asked. Each
+field in the server's schema is one question; booleans and enums become choices,
+anything else is typed. You can always skip an optional field or cancel the
+whole form, and cancelling tells the server you cancelled rather than handing it
+a guess.
+
+Two deliberate limits. Only **form** elicitation is supported, and only form is
+advertised: the spec's other mode hands the client a URL to open out of band,
+which a terminal cannot do without reaching outside the project, and a server
+told "yes" for a link that was only printed into scrollback is worse off than one
+that was told no. And **headless runs advertise nothing**, because there is
+nobody to ask — a server that sees no elicitation capability takes its own
+non-interactive path instead of waiting for an answer that is never coming.
+
+The legacy HTTP+SSE transport (`type:"sse"`) still works, but the spec has
+deprecated it in favour of streamable HTTP and servers drop it on their own
+schedule. `/doctor` warns when a configured server is still on it, because the
+symptom otherwise is a connect error that says nothing about the one word that
+fixes it.
+
 The **read-only sub-agents get read-only MCP tools**. Fanning out across a wiki,
 an issue tracker and a chat archive is what `Explore` and `Plan` are for, and it
 is also the work whose bulk should never reach the main thread — a sub-agent
@@ -621,6 +710,52 @@ feature being missing. `/doctor` reports what loaded, from which scope, and
 names the directories when nothing did. A skill directory without a `SKILL.md`
 warns at startup rather than being skipped in silence.
 
+## Hooks
+
+A hook is a shell command run at a fixed point in a turn — the escape hatch for
+things Klaudia should not have an opinion about:
+
+```toml
+# .klaudia/config.toml — or ~/.klaudia/config.toml
+
+[[hooks]]
+event = "PostToolUse"          # run the project's formatter after every write
+matcher = "Edit|Write"
+command = "gofmt -w $(jq -r '.tool_input.file_path') 2>/dev/null"
+
+[[hooks]]
+event = "PreToolUse"           # refuse edits to generated files
+matcher = "Edit|Write"
+command = '''
+case "$(jq -r .tool_input.file_path)" in
+  *.pb.go) echo "generated file — edit the source" >&2; exit 2 ;;
+esac
+'''
+
+[[hooks]]
+event = "UserPromptSubmit"     # stdout is added to the conversation
+command = "echo \"Branch: $(git branch --show-current)\""
+timeout = "5s"
+```
+
+Four events, deliberately: `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`. The hook is handed a JSON object on stdin using Claude Code's
+field names (`tool_name`, `tool_input`, `tool_response`, `prompt`, …) so
+existing hook scripts work unedited. Exit **2** blocks and its stderr is the
+reason the model is given; any other non-zero status is a malfunction, reported
+to you and never to the model. stdout becomes context.
+
+**A hook is not a security boundary.** `PreToolUse` runs *after* the host gate
+and permission check have allowed a call, so a hook can narrow what Klaudia will
+do and never widen it. And because a project's `.klaudia/config.toml` arrives
+with a clone, **hooks from a repository are confirmed once** — you are shown
+every command, the decision is remembered in `~/.klaudia/hooks.json`, and
+editing the set asks again. Your own `~/.klaudia/config.toml` hooks run without
+prompting. `/doctor` lists what is attached and warns about a set still waiting
+on approval.
+
+Full semantics: [docs/hooks.md](docs/hooks.md).
+
 ## Themes
 
 `/theme` recolors the whole UI — banner, prompts, menus, type-ahead, and
@@ -667,6 +802,26 @@ Two complementary modes for working toward an objective:
     to approve), and also stops if it stalls (no new commits for a few
     iterations).
 
+## Project instructions (AGENTS.md / CLAUDE.md)
+
+Klaudia reads both, at three levels, in increasing precedence — generic first
+at each level, so an agent-specific file reads as the refinement:
+
+```
+~/.claude/CLAUDE.md   ~/.klaudia/AGENTS.md   <git root>/AGENTS.md   <git root>/CLAUDE.md   ./AGENTS.md   ./CLAUDE.md
+```
+
+[AGENTS.md](https://agents.md) is the cross-agent standard; `CLAUDE.md` is the
+Claude-family one. Both are read because a repo may carry either or both, and
+ignoring one silently drops instructions the user wrote for exactly this
+purpose. `~/.claude` is included for the same reason skills are read from
+there: that is where the ecosystem puts things.
+
+If you support both with a symlink (`ln -s AGENTS.md CLAUDE.md`) or a copy, the
+contents are sent once, not twice — identity is established by resolved path
+*and* by content hash. The prompt's section header names the files it actually
+used, so asking Klaudia to "write that down" puts it in the right one.
+
 ## Memory & project knowledge
 
 - **Auto-memory** — the `Memory` tool stores and recalls notes. `.klaudia/MEMORY.md`
@@ -688,18 +843,21 @@ Two complementary modes for working toward an objective:
 | `tools` | local tool implementations |
 | `browser` | lazy headless-Chrome engine + web search |
 | `lsp` | language-server client for code intelligence (Diagnostics/Definition/References) |
-| `permission` | the three permission modes + the deprecated allow/deny rules (a leaf package) |
+| `permission` | the three permission modes (a leaf package) |
 | `trust` | zones, command/tool classification, session-scoped grants |
 | `session` | JSONL transcripts, resume, persisted summaries |
 | `compaction` | micro + auto context compaction |
-| `mcp` | Model Context Protocol client |
+| `mcp` | Model Context Protocol client (2026-07-28) + form elicitation |
 | `subagent` | built-in sub-agent types |
+| `worktree` | per-sub-agent git checkouts: seed, adopt, conflict reporting |
 | `skill` | user-defined skills |
+| `hooks` | lifecycle hooks: events, project-hook trust, execution |
 | `memory` | auto-memory store |
 | `goal` | standing goals, goal specs, and the Ralph loop |
 | `doctor` | `/doctor` environment diagnostics |
 | `sandbox` | local / OS-confined / container Bash execution |
 | `streamjson` | bidirectional stream-json frontend |
+| `acp` | Agent Client Protocol v1 agent (editor-driven sessions) |
 | `tui` | Bubble Tea terminal UI |
 | `cli` | command entry, flags, wiring |
 | `native` | pure-Go search / bash-parsing / PDF |
@@ -711,8 +869,11 @@ Two complementary modes for working toward an objective:
 - [docs/ux-spec.md](docs/ux-spec.md) — the terminal-UX specs, and where the
   implementation deliberately departs from them
 - [docs/trust.md](docs/trust.md) — the host boundary, zones, and what is *not* protected
+- [docs/hooks.md](docs/hooks.md) — lifecycle hooks, and why project hooks are confirmed
 - [docs/jobs.md](docs/jobs.md) — the job model, logs, and its limits
-- [docs/working-tree.md](docs/working-tree.md) — change ownership, `/commit`, `/undo`
+- [docs/working-tree.md](docs/working-tree.md) — change ownership, `/commit`,
+  `/undo`, and the sub-agent checkouts
+- [docs/acp.md](docs/acp.md) — the ACP frontend: what is served, and what is declined
 - [docs/parity.md](docs/parity.md) — JS→Go feature map and divergences
 - [docs/compaction.md](docs/compaction.md) — context-window management
 - [docs/memory-architecture.md](docs/memory-architecture.md) — index→detail memory store
@@ -750,8 +911,9 @@ tools.
   (Diagnostics/Definition/References), OS/container Bash sandboxing, persisted
   resume summaries, project `KNOWLEDGE.md`, an index→detail memory store,
   standing goals (`/goal`), chrome-wide themes, managed background jobs with
-  logs, working-tree change ownership (`/changes`, `/undo`), and an autonomy
-  model that stops at the host boundary rather than at each action.
+  logs, working-tree change ownership (`/changes`, `/undo`), per-sub-agent git
+  checkouts, an ACP frontend for editors, and an autonomy model that stops at
+  the host boundary rather than at each action.
 
 ## Roadmap
 

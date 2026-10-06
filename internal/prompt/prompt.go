@@ -1,16 +1,18 @@
 // Package prompt assembles Klaudia's system prompt: base agent instructions, a
 // security clause, live environment context (cwd, git, platform, date), and any
-// CLAUDE.md project instructions. A richer prompt makes Klaudia a materially
+// AGENTS.md / CLAUDE.md project instructions. A richer prompt makes Klaudia a materially
 // better coding agent — important for self-hosting (using Klaudia to develop
 // Klaudia).
 package prompt
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -59,8 +61,8 @@ func System(cwd, model string) string {
 	}
 	b.WriteString("\n\n")
 	b.WriteString(envBlock(cwd))
-	if instr := loadProjectInstructions(cwd); instr != "" {
-		b.WriteString("\n\n# Project instructions (from CLAUDE.md)\n")
+	if instr, sources := loadProjectInstructions(cwd); instr != "" {
+		fmt.Fprintf(&b, "\n\n# Project instructions (from %s)\n", strings.Join(sources, ", "))
 		b.WriteString(instr)
 	}
 	if mem := recalledMemory(cwd); mem != "" {
@@ -164,34 +166,81 @@ func osVersion() string {
 	return runtime.GOOS
 }
 
-// loadProjectInstructions concatenates CLAUDE.md from the user global config,
-// the git root, and cwd (closest last so it takes precedence in the reader's
-// mind). Missing files are skipped; duplicates are de-duplicated.
-func loadProjectInstructions(cwd string) string {
+// loadProjectInstructions concatenates the instruction files that apply to
+// cwd, closest last so the most specific one reads as the refinement. It
+// returns the text and the distinct file names it came from, which is what the
+// section header names — a model asked to record a convention should know
+// which file to put it in.
+//
+// # Both AGENTS.md and CLAUDE.md
+//
+// AGENTS.md is the cross-agent standard and is now in several hundred thousand
+// repositories; CLAUDE.md is the Claude-family one and is what this project
+// uses. A repo may have either, or both with different content, and reading
+// only one of them means silently ignoring instructions the user wrote for
+// exactly this purpose. At each level the generic file is read first and the
+// agent-specific one after it.
+//
+// # The symlink trap
+//
+// The commonest way a repo supports both today is `ln -s AGENTS.md CLAUDE.md`,
+// and the second commonest is a copy. Either would otherwise be concatenated
+// twice — the whole instruction block, duplicated, in every request. So
+// identity is established two ways: the resolved path (EvalSymlinks, which
+// filepath.Abs does not do) and a hash of the contents, which catches the copy
+// that no path comparison can.
+func loadProjectInstructions(cwd string) (string, []string) {
 	var paths []string
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, ".claude", "CLAUDE.md"))
+		// ~/.claude is read for the same reason skill.Load reads it: that is
+		// where the ecosystem's installers put things. Klaudia's own global
+		// comes after, so it wins at that level.
+		paths = append(paths,
+			filepath.Join(home, ".claude", "CLAUDE.md"),
+			filepath.Join(home, ".klaudia", "AGENTS.md"),
+		)
 	}
 	if root, err := runGit(cwd, "rev-parse", "--show-toplevel"); err == nil {
-		paths = append(paths, filepath.Join(strings.TrimSpace(root), "CLAUDE.md"))
+		root = strings.TrimSpace(root)
+		paths = append(paths, filepath.Join(root, "AGENTS.md"), filepath.Join(root, "CLAUDE.md"))
 	}
-	paths = append(paths, filepath.Join(cwd, "CLAUDE.md"))
+	paths = append(paths, filepath.Join(cwd, "AGENTS.md"), filepath.Join(cwd, "CLAUDE.md"))
 
-	seen := map[string]bool{}
-	var parts []string
+	seenPath := map[string]bool{}
+	seenBody := map[[32]byte]bool{}
+	var parts, names []string
 	for _, p := range paths {
 		abs, err := filepath.Abs(p)
-		if err != nil || seen[abs] {
+		if err != nil {
 			continue
 		}
-		seen[abs] = true
+		// Resolve before the check: a symlinked CLAUDE.md has its own absolute
+		// path and the same target.
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = resolved
+		}
+		if seenPath[abs] {
+			continue
+		}
+		seenPath[abs] = true
 		data, err := os.ReadFile(abs)
 		if err != nil {
 			continue
 		}
-		if s := strings.TrimSpace(string(data)); s != "" {
-			parts = append(parts, s)
+		s := strings.TrimSpace(string(data))
+		if s == "" {
+			continue
+		}
+		sum := sha256.Sum256([]byte(s))
+		if seenBody[sum] {
+			continue
+		}
+		seenBody[sum] = true
+		parts = append(parts, s)
+		// Name the file the user wrote, not the symlink target it resolved to.
+		if base := filepath.Base(p); !slices.Contains(names, base) {
+			names = append(names, base)
 		}
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n"), names
 }

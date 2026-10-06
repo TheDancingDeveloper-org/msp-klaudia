@@ -174,7 +174,7 @@ func startTestServerWithPeer(t *testing.T) (*Manager, *mcpsdk.ServerSession) {
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client, err := ConnectTransport(context.Background(), "testsrv", clientT)
+	client, err := ConnectTransport(context.Background(), "testsrv", clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}

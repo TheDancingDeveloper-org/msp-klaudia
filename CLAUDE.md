@@ -22,16 +22,19 @@ Use `go install` when you mean to try the change.
 - **api** - Provider abstraction: Anthropic client + OpenAI-compatible shim
 - **tools** - Local tool implementations
 - **browser** - Lazy headless-Chrome engine + web search
-- **permission** - Permission modes + allow/deny rules (a leaf package)
+- **permission** - The three permission modes (a leaf package)
 - **trust** - Zones, command/tool classification, session-scoped grants
 - **session** - Transcripts, resume, persisted compaction summaries
 - **compaction** - Context/history compression (micro + auto)
-- **mcp** - Model Context Protocol support
+- **mcp** - Model Context Protocol client (2026-07-28) + form elicitation
 - **subagent** - Built-in sub-agent types
+- **worktree** - Per-sub-agent git checkouts: seed, adopt, conflict reporting
 - **skill** - User-defined skills (`.klaudia/skills`)
+- **hooks** - Lifecycle hooks: the four events, project-hook trust, execution
 - **memory** - Auto-memory store
 - **doctor** - `/doctor` environment diagnostics
 - **streamjson** - Bidirectional stream-json frontend
+- **acp** - Agent Client Protocol v1 agent (editor-driven sessions)
 - **tui** - Terminal UI (Bubble Tea)
 - **prompt** - Prompt construction
 - **cli** - CLI entry point and wiring
@@ -44,8 +47,23 @@ Use `go install` when you mean to try the change.
 
 `docs/ux-spec.md` is the authoritative record of the two terminal-UX specs and
 where the implementation deliberately differs from them — read it before
-"fixing" something that looks unimplemented. `docs/trust.md`, `docs/jobs.md` and
-`docs/working-tree.md` cover the three subsystems in detail.
+"fixing" something that looks unimplemented. `docs/trust.md`, `docs/jobs.md`,
+`docs/working-tree.md`, `docs/hooks.md` and `docs/acp.md` cover five subsystems
+in detail.
+
+Hooks are the one subsystem that executes a string from a config file, so
+`docs/hooks.md` is where the reasoning for the trust prompt lives. A hook runs
+*after* the host gate, never instead of it: anything that lets a config file
+grant permission is a bug, not a feature request.
+
+There are three frontends — TUI, stream-json, ACP — and one contract between
+them: `agent.Turn`, applied by `Turn.Apply`. A new capability is a **field on
+`Turn`**, not another parameter on a per-frontend `RunFunc`; the per-frontend
+signatures are what let `AskUserQuestion` and `ExitPlanMode` sit dead over
+stream-json for months, because a frontend that omitted a capability was
+indistinguishable from one that did not want it. `docs/acp.md` records what the
+ACP frontend declines (client-side writes, `terminal/*`, `session/delete`) and
+why those are decisions rather than gaps.
 
 ## Rules
 

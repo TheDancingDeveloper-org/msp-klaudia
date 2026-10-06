@@ -35,8 +35,7 @@ func TestDispatchBreaksRetryLoop(t *testing.T) {
 
 	// An unknown tool always fails (errResult), which increments the counter.
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "Frobnicate", Input: map[string]any{"a": 1}}
-	failures := map[string]int{}
-	streaks := map[string]errStreak{}
+	fs := newFailureState()
 	reveal := func(...string) {}
 
 	textOf := func(b anthropic.BetaContentBlockParamUnion) string {
@@ -48,14 +47,14 @@ func TestDispatchBreaksRetryLoop(t *testing.T) {
 
 	// First repeatFailureLimit attempts return the normal error and bump the count.
 	for i := 0; i < repeatFailureLimit; i++ {
-		got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, reveal, failures, streaks))
+		got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, reveal, fs))
 		if !strings.Contains(got, "No such tool available") {
 			t.Fatalf("attempt %d: expected the normal error, got %q", i+1, got)
 		}
 	}
 
 	// The next identical attempt is short-circuited with the steering message.
-	got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, reveal, failures, streaks))
+	got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, reveal, fs))
 	if !strings.Contains(got, "already tried this exact") {
 		t.Fatalf("expected loop-breaker steering, got %q", got)
 	}
@@ -76,12 +75,11 @@ func TestHostRefusalDoesNotLatchTheTool(t *testing.T) {
 	reg, bash := testRegistry(t)
 	l := New(nil, reg)
 
-	failures := map[string]int{}
-	streaks := map[string]errStreak{}
+	fs := newFailureState()
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 	}
 
 	// Two DIFFERENT host-changing commands. Both are stopped at the gate.
@@ -90,19 +88,19 @@ func TestHostRefusalDoesNotLatchTheTool(t *testing.T) {
 		"sudo launchctl stop com.example.agent",
 	} {
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(bashInput(cmd))}
-		l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, failures, streaks)
+		l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, fs)
 	}
 	if len(bash.ran) != 0 {
 		t.Fatalf("a host-changing command ran anyway: %v", bash.ran)
 	}
-	if s, ok := streaks["Bash"]; ok {
+	if s, ok := fs.streaks["Bash"]; ok {
 		t.Fatalf("gate refusals fed the same-shape streak: %+v", s)
 	}
 
 	// The tool must still work. Before the fix this call never reached the
 	// registry — loop-breaker B answered it with a quote of the stale refusal.
 	tu := anthropic.BetaToolUseBlock{ID: "t3", Name: "Bash", Input: json.RawMessage(bashInput("git status --short"))}
-	body := resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, failures, streaks))
+	body := resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, fs))
 	if len(bash.ran) != 1 || bash.ran[0] != "git status --short" {
 		t.Fatalf("the tool latched: benign command never ran (ran=%v, result=%q)", bash.ran, body)
 	}
@@ -115,22 +113,21 @@ func TestLoopBreakerARefusalDoesNotFeedB(t *testing.T) {
 	read, _ := tools.NewRead()
 	l := New(nil, tools.NewRegistry(read))
 
-	failures := map[string]int{}
-	streaks := map[string]errStreak{}
+	fs := newFailureState()
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "Frobnicate", Input: map[string]any{"a": 1}}
 
 	// Fail it to the limit, then keep hammering the identical call. Each of
 	// those later calls is answered by A.
 	for i := 0; i < repeatFailureLimit+3; i++ {
-		l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, failures, streaks)
+		l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, fs)
 	}
 
 	// The streak may hold the genuine failures from before A engaged, but it
 	// must not have grown past the limit on the back of A's own refusals.
-	if st := streaks["Frobnicate"]; st.count > repeatFailureLimit {
+	if st := fs.streaks["Frobnicate"]; st.count > repeatFailureLimit {
 		t.Fatalf("breaker A's refusals fed breaker B: streak=%+v", st)
 	}
-	got := resultText(l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, failures, streaks))
+	got := resultText(l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, fs))
 	if !strings.Contains(got, "already tried this exact") {
 		t.Fatalf("expected breaker A to keep steering the identical call, got %q", got)
 	}
@@ -148,14 +145,13 @@ func TestDispatchBreaksSameShapeErrorLoopVariedInputsGetsEnvMessage(t *testing.T
 	bash.err = "fork/exec /bin/zsh: resource temporarily unavailable"
 	l := New(nil, reg)
 
-	failures := map[string]int{}
-	streaks := map[string]errStreak{}
+	fs := newFailureState()
 	opts := Options{Permission: permission.Context{Mode: permission.StaticMode(permission.ModeBypassPermissions)}}
 
 	// Three DIFFERENT commands, same execution failure each time.
 	for i, cmd := range []string{"ls", "pwd", "echo hello"} {
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(bashInput(cmd))}
-		got := resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, failures, streaks))
+		got := resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, fs))
 		switch i {
 		case 0, 1:
 			if !strings.Contains(got, "resource temporarily unavailable") {
@@ -222,12 +218,11 @@ func TestPreExecFailuresNeverGetEnvMessage(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			failures := map[string]int{}
-			streaks := map[string]errStreak{}
+			fs := newFailureState()
 			var got string
 			for _, args := range tc.inputs {
 				tu := anthropic.BetaToolUseBlock{ID: "t", Name: tc.tool, Input: args}
-				got = resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, failures, streaks))
+				got = resultText(l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, fs))
 			}
 			if strings.Contains(got, "environment issue") || strings.Contains(got, "across DIFFERENT inputs") {
 				t.Fatalf("pre-execution failure blamed on the environment: %q", got)
@@ -248,8 +243,7 @@ func TestDispatchBreaksSameShapeErrorLoopIdenticalInputsKeepsOriginalMessage(t *
 	read, _ := tools.NewRead()
 	l := New(nil, tools.NewRegistry(read))
 
-	failures := map[string]int{}
-	streaks := map[string]errStreak{}
+	fs := newFailureState()
 	textOf := func(b anthropic.BetaContentBlockParamUnion) string {
 		if b.OfToolResult == nil || len(b.OfToolResult.Content) == 0 {
 			return ""
@@ -267,7 +261,7 @@ func TestDispatchBreaksSameShapeErrorLoopIdenticalInputsKeepsOriginalMessage(t *
 	args := map[string]any{"q": "alpha"}
 	for i := range 3 {
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: "Find", Input: args}
-		got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, failures, streaks))
+		got := textOf(l.dispatch(context.Background(), tu, Options{}, nil, func(...string) {}, fs))
 		switch i {
 		case 0, 1:
 			if !strings.Contains(got, "No such tool available: Find") {

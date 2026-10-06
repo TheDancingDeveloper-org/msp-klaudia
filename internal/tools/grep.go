@@ -39,6 +39,10 @@ func NewGrep() (*Grep, error) {
 
 func (g *Grep) Name() string { return "Grep" }
 
+// ConcurrencySafe: the search is pure Go over the filesystem (internal/native),
+// not a subprocess, so nothing is shared between two running searches.
+func (g *Grep) ConcurrencySafe() bool { return true }
+
 func (g *Grep) Description(context.Context) (string, error) {
 	return "Search file contents with a regular expression. output_mode controls results: " +
 		"\"files_with_matches\" (default) lists matching files, \"content\" shows matching lines, " +

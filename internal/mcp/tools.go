@@ -27,23 +27,17 @@ import (
 // by reading their inputs, and it has no model of what an MCP server does, so
 // an MCP call raises no concerns and is allowed. Trusting the zone model here
 // means trusting the servers in .mcp.json roughly as much as the shell —
-// which is the same bet as running them at all, and is why this follows the
-// trust posture rather than being unconditional.
+// which is the same bet as running them at all.
 //
-// Without trust enforcing, the old behaviour stands: ask in interactive modes,
-// refuse where there is nobody to ask.
+// A server you want available without that bet can be marked read-only in
+// .mcp.json and reached from a read-only sub-agent; that path is governed by
+// the readOnlyHint annotation rather than by the mode.
 func mcpPermission(pctx permission.Context) permission.Decision {
 	if permission.CurrentMode(pctx) == permission.ModePlan {
 		// Plan mode is read-only for every tool, trusted or not.
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; MCP tools are not allowed"}
 	}
-	if permission.IsTrusting(pctx) {
-		return permission.Decision{Behavior: permission.Allow}
-	}
-	if permission.CurrentMode(pctx) == permission.ModeDontAsk {
-		return permission.Decision{Behavior: permission.Deny, Message: "not pre-approved (dontAsk mode)"}
-	}
-	return permission.Decision{Behavior: permission.Ask}
+	return permission.Decision{Behavior: permission.Allow}
 }
 
 // mcpTool adapts a single MCP server tool to the Klaudia Tool interface. Its
@@ -55,6 +49,8 @@ type mcpTool struct {
 	inputSchema   json.RawMessage
 	server        *Server
 	readOnly      bool
+	// mgr is held so a call can relaunch its own server; see Execute.
+	mgr *Manager
 }
 
 func (t *mcpTool) Name() string                                { return t.qualifiedName }
@@ -99,13 +95,58 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 	}
 	sess := t.server.sess()
 	if sess == nil {
-		return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected; reconnect it with /mcp.", t.server.Name), IsError: true}}, nil
+		// A server that failed to launch at startup, or was disconnected.
+		// Worth one attempt before telling the model it is unusable: the
+		// common cause is transient, and the alternative is a dead tool for
+		// the rest of the session unless the user notices and runs /mcp.
+		if !t.revive(ctx) {
+			return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected and could not be restarted; reconnect it with /mcp.", t.server.Name), IsError: true}}, nil
+		}
+		sess = t.server.sess()
 	}
 	res, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
-	if err != nil {
+	if err == nil {
+		return []tools.Result{{Content: textOf(res.Content), IsError: res.IsError}}, nil
+	}
+
+	// The call failed on the wire. revive probes liveness first, so a bad
+	// argument or an unknown tool — which also arrive as errors — cannot
+	// restart a healthy server.
+	if !t.revive(ctx) {
 		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
 	}
+
+	// The server is back. Whether to run the call again is not a performance
+	// question, it is a correctness one: the failure may have happened on the
+	// way back from a call that already ran, and nothing on the wire
+	// distinguishes that from one that never arrived. A read can be repeated
+	// at worst wastefully; anything else is reported, with the ambiguity
+	// stated, so the model checks rather than silently doing it twice.
+	if !t.readOnly {
+		return []tools.Result{{Content: fmt.Sprintf(
+			"MCP call failed: %v. Server %q had stopped responding and has been restarted. "+
+				"The call may or may not have taken effect before it died — check the state before retrying.",
+			err, t.server.Name), IsError: true}}, nil
+	}
+	sess = t.server.sess()
+	if sess == nil {
+		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
+	}
+	res, err = sess.CallTool(ctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
+	if err != nil {
+		return []tools.Result{{Content: fmt.Sprintf("MCP call failed after restarting server %q: %v", t.server.Name, err), IsError: true}}, nil
+	}
 	return []tools.Result{{Content: textOf(res.Content), IsError: res.IsError}}, nil
+}
+
+// revive relaunches the tool's server if it has died. It is a no-op returning
+// false when the tool was built without a Manager (tests that wire a Server
+// directly), so the old behaviour stands there.
+func (t *mcpTool) revive(ctx context.Context) bool {
+	if t.mgr == nil {
+		return false
+	}
+	return t.mgr.revive(ctx, t.server)
 }
 
 // Tools lists every connected server's tools and wraps them. Servers that fail
@@ -141,6 +182,7 @@ func (m *Manager) Tools(ctx context.Context) []tools.Tool {
 				inputSchema:   schema,
 				server:        srv,
 				readOnly:      readOnly,
+				mgr:           m,
 			})
 		}
 	}

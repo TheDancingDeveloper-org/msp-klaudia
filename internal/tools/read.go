@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,11 @@ func NewRead() (*Read, error) {
 
 func (r *Read) Name() string { return "Read" }
 
+// ConcurrencySafe: opening a file for reading needs nothing a sibling call
+// also needs, and Read never prompts. A batch of them is the commonest shape
+// in a turn — the model orients itself by reading several files at once.
+func (r *Read) ConcurrencySafe() bool { return true }
+
 func (r *Read) Description(context.Context) (string, error) {
 	return "Reads a file from the local filesystem. file_path may be absolute or relative " +
 		"to the working directory. " +
@@ -132,7 +138,7 @@ func (r *Read) CheckPermissions(pctx permission.Context, _ permission.Permission
 	return allowAlways(pctx)
 }
 
-func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
+func (r *Read) Execute(ctx context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
 	var in ReadInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -152,6 +158,28 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 		return readImage(in.FilePath)
 	}
 
+	start := max(in.Offset, 1)
+	limit := in.Limit
+	if limit <= 0 {
+		limit = readDefaultLimit
+	}
+
+	// Ask the frontend first when it offers to serve the file. Under ACP that is
+	// the editor, which returns the buffer *including unsaved edits* — the whole
+	// reason the hook exists. It applies start/limit itself, so what comes back
+	// is already the window and nothing is skipped; numbering still begins at
+	// start so the line numbers mean the same thing either way.
+	if tctx.ReadText != nil {
+		text, rerr := tctx.ReadText(ctx, in.FilePath, start, limit)
+		if rerr == nil {
+			return numbered(strings.NewReader(text), 0, start, limit)
+		}
+		// Fall through to disk. The hook is an improvement on reading the file,
+		// never a restriction on it: a client that cannot serve this path (not
+		// in the project, not a text file, request unanswered because the turn
+		// was cancelled) must not turn a readable file into a failed Read.
+	}
+
 	f, err := os.Open(in.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -161,20 +189,24 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 	}
 	defer f.Close()
 
-	start := max(in.Offset, 1)
-	limit := in.Limit
-	if limit <= 0 {
-		limit = readDefaultLimit
-	}
+	return numbered(f, start-1, start, limit)
+}
 
+// numbered renders src in cat -n form: drop the first skip lines, emit at most
+// limit of the rest, and number the first emitted line `first`.
+//
+// skip and first are separate because the two sources differ in exactly that
+// way — a file on disk starts at line 1 and has to be wound forward, while a
+// window the frontend already cut starts at the line the caller asked for.
+func numbered(src io.Reader, skip, first, limit int) ([]Result, error) {
 	var b strings.Builder
-	sc := bufio.NewScanner(f)
+	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	lineNo := 0
+	read := 0
 	emitted := 0
 	for sc.Scan() {
-		lineNo++
-		if lineNo < start {
+		read++
+		if read <= skip {
 			continue
 		}
 		if emitted >= limit {
@@ -185,7 +217,7 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 			line = line[:readMaxLineLen]
 		}
 		// cat -n format: line number right-aligned in a 6-wide field, then a tab.
-		fmt.Fprintf(&b, "%6d\t%s\n", lineNo, line)
+		fmt.Fprintf(&b, "%6d\t%s\n", first+emitted, line)
 		emitted++
 	}
 	if err := sc.Err(); err != nil {

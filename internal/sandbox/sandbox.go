@@ -80,6 +80,18 @@ func resolveShell() string {
 	return "/bin/sh"
 }
 
+// Shell returns the shell used to interpret command lines. Exported for other
+// packages that run a configured command line (internal/hooks), so there is one
+// answer to "which shell" rather than one per caller.
+func Shell() string { return shellPath }
+
+// ProcGroup puts cmd in its own process group and routes cmd.Cancel through the
+// group, SIGTERM then SIGKILL. See procgroup_unix.go for why that matters: it
+// is the difference between cancelling a command and cancelling the shell that
+// started it. Exported so a caller outside this package does not have to
+// reimplement the build-tagged signal handling to get the same guarantee.
+func ProcGroup(cmd *exec.Cmd) { applyProcGroup(cmd) }
+
 // Local runs commands as plain host processes with no confinement. It is the
 // default executor and the fallback when no sandbox/container is available.
 type Local struct{}

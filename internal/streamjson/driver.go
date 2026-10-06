@@ -1,23 +1,39 @@
 // Package streamjson implements the bidirectional stream-json frontend: a
 // persistent agent driven over stdin/stdout with newline-delimited JSON. This
-// is the embedding channel used by SDKs and editor integrations (e.g. Zed/ACP
-// can build on it) — no terminal required.
+// is the embedding channel used by SDKs and editor integrations — no terminal
+// required. (An ACP editor integration speaks ACP instead; see internal/acp.)
 //
 // Protocol (matching the JS reference):
 //
 //	in:  {"type":"user","message":{"role":"user","content":"..."}}
 //	in:  {"type":"control_response","response":{"subtype":"success",
-//	      "request_id":"<id>","response":{"behavior":"allow"|"deny",...}}}
-//	out: assistant / tool_use / tool_result / compaction events (agent.Event)
-//	out: {"type":"control_request","request_id":"<id>",
-//	      "request":{"subtype":"can_use_tool","tool_name":"...","input":{...}}}
+//	      "request_id":"<id>","response":{...}}}
+//	out: assistant / tool_use / tool_result / compaction / notice /
+//	     permission_mode events (agent.Event)
+//	out: {"type":"control_request","request_id":"<id>","request":{...}}
 //	out: {"type":"result", ...}
+//
+// Three control_request subtypes, all answered on the same request_id channel:
+//
+//	can_use_tool: {"tool_name","input","tool_use_id","specifier","suggestion",
+//	               "host_change":{...}} -> {"behavior":"allow"|"deny","message"}
+//	ask_user:     {"question","options":[{"label","description"}]} -> {"label"}
+//	exit_plan:    {"plan"} -> {"approved":bool,"message"}
+//
+// can_use_tool is the one the JS reference defines. ask_user and exit_plan are
+// Klaudia extensions, added because without them AskUserQuestion and
+// ExitPlanMode were dead over this transport: the CLI had no wire form to put
+// them in, so it passed no Asker and no Planner and the model was told there was
+// nobody to ask — on the channel whose whole purpose is a client with a user in
+// front of it. A peer that does not implement them should answer with an error,
+// which is read as "cancelled" and leaves the model where it was before.
 package streamjson
 
 import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"sync"
 
@@ -27,13 +43,12 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
-// RunFunc runs one user turn to completion, seeded with prior conversation
-// history, using the supplied approver and emitter. It returns the agent
-// Result whose Messages field carries the updated history forward. The CLI
-// provides this, wiring in the API client, tools, model, and permission context.
-type RunFunc func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, approver agent.Approver, emit agent.Emitter) (agent.Result, error)
+// RunFunc runs one user turn to completion. It is the shared frontend contract
+// — see agent.Turn.
+type RunFunc = agent.RunFunc
 
 // inMessage is a decoded stdin line.
 type inMessage struct {
@@ -49,9 +64,27 @@ type controlResp struct {
 	Error     string          `json:"error,omitempty"`
 }
 
+// ok reports whether the peer answered rather than failed. A missing subtype is
+// treated as success so that a peer which only ever echoes request_id and a
+// payload still works; an explicit error, or an unparseable payload, is not.
+func (r *controlResp) ok() bool {
+	return r != nil && r.Error == "" && (r.Subtype == "" || r.Subtype == "success")
+}
+
 // permissionAnswer is the payload inside a can_use_tool control response.
 type permissionAnswer struct {
 	Behavior string `json:"behavior"`
+	Message  string `json:"message,omitempty"`
+}
+
+// askAnswer is the payload inside an ask_user control response.
+type askAnswer struct {
+	Label string `json:"label"`
+}
+
+// planAnswer is the payload inside an exit_plan control response.
+type planAnswer struct {
+	Approved bool   `json:"approved"`
 	Message  string `json:"message,omitempty"`
 }
 
@@ -59,7 +92,7 @@ type permissionAnswer struct {
 type Driver struct {
 	out     io.Writer
 	mu      sync.Mutex // serializes writes to out
-	pending sync.Map   // request_id -> chan permission.Decision
+	pending sync.Map   // request_id -> chan *controlResp
 }
 
 // NewDriver builds a Driver writing to w.
@@ -68,9 +101,10 @@ func NewDriver(w io.Writer) *Driver {
 }
 
 // Run reads messages from r until EOF, running the agent for each user message.
-// Permission asks are emitted as control_request lines and block until the
+// history seeds a resumed conversation (may be nil). Permission asks, questions
+// and plan approvals are emitted as control_request lines and block until the
 // peer sends the matching control_response.
-func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
+func (d *Driver) Run(ctx context.Context, r io.Reader, history []anthropic.BetaMessageParam, run RunFunc) error {
 	lines := make(chan inMessage, 8)
 
 	// Reader goroutine: route control responses to waiters, user messages to
@@ -92,8 +126,6 @@ func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
 		}
 	}()
 
-	approver := &controlApprover{driver: d}
-	var history []anthropic.BetaMessageParam
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,8 +141,14 @@ func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
 			if prompt == "" {
 				continue
 			}
-			emit := func(ev agent.Event) { d.write(ev) }
-			res, err := run(ctx, prompt, history, approver, emit)
+			res, err := run(ctx, agent.Turn{
+				Prompt:   prompt,
+				History:  history,
+				Emit:     func(ev agent.Event) { d.write(ev) },
+				Approver: &controlApprover{driver: d},
+				Asker:    &controlAsker{driver: d},
+				Planner:  &controlPlanner{driver: d},
+			})
 			if res.Messages != nil {
 				history = res.Messages // carry conversation forward
 			}
@@ -131,7 +169,7 @@ func (d *Driver) write(v any) {
 	_, _ = d.out.Write([]byte("\n"))
 }
 
-// deliverControlResponse resolves a pending permission request.
+// deliverControlResponse resolves a pending control request.
 func (d *Driver) deliverControlResponse(resp *controlResp) {
 	if resp == nil || resp.RequestID == "" {
 		return
@@ -140,8 +178,70 @@ func (d *Driver) deliverControlResponse(resp *controlResp) {
 	if !ok {
 		return
 	}
+	ch.(chan *controlResp) <- resp
+}
+
+// errNoAnswer is returned when the turn was cancelled before the peer replied.
+var errNoAnswer = errors.New("cancelled")
+
+// request emits one control_request and blocks until the peer answers it or ctx
+// is cancelled. The payload's "subtype" selects the request kind.
+func (d *Driver) request(ctx context.Context, payload map[string]any) (*controlResp, error) {
+	id := uuid.NewString()
+	ch := make(chan *controlResp, 1)
+	d.pending.Store(id, ch)
+	defer d.pending.Delete(id)
+
+	d.write(map[string]any{
+		"type":       "control_request",
+		"request_id": id,
+		"request":    payload,
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, errNoAnswer
+	case resp := <-ch:
+		return resp, nil
+	}
+}
+
+// controlApprover emits a can_use_tool request and waits for the peer's answer.
+type controlApprover struct {
+	driver *Driver
+}
+
+func (a *controlApprover) Approve(ctx context.Context, req agent.ApprovalRequest) permission.Decision {
+	payload := map[string]any{
+		"subtype":   "can_use_tool",
+		"tool_name": req.ToolName,
+		"input":     json.RawMessage(req.Input),
+	}
+	// The fields below used to be dropped on the floor, which made every ask
+	// look the same. The host-change one is the damaging omission: "allow Bash?"
+	// is the wrong question to put to someone about `systemctl restart nginx`,
+	// and a peer that cannot tell the two apart cannot render the right card.
+	if req.ToolUseID != "" {
+		payload["tool_use_id"] = req.ToolUseID
+	}
+	if req.Specifier != "" {
+		payload["specifier"] = req.Specifier
+	}
+	if req.Suggestion != "" {
+		payload["suggestion"] = req.Suggestion
+	}
+	if req.HostChange != nil {
+		// Fields lives on agent.HostChange because ACP needs the same
+		// rendering, and two copies of "which fields to omit" would drift.
+		payload["host_change"] = req.HostChange.Fields()
+	}
+
+	resp, err := a.driver.request(ctx, payload)
+	if err != nil {
+		return permission.Decision{Behavior: permission.Deny, Message: "cancelled"}
+	}
 	decision := permission.Decision{Behavior: permission.Deny, Message: "denied"}
-	if resp.Subtype == "success" && len(resp.Response) > 0 {
+	if resp.ok() && len(resp.Response) > 0 {
 		var ans permissionAnswer
 		if json.Unmarshal(resp.Response, &ans) == nil {
 			if ans.Behavior == "allow" {
@@ -151,36 +251,78 @@ func (d *Driver) deliverControlResponse(resp *controlResp) {
 			}
 		}
 	}
-	ch.(chan permission.Decision) <- decision
+	return decision
 }
 
-// controlApprover emits a control_request and waits for the peer's answer.
-type controlApprover struct {
+// controlAsker emits an ask_user request for AskUserQuestion and for MCP
+// elicitation, which is pointed at the same Asker.
+type controlAsker struct {
 	driver *Driver
 }
 
-func (a *controlApprover) Approve(ctx context.Context, req agent.ApprovalRequest) permission.Decision {
-	id := uuid.NewString()
-	ch := make(chan permission.Decision, 1)
-	a.driver.pending.Store(id, ch)
-	defer a.driver.pending.Delete(id)
-
-	a.driver.write(map[string]any{
-		"type":       "control_request",
-		"request_id": id,
-		"request": map[string]any{
-			"subtype":   "can_use_tool",
-			"tool_name": req.ToolName,
-			"input":     json.RawMessage(req.Input),
-		},
-	})
-
-	select {
-	case <-ctx.Done():
-		return permission.Decision{Behavior: permission.Deny, Message: "cancelled"}
-	case dec := <-ch:
-		return dec
+func (a *controlAsker) Ask(ctx context.Context, question string, options []tools.AskOption) (string, error) {
+	opts := make([]map[string]string, 0, len(options))
+	for _, o := range options {
+		entry := map[string]string{"label": o.Label}
+		if o.Description != "" {
+			entry["description"] = o.Description
+		}
+		opts = append(opts, entry)
 	}
+	resp, err := a.driver.request(ctx, map[string]any{
+		"subtype":  "ask_user",
+		"question": question,
+		"options":  opts,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !resp.ok() {
+		// A peer that has not implemented ask_user lands here. Returning an
+		// error rather than picking the first option matters: the model is told
+		// the question could not be put, and carries on without inventing an
+		// answer the user never gave.
+		msg := resp.Error
+		if msg == "" {
+			msg = "the client could not ask the user"
+		}
+		return "", errors.New(msg)
+	}
+	var ans askAnswer
+	if err := json.Unmarshal(resp.Response, &ans); err != nil || ans.Label == "" {
+		return "", errors.New("the client returned no answer")
+	}
+	return ans.Label, nil
+}
+
+// controlPlanner emits an exit_plan request for ExitPlanMode.
+type controlPlanner struct {
+	driver *Driver
+}
+
+func (p *controlPlanner) ExitPlan(ctx context.Context, plan string) (bool, error) {
+	resp, err := p.driver.request(ctx, map[string]any{
+		"subtype": "exit_plan",
+		"plan":    plan,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !resp.ok() {
+		msg := resp.Error
+		if msg == "" {
+			msg = "the client could not review the plan"
+		}
+		return false, errors.New(msg)
+	}
+	var ans planAnswer
+	if err := json.Unmarshal(resp.Response, &ans); err != nil {
+		return false, errors.New("the client returned no decision")
+	}
+	if !ans.Approved && ans.Message != "" {
+		return false, errors.New(ans.Message)
+	}
+	return ans.Approved, nil
 }
 
 // decodeUserContent extracts the text of a user message whose content is either
@@ -222,9 +364,20 @@ func resultEvent(res agent.Result, err error) map[string]any {
 		"result":      res.Text,
 		"stop_reason": res.StopReason,
 	}
-	if err != nil {
+	switch {
+	case err != nil:
 		m["subtype"] = "error_during_execution"
 		m["result"] = "Error: " + api.FriendlyError(err)
+	case agent.TurnEndedEmpty(res.Text):
+		// A refusal or a limit completes cleanly at the protocol level and says
+		// nothing. Reporting subtype "success" with an empty result let a
+		// pipeline treat a refusal as a finished task — the same bug the
+		// headless path already fixes, which this one had not inherited.
+		if note := agent.TurnNote(res.StopReason, false); note != "" {
+			m["subtype"] = res.StopReason
+			m["is_error"] = true
+			m["result"] = note
+		}
 	}
 	return m
 }

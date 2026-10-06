@@ -156,28 +156,22 @@ func shortMode(m permission.Mode) string {
 		// Of everything on this line, the mode is the one thing that must not
 		// be wrong.
 		return "autonomous"
-	case permission.ModeAcceptEdits:
-		return "auto-edit"
 	case permission.ModeBypassPermissions:
 		return "bypass"
 	case permission.ModePlan:
 		return "plan"
-	case permission.ModeDontAsk:
-		return "deny"
 	default:
-		return "ask"
+		return string(m)
 	}
 }
 
 // deviatingMode returns the mode label to show, or "" when the session is
 // simply working normally.
 //
-// Both defaults are silent: autonomous for a current config, and ask for one
-// written before the mode collapse. Each is the steady state for whoever is
-// running it, and neither tells them anything they do not already assume.
+// Autonomous is silent: it is the steady state, and saying so on every line
+// would tell the user nothing they do not already assume.
 func deviatingMode(m permission.Mode) string {
-	switch m {
-	case permission.ModeAutonomous, permission.ModeDefault:
+	if m == permission.ModeAutonomous {
 		return ""
 	}
 	return shortMode(m)

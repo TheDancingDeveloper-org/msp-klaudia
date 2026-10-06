@@ -17,6 +17,17 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+// isolateHome points HOME at an empty directory. Load searches
+// ~/.claude/skills and ~/.klaudia/skills, so without this a test asserting on
+// counts or warnings is really asserting on the developer's home directory —
+// TestLoadDirWarnsOnSkillDirWithoutDefinition failed on a machine whose
+// ~/.claude/skills held a `synced` folder with no SKILL.md, which is a correct
+// warning about the wrong filesystem.
+func isolateHome(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+}
+
 func TestParseFrontmatterAndBody(t *testing.T) {
 	sk, err := parse([]byte("---\nname: review\ndescription: Review the diff\ntype: prompt\ntools: [Bash, Read]\n---\nReview this: $ARGUMENTS\n"), "review.md")
 	if err != nil {
@@ -110,6 +121,7 @@ func TestLoadProjectOverlaysHome(t *testing.T) {
 }
 
 func TestLoadDirSkillLayout(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	skills := filepath.Join(dir, ".klaudia", "skills")
 	mustMkdir(t, filepath.Join(skills, "deploy"))
@@ -137,6 +149,7 @@ Deploy the service. $ARGUMENTS`)
 }
 
 func TestLoadDirWarnsOnSkillDirWithoutDefinition(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	skills := filepath.Join(dir, ".klaudia", "skills")
 	mustMkdir(t, filepath.Join(skills, "halfdone"))
@@ -154,6 +167,7 @@ func TestLoadDirWarnsOnSkillDirWithoutDefinition(t *testing.T) {
 }
 
 func TestLoadDirFrontmatterNameStillWins(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	skills := filepath.Join(dir, ".klaudia", "skills")
 	mustMkdir(t, filepath.Join(skills, "folder-name"))
@@ -177,6 +191,7 @@ func mustMkdir(t *testing.T, dir string) {
 }
 
 func TestLoadReadsClaudeDirectories(t *testing.T) {
+	isolateHome(t)
 	dir := t.TempDir()
 	// What a skills installer leaves behind for Claude Code.
 	write(t, filepath.Join(dir, ".claude", "skills", "frontend-design", "SKILL.md"), `---

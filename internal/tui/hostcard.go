@@ -28,7 +28,10 @@ func hostCardLines(hc *agent.HostChange) []string {
 	}
 	var out []string
 	head := "This changes your machine"
-	if hc.Drift {
+	switch {
+	case hc.Hooks:
+		head = "This repository wants to run its own commands"
+	case hc.Drift:
 		head = "This wasn't part of what you approved"
 	}
 	out = append(out, askStyle.Render(head))
@@ -44,10 +47,17 @@ func hostCardLines(hc *agent.HostChange) []string {
 		out = append(out, toolStyle.Render("  "+line))
 	}
 
-	if hc.Declared {
+	switch {
+	case hc.Hooks:
+		// Not "for this session only", because it is not. Saying so about a
+		// decision that outlives the session would be a lie in the one place
+		// the user is deciding how far to trust a repository.
+		out = append(out, bannerStyle.Render(
+			"  remembered until these hooks change; editing any of them asks again"))
+	case hc.Declared:
 		out = append(out, bannerStyle.Render(
 			"  approving covers every step inside that scope, for this session only"))
-	} else {
+	default:
 		// Not declared means the model went ahead and the classifier caught it.
 		// Worth flagging: it is the difference between being asked and being
 		// stopped, and a user seeing it often is seeing a model that is not
@@ -69,6 +79,11 @@ func hostScopeLines(hc *agent.HostChange) []string {
 	add("paths", hc.Paths)
 	add("services", hc.Services)
 	add("packages", hc.Packages)
+	// One per line, not joined: a command line contains commas, and a list of
+	// them run together is exactly the thing a user skims instead of reading.
+	for _, c := range hc.Commands {
+		out = append(out, "  "+c)
+	}
 
 	// A caught change has effects rather than a declared scope.
 	if len(hc.Effects) > 0 {
@@ -119,7 +134,13 @@ func hostBlockedLine(msg string) string {
 // rarely want the task abandoned, they want it done differently.
 func hostPrompt(hc *agent.HostChange) string {
 	verb := "Change this machine?"
-	if hc != nil && hc.Drift {
+	switch {
+	case hc != nil && hc.Hooks:
+		// No "something else" offered. That answer exists to redirect the model
+		// mid-task; there is no task here to redirect, only a yes or a no about
+		// a config file.
+		return "Run these hooks? (y)es / (n)o"
+	case hc != nil && hc.Drift:
 		verb = "Approve this too?"
 	}
 	return verb + " (y)es / (n)o / (s)omething else"

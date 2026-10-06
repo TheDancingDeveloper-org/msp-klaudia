@@ -22,10 +22,8 @@ func TestWebToolsArePermissionGated(t *testing.T) {
 		mode permission.Mode
 		want permission.Behavior
 	}{
-		{permission.ModeDefault, permission.Ask},
-		{permission.ModeAcceptEdits, permission.Ask}, // acceptEdits is for file edits, not network
-		{permission.ModePlan, permission.Deny},
-		{permission.ModeDontAsk, permission.Deny},
+		{permission.ModeAutonomous, permission.Allow},
+		{permission.ModePlan, permission.Deny}, // read-only means read-only, network included
 	}
 	for _, tool := range web {
 		for _, c := range cases {

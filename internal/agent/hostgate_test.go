@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -31,7 +30,6 @@ func gateFixture(t *testing.T) (*HostGate, string) {
 		Roots:  func() trust.Roots { return roots },
 		Ledger: trust.NewLedger(roots),
 	}
-	g.SetPolicy(HostEnforce)
 	return g, proj
 }
 
@@ -125,61 +123,33 @@ func TestGateCoversFileTools(t *testing.T) {
 	}
 }
 
-func TestObserveModeChangesNothing(t *testing.T) {
-	g, proj := gateFixture(t)
-	g.SetPolicy(HostObserve)
-	var seen []HostReport
-	g.Observed = func(r HostReport) { seen = append(seen, r) }
-
-	if d := g.Check("Bash", bashInput("sudo systemctl restart nginx"), proj); !d.Allow {
-		t.Fatal("observe mode refused a call")
-	}
-	if len(seen) != 1 || seen[0].Enforced {
-		t.Fatalf("expected one non-enforced report, got %+v", seen)
-	}
-	if !strings.Contains(seen[0].Summary, "nginx") {
-		t.Errorf("report summary = %q", seen[0].Summary)
-	}
-}
-
-func TestHostOffAndNilGateAreInert(t *testing.T) {
-	g, proj := gateFixture(t)
-	g.SetPolicy(HostOff)
-	if d := g.Check("Bash", bashInput("sudo rm -rf /etc"), proj); !d.Allow {
-		t.Error("HostOff gated a call")
-	}
+// A nil gate is the only inert case left. There is no "off" posture: a session
+// that wants nothing checked selects bypassPermissions, which is tested where
+// it is read — ahead of the gate, in dispatch — rather than inside it.
+func TestNilGateIsInert(t *testing.T) {
+	_, proj := gateFixture(t)
 	var nilGate *HostGate
 	if d := nilGate.Check("Bash", bashInput("sudo rm -rf /etc"), proj); !d.Allow {
 		t.Error("a nil gate gated a call")
 	}
 }
 
-func TestResolveHostPolicy(t *testing.T) {
-	for _, tc := range []struct {
-		configured string
-		legacy     bool
-		want       HostPolicy
-		notice     bool
-	}{
-		{"", false, HostEnforce, false},
-		{"", true, HostObserve, true}, // existing rules: observe, and say so
-		{"enforce", true, HostEnforce, false},
-		{"observe", false, HostObserve, false},
-		{"off", true, HostOff, false},
-		{"nonsense", false, HostEnforce, false},
-		{"nonsense", true, HostObserve, true},
-	} {
-		got, notice := ResolveHostPolicy(tc.configured, tc.legacy)
-		if got != tc.want || notice != tc.notice {
-			t.Errorf("ResolveHostPolicy(%q, %v) = %v,%v want %v,%v",
-				tc.configured, tc.legacy, got, notice, tc.want, tc.notice)
-		}
+// A gate nobody configured a posture on still classifies. This is the opposite
+// of the old zero value, which read as off, and it is the point of removing
+// the posture: there is no way to end up with a wired-up gate that silently
+// checks nothing.
+func TestZeroPostureGateStillEnforces(t *testing.T) {
+	g, proj := gateFixture(t)
+	if d := g.Check("Bash", bashInput("sudo systemctl restart nginx"), proj); d.Allow {
+		t.Error("a gate with no posture set allowed a host change")
 	}
 }
 
 // The gate has to run before rule matching, or an allow rule launders a command
-// line: "Bash(sudo:*)" would otherwise authorise anything starting with sudo.
-func TestGateRunsBeforeAllowRules(t *testing.T) {
+// line: autonomous allows every command on its own, so if permission.Check ran
+// first — or instead — "sudo systemctl restart nginx" would simply go through.
+// The gate is the thing that stops it, and it does not consult the mode.
+func TestGateRunsBeforeThePermissionCheck(t *testing.T) {
 	g, proj := gateFixture(t)
 	g.DeclareTool = "RequestHostChange"
 	reg, bash := testRegistry(t)
@@ -188,19 +158,15 @@ func TestGateRunsBeforeAllowRules(t *testing.T) {
 	tu := anthropic.BetaToolUseBlock{
 		ID: "t1", Name: "Bash", Input: json.RawMessage(bashInput("sudo systemctl restart nginx")),
 	}
-	allow, err := permission.ParseRules([]string{"Bash(sudo:*)"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	res := l.dispatch(context.Background(), tu, Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault), Allow: allow},
-	}, nil, nil, map[string]int{}, map[string]errStreak{})
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
+	}, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "RequestHostChange") {
-		t.Fatalf("an allow rule laundered a host change; result was %q", body)
+		t.Fatalf("autonomous laundered a host change; result was %q", body)
 	}
 	if len(bash.ran) != 0 {
 		t.Fatalf("the command ran anyway: %v", bash.ran)
@@ -221,7 +187,7 @@ func TestBypassSkipsTheGate(t *testing.T) {
 		WorkingDir: proj,
 		Host:       g,
 		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeBypassPermissions)},
-	}, nil, nil, map[string]int{}, map[string]errStreak{})
+	}, nil, nil, newFailureState())
 	if len(bash.ran) != 1 {
 		t.Fatalf("bypassPermissions did not run the command: %v", bash.ran)
 	}
@@ -238,7 +204,7 @@ func TestApprovalMintsAGrant(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			asked++
 			if req.HostChange == nil {
@@ -249,7 +215,7 @@ func TestApprovalMintsAGrant(t *testing.T) {
 	}
 	run := func(cmd string) {
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(bashInput(cmd))}
-		l.dispatch(context.Background(), tu, opts, nil, nil, map[string]int{}, map[string]errStreak{})
+		l.dispatch(context.Background(), tu, opts, nil, nil, newFailureState())
 	}
 	run("sudo systemctl restart nginx")
 	run("sudo systemctl stop nginx")
@@ -271,11 +237,11 @@ func TestDeclinedHostChangeFailsOnlyThatCall(t *testing.T) {
 	res := l.dispatch(context.Background(), tu, Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			return permission.Decision{Behavior: permission.Deny}
 		}),
-	}, nil, nil, map[string]int{}, map[string]errStreak{})
+	}, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "declined") {
@@ -342,48 +308,4 @@ func testRegistry(t *testing.T, extra ...tools.Tool) (*tools.Registry, *stubBash
 func resultText(block anthropic.BetaContentBlockParamUnion) string {
 	b, _ := json.Marshal(block)
 	return string(b)
-}
-
-// /trust upgrade is typed into the Bubble Tea update loop while the agent is
-// mid-turn on its own goroutine, so the posture is written and read
-// concurrently by construction. It was a plain field, and -race never caught it
-// because no test changed the policy while a turn was running.
-//
-// Run under -race; without synchronisation this reports a write/read data race.
-func TestHostGatePolicyIsRaceFree(t *testing.T) {
-	g, proj := gateFixture(t)
-
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	// The UI goroutine: /trust upgrade, /trust downgrade, repeatedly.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 500; i++ {
-			if i%2 == 0 {
-				g.SetPolicy(HostEnforce)
-			} else {
-				g.SetPolicy(HostObserve)
-			}
-		}
-	}()
-	// The agent goroutine: classify a tool call, which reads the posture.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 500; i++ {
-			g.Check("Bash", bashInput("ls "+proj), proj)
-		}
-	}()
-	// The permission probe added for MCP, which reads it on every tool call.
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 500; i++ {
-			_ = g.Policy() == HostEnforce
-		}
-	}()
-
-	wg.Wait()
-	if p := g.Policy(); p != HostEnforce && p != HostObserve {
-		t.Errorf("posture ended as %q, want one of the two written", p)
-	}
 }

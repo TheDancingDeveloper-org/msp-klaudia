@@ -29,17 +29,18 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/compaction"
-	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/goal"
+	"github.com/greenthread-ai/klaudia/internal/mcp"
 	"github.com/greenthread-ai/klaudia/internal/memory"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/sandbox"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
-// RunFunc drives one user turn against the agent core, threading conversation
-// history and using the supplied approver, asker, and emitter.
-type RunFunc func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, approver agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error)
+// RunFunc drives one user turn against the agent core. It is the shared
+// frontend contract — see agent.Turn for why the per-turn arguments are a struct
+// rather than the nine positional parameters this alias replaced.
+type RunFunc = agent.RunFunc
 
 // Session is mutable state shared between the TUI and the RunFunc closure, so
 // slash commands like /model can change settings for subsequent turns. The
@@ -111,23 +112,9 @@ type MCPServerInfo struct {
 	Tools     int
 }
 
-// MCPReloadEvent reports the outcome of one hot reload of the MCP config.
-//
-// Only failures travel: a reload that works is meant to be invisible, and
-// announcing every successful one would punish the config file for being
-// edited.
-type MCPReloadEvent struct {
-	// ConfigErr is set when the config could not be read or parsed. Nothing
-	// was applied in that case and the servers already running are untouched,
-	// which is worth saying — the edit looks live but is not.
-	ConfigErr string
-	// ServerErrs are the per-server launch failures from an otherwise applied
-	// reload, already formatted.
-	ServerErrs []string
-}
-
-// Failed reports whether anything in the reload went wrong.
-func (e MCPReloadEvent) Failed() bool { return e.ConfigErr != "" || len(e.ServerErrs) > 0 }
+// MCPReloadEvent reports the outcome of one hot reload of the MCP config. It
+// lives in internal/mcp now — every frontend gets these, not just this one.
+type MCPReloadEvent = mcp.ReloadEvent
 
 // CompactFunc summarizes the conversation history via the model, returning the
 // replacement history and the summary text.
@@ -240,7 +227,12 @@ var (
 	hintStyle     = baseStyle().Faint(true).Italic(true)
 	// warnStyle marks the one status segment that must not read as ordinary
 	// chrome: a mode where nothing is being checked.
-	warnStyle    = baseStyle().Bold(true).Foreground(lipgloss.Color("9"))
+	warnStyle = baseStyle().Bold(true).Foreground(lipgloss.Color("9"))
+	// noticeStyle marks a system notice about something that went wrong
+	// invisibly — a dropped web search leaves no other trace in the
+	// transcript, which is what made it a bug. Deliberately not bannerStyle:
+	// faint is for things the user may ignore.
+	noticeStyle  = baseStyle().Foreground(lipgloss.Color("3"))
 	suggestStyle = baseStyle()
 )
 
@@ -399,10 +391,6 @@ type Model struct {
 	// session, so /commit can stage its own work and leave the user's alone.
 	touched map[string]bool
 	sess    *Session
-	// Session-scoped allow/deny rules added via "allow always" or /allow,/deny.
-	// Accessed only from the UI goroutine (Update) to avoid races.
-	sessionAllow []permission.Rule
-	sessionDeny  []permission.Rule
 	// Goal/loop state (the "/goal" feature). goalSetting frames turns as
 	// spec-authoring. loopRemaining>0 means the "/goal run" Ralph loop is active:
 	// each finished iteration starts the next (via the doneMsg hook) until the
@@ -834,20 +822,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onBangResult(msg)
 
 	case permissionMsg:
-		// Session rules are about tools, and a host change is not a question
-		// about a tool. An allow rule for Bash must not answer "may I restart
-		// nginx?" — that is exactly the laundering the gate ordering prevents
-		// in the agent loop, and it would be pointless to reintroduce here.
-		if msg.req.HostChange == nil {
-			if permission.MatchAny(m.sessionDeny, msg.req.ToolName, msg.req.Specifier) {
-				msg.reply <- permission.Decision{Behavior: permission.Deny, Message: "denied by session rule"}
-				return m, m.waitForEvent()
-			}
-			if permission.MatchAny(m.sessionAllow, msg.req.ToolName, msg.req.Specifier) {
-				msg.reply <- permission.Decision{Behavior: permission.Allow}
-				return m, m.waitForEvent()
-			}
-		}
 		m.setState(stateAwaitingPermission)
 		m.pending = msg.reply
 		m.pendingReq = msg.req
@@ -1240,8 +1214,14 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y":
 			m.planReply <- true
 			m.planReply = nil
-			m.sess.PermissionMode = string(permission.ModeAcceptEdits) // leave plan mode
-			m.appendLine(toolStyle.Render("  → approved; plan mode off (acceptEdits)"))
+			// Autonomous, not a halfway mode. acceptEdits used to be the
+			// landing spot, which left the session allowing edits but asking
+			// before every command — and, because the host gate was untouched
+			// and already enforcing, /trust upgrade reported "already
+			// enforcing" and would not move it. Approving a plan means "go
+			// and do this".
+			m.sess.PermissionMode = string(permission.ModeAutonomous)
+			m.appendLine(toolStyle.Render("  → approved; plan mode off (autonomous)"))
 			m.setState(stateRunning)
 		case "n":
 			m.planReply <- false
@@ -1340,17 +1320,6 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		host := m.pendingReq.HostChange != nil
 		switch strings.ToLower(msg.String()) {
 		case "y":
-			m.answer(permission.Decision{Behavior: permission.Allow})
-		case "a":
-			// No always-allow for a host change. A standing permission to
-			// reconfigure the machine is one the user cannot see and did not
-			// schedule the end of; approving the operation is the durable
-			// answer this model offers, and it ends with the session.
-			if host {
-				return m, nil
-			}
-			rule := permission.Rule{Tool: m.pendingReq.ToolName, Specifier: m.pendingReq.Specifier}
-			m.rememberPermission("allow", rule)
 			m.answer(permission.Decision{Behavior: permission.Allow})
 		case "n":
 			msg := "denied by user"
@@ -1459,7 +1428,7 @@ var commandList = []cmdInfo{
 	{"/logs", "[-f|--errors] <job>", "Page a job's log ($PAGER), tail it (-f), or pull just its errors into the conversation"},
 	{"/restart", "<job>", "Restart a background job in place, keeping its name and log"},
 	{"/stopjob", "<job|all>", "Stop a background job and its whole process group"},
-	{"/trust", "[upgrade|observe|off|revoke <id>]", "Show what Klaudia may change on this machine, and what it already may"},
+	{"/trust", "[revoke <id>|revoke all]", "Show what Klaudia may change on this machine, and what it already may"},
 	{"/goal", "[run N|stop|text]", "No arg: goal-setting (draft/load a spec). run [N]: iterate to the goal. stop: halt. text: standing reminder"},
 	{"/memory", "[add|recent|stale|tag|promote|supersede]", "Show / audit / curate memory; no args views the index"},
 	{"/mcp", "", "List MCP servers; reconnect or disconnect them"},
@@ -1498,6 +1467,32 @@ const keyHints = `Keys:
   Ctrl+U / Ctrl+K  Delete before / after the cursor
   Esc              Interrupt the model mid-turn
   Ctrl+C           Interrupt, or clear the line — press twice to quit`
+
+// commandAliases are names handleSlash accepts that commandList does not list,
+// because they are second spellings of a command already in it.
+var commandAliases = map[string]string{"?": "help", "exit": "quit"}
+
+// IsBuiltinCommand reports whether /name is a built-in slash command, and so
+// whether a skill of that name would be shadowed by it.
+//
+// Derived from commandList — the table that already drives /help and
+// type-ahead — rather than being written out again. The hand-kept copy this
+// replaced lived in internal/cli and had drifted both ways: it still reserved
+// /allow and /deny after the rule model was removed, and had never learned
+// about /trust, /undo, /jobs and fifteen others, so a skill named "undo" was
+// silently unreachable instead of warned about.
+func IsBuiltinCommand(name string) bool {
+	name = strings.TrimPrefix(name, "/")
+	if _, ok := commandAliases[name]; ok {
+		return true
+	}
+	for _, c := range commandList {
+		if strings.TrimPrefix(c.name, "/") == name {
+			return true
+		}
+	}
+	return false
+}
 
 // slashHelp renders the command reference from commandList + keyHints.
 func slashHelp() string {
@@ -1573,12 +1568,12 @@ func (m *Model) startChoice(title string, items []choiceItem) {
 	}
 }
 
-// currentMode returns the live permission mode, defaulting to ModeDefault.
+// currentMode returns the live permission mode, defaulting to ModeAutonomous.
 func (m *Model) currentMode() permission.Mode {
 	if m.sess != nil && m.sess.PermissionMode != "" {
 		return permission.Mode(m.sess.PermissionMode)
 	}
-	return permission.ModeDefault
+	return permission.ModeAutonomous
 }
 
 // modeChoices builds the permission-mode picker, marking the current mode.
@@ -1594,9 +1589,6 @@ func (m *Model) modeChoices() []choiceItem {
 		items = append(items, choiceItem{
 			label: label,
 			apply: func() string {
-				if why := m.modeRefusal(mode); why != "" {
-					return why
-				}
 				m.sess.PermissionMode = string(mode)
 				return "Permission mode: " + mode.Label()
 			},
@@ -2010,26 +2002,6 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 	case "/stats":
 		resident := compaction.EstimateTokens(m.history)
 		m.appendLine(bannerStyle.Render(formatStats(m.statTurns, m.statIn, m.statOut, resident, m.sess.ContextWindow, m.sess.ContextWindowSource)))
-	case "/allow", "/deny":
-		// Deprecated in favour of /trust: no longer listed in /help or offered
-		// by type-ahead, but still honoured so muscle memory and existing
-		// configs keep working. The hint is how anyone still typing it finds
-		// out where the pattern went.
-		if len(args) == 0 {
-			m.appendLine(errStyle.Render("usage: " + cmd + " <rule>  e.g. " + cmd + " Bash(go test:*)"))
-			break
-		}
-		rule, err := permission.ParseRule(strings.Join(args, " "))
-		if err != nil {
-			m.appendLine(errStyle.Render("invalid rule: " + err.Error()))
-			break
-		}
-		if cmd == "/allow" {
-			m.rememberPermission("allow", rule)
-		} else {
-			m.rememberPermission("deny", rule)
-		}
-		m.appendLine(hintStyle.Render(cmd + " is deprecated — /trust grants by what an operation does, not by matching command text"))
 	case "/status":
 		model := m.sess.Model
 		if model == "" {
@@ -2046,10 +2018,6 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 			want := permission.Mode(args[0])
 			if !want.Valid() {
 				m.appendLine(errStyle.Render("unknown mode " + args[0] + ". Try /mode with no argument to pick one."))
-				break
-			}
-			if why := m.modeRefusal(want); why != "" {
-				m.appendLine(errStyle.Render(why))
 				break
 			}
 			m.sess.PermissionMode = string(want)
@@ -2131,8 +2099,11 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 		return m, m.spin.Tick
 	case "/plan":
 		if len(args) > 0 && strings.ToLower(args[0]) == "off" {
-			m.sess.PermissionMode = string(permission.ModeDefault)
-			m.appendLine(bannerStyle.Render("Left plan mode (default permissions)."))
+			// Autonomous, not a mode that asks per action: leaving plan means
+			// getting on with it, and the host gate is what stops a change to
+			// this machine either way.
+			m.sess.PermissionMode = string(permission.ModeAutonomous)
+			m.appendLine(bannerStyle.Render("Left plan mode (autonomous)."))
 		} else {
 			m.sess.PermissionMode = string(permission.ModePlan)
 			m.appendLine(bannerStyle.Render("Entered plan mode: read-only exploration; mutations are blocked. /plan off to leave."))
@@ -2625,7 +2596,13 @@ func (m *Model) permissionPrompt() string {
 	if hc := m.pendingReq.HostChange; hc != nil {
 		return hostPrompt(hc)
 	}
-	return fmt.Sprintf("Allow %s? (y)es once / (a)lways / (n)o", m.permissionSummary(m.pendingReq))
+	// No "always". Standing rules are gone: one in a config demoted the next
+	// session to a mode that asked about everything, so the answer offered to
+	// stop the prompting was the thing that caused more of it. Nothing
+	// built-in reaches this branch now — the host card above is the prompt
+	// users see — but an MCP server or an embedding frontend can still return
+	// Ask, and this is what they get.
+	return fmt.Sprintf("Allow %s? (y)es / (n)o", m.permissionSummary(m.pendingReq))
 }
 
 func permissionDetail(req agent.ApprovalRequest) string {
@@ -2686,32 +2663,6 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// rememberPermission records a permission rule for the current UI session and,
-// when the project has a .klaudia directory, persists it to .klaudia/config.toml.
-func (m *Model) rememberPermission(kind string, rule permission.Rule) {
-	formatted := permission.FormatRule(rule)
-	verb := "allow"
-	if kind == "deny" {
-		verb = "deny"
-		m.sessionDeny = append(m.sessionDeny, rule)
-	} else {
-		m.sessionAllow = append(m.sessionAllow, rule)
-	}
-
-	persisted := false
-	var err error
-	if m.sess != nil && m.sess.CWD != "" {
-		persisted, err = config.AppendProjectPermission(m.sess.CWD, kind, formatted)
-	}
-	msg := fmt.Sprintf("  → always %s %s (this session)", verb, formatted)
-	if err != nil {
-		msg += "; config save failed: " + err.Error()
-	} else if persisted {
-		msg += "; saved to .klaudia/config.toml"
-	}
-	m.appendLine(toolStyle.Render(msg))
-}
-
 // answer resolves the pending permission ask.
 func (m *Model) answer(d permission.Decision) {
 	if m.pending != nil {
@@ -2739,6 +2690,17 @@ func (m *Model) hostReportCount() int {
 		return 0
 	}
 	return len(m.sess.Trust.Reports())
+}
+
+// liveMode returns a source for the session's current permission mode, read at
+// each check rather than once per turn. Nil when there is no session (tests),
+// which leaves the caller's own permission context in place.
+func (m *Model) liveMode() func() permission.Mode {
+	if m.sess == nil {
+		return nil
+	}
+	sess := m.sess
+	return func() permission.Mode { return permission.Mode(sess.PermissionMode) }
 }
 
 // startTurn runs the agent in a goroutine, delivering events via the channel,
@@ -2795,8 +2757,22 @@ func (m *Model) startTurn(prompt string) tea.Cmd {
 	emit := func(ev agent.Event) { m.events <- eventMsg{ev} }
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.turnCancel = cancel
+	turn := agent.Turn{
+		Prompt:     prompt,
+		History:    m.history,
+		Emit:       emit,
+		Approver:   approver,
+		Asker:      asker,
+		Planner:    planner,
+		Interject:  m.steer.drain,
+		BeforeEdit: m.beforeEdit,
+		// Read live, every permission check: /mode bypass typed mid-turn, or
+		// ExitPlanMode being approved, has to reach the very next tool
+		// dispatch rather than waiting for the next turn boundary.
+		Mode: m.liveMode(),
+	}
 	go func() {
-		res, err := m.run(ctx, prompt, m.history, approver, asker, planner, emit, m.steer.drain, m.beforeEdit)
+		res, err := m.run(ctx, turn)
 		m.events <- doneMsg{res: res, err: err}
 	}()
 	return tea.Batch(m.spin.Tick, m.sw.Reset(), m.sw.Start())
@@ -2942,6 +2918,16 @@ func (m *Model) renderEvent(ev agent.Event) {
 			// wait on the (post-compaction, still large) request's first token.
 			m.appendLine(bannerStyle.Render("· " + ev.Content))
 			m.phase = "thinking"
+		}
+	case "notice":
+		// A system notice the user must actually see — something the model was
+		// told about but that leaves no visible trace of its own, like a web
+		// search that was dropped from the conversation. Not faint: the point
+		// of it is that the silence was the bug.
+		m.flushAssistant()
+		if ev.Content != "" {
+			m.appendLine(noticeStyle.Render("! " + ev.Content))
+			m.noteNav(navError, oneline(ev.Content, 60), "", 0)
 		}
 	case "usage":
 		// One inner LLM call's usage. Update both the session counters and the
@@ -3220,6 +3206,19 @@ func (m *Model) commit(b transcriptBlock) {
 // anyway; the difference is that these rows are now ours to clean up. The
 // transcript keeps the unwrapped text, so /copy and /export are unaffected.
 func (m *Model) fitScrollback(s string) string {
+	// Tabs are expanded here and nowhere earlier. Two bugs need it. A literal
+	// HT advances the cursor without painting the cells it skips, so a queued
+	// scrollback line written over the previous frame's rows leaves that
+	// frame's prompt border, placeholder and status bar showing through the
+	// indentation in 8- and 16-column runs. And ansi.StringWidth scores a tab
+	// as zero columns (HT is an ExecuteAction, not a PrintAction), so the
+	// measurement below would call a tab-heavy line short, skip the wrap, and
+	// hand the terminal a line it wraps onto rows we never erase.
+	//
+	// It happens at this choke point rather than in baseStyle so the two uses
+	// stay separable: m.transcript keeps the literal tabs, which is what /copy
+	// and /export read and the reason NoTabConversion is set at all.
+	s = expandTabs(s, tabStop)
 	limit := m.width - 1
 	if limit < 20 || s == "" {
 		return s
@@ -3236,6 +3235,47 @@ func (m *Model) fitScrollback(s string) string {
 		out = append(out, strings.Split(ansi.Hardwrap(line, limit, true), "\n")...)
 	}
 	return strings.Join(out, "\n")
+}
+
+// tabStop is the column interval the overwhelming majority of terminals use,
+// and the one the bleed runs in the original report measured.
+const tabStop = 8
+
+// expandTabs replaces each HT with spaces up to the next tab stop, counting
+// columns rather than bytes so the result lines up the way the terminal would
+// have. lipgloss's own expansion writes a fixed four spaces regardless of
+// column, which is what destroys the alignment of `go test` and kubectl output
+// and the reason baseStyle disables it.
+//
+// Columns are measured with ansi.StringWidth on the run before each tab: escape
+// sequences occupy no cells, and counting their bytes would push every later
+// tab on the line to the wrong stop.
+func expandTabs(s string, stop int) string {
+	if stop <= 0 || !strings.ContainsRune(s, '\t') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + stop)
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		col := 0
+		for {
+			j := strings.IndexByte(line, '\t')
+			if j < 0 {
+				b.WriteString(line)
+				break
+			}
+			b.WriteString(line[:j])
+			col += ansi.StringWidth(line[:j])
+			pad := stop - col%stop
+			b.WriteString(strings.Repeat(" ", pad))
+			col += pad
+			line = line[j+1:]
+		}
+	}
+	return b.String()
 }
 
 // resize re-measures the live region. It deliberately does not reflow anything

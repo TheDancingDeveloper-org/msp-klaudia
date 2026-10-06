@@ -14,6 +14,31 @@ import (
 // down and rebuild MCP servers against a half-written config.
 const defaultDebounce = 300 * time.Millisecond
 
+// ReloadEvent reports the outcome of one hot reload of the MCP config.
+//
+// Only failures travel: a reload that works is meant to be invisible, and
+// announcing every successful one would punish the config file for being
+// edited.
+//
+// It lives here rather than in a frontend because the watcher is wired for
+// every mode. It used to be tui.MCPReloadEvent, which made the CLI import the
+// TUI in order to describe an MCP failure, and meant that in headless,
+// stream-json and --loop runs the events were constructed and then dropped on
+// the floor — a typo in .mcp.json was indistinguishable from a clean reload
+// until a tool call failed much later for an unrelated-looking reason.
+type ReloadEvent struct {
+	// ConfigErr is set when the config could not be read or parsed. Nothing
+	// was applied in that case and the servers already running are untouched,
+	// which is worth saying — the edit looks live but is not.
+	ConfigErr string
+	// ServerErrs are the per-server launch failures from an otherwise applied
+	// reload, already formatted.
+	ServerErrs []string
+}
+
+// Failed reports whether anything in the reload went wrong.
+func (e ReloadEvent) Failed() bool { return e.ConfigErr != "" || len(e.ServerErrs) > 0 }
+
 // Watch reports changes to any .mcp.json that applies to dir, calling onChange
 // after a quiet period. It returns a stop function, which is safe to call more
 // than once.

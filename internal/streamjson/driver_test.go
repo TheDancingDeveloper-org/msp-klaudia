@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
-
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
@@ -51,9 +49,9 @@ func TestDriverPermissionRoundTrip(t *testing.T) {
 	defer func() { _ = pw.Close() }()
 
 	decisionCh := make(chan permission.Decision, 1)
-	runFn := func(ctx context.Context, prompt string, _ []anthropic.BetaMessageParam, ap agent.Approver, emit agent.Emitter) (agent.Result, error) {
-		emit(agent.Event{Type: "assistant", Text: "working"})
-		dec := ap.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`)})
+	runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		turn.Emit(agent.Event{Type: "assistant", Text: "working"})
+		dec := turn.Approver.Approve(ctx, agent.ApprovalRequest{ToolName: "Bash", Input: json.RawMessage(`{"command":"ls"}`)})
 		decisionCh <- dec
 		return agent.Result{Text: "done:" + string(dec.Behavior), NumTurns: 1, StopReason: "end_turn"}, nil
 	}
@@ -80,7 +78,7 @@ func TestDriverPermissionRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if err := d.Run(ctx, pr, runFn); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+	if err := d.Run(ctx, pr, nil, runFn); err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("driver run: %v", err)
 	}
 

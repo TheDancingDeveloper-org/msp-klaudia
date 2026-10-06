@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/spf13/cobra"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
@@ -18,22 +17,17 @@ import (
 // new git commit — a sign the agent is spinning without making progress.
 const loopStallLimit = 3
 
-// loopRun bundles the already-built run state the goal loop reuses (set up once
-// in run() like the single-shot headless path).
+// loopRun bundles what the goal loop needs beyond the shared run closure. The
+// closure (built in run(), like every other frontend's) carries the model,
+// system prompt, tools and permission context, so this holds only what the loop
+// itself reasons about: where the project is, that the mode can run unattended,
+// how many iterations are allowed, and where output goes.
 type loopRun struct {
-	loop       *agent.Loop
+	run        agent.RunFunc
+	approver   agent.Approver
 	cwd        string
 	mode       permission.Mode
-	model      anthropic.Model
-	system     string
-	maxTurns   int
 	iterations int
-	permCtx    permission.Context
-	hostGate   *agent.HostGate
-	approver   agent.Approver
-	deferred   map[string]bool
-	recorder   agent.Recorder
-	onSummary  func(string)
 	render     *Renderer
 }
 
@@ -77,24 +71,19 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 		}
 	}
 
-	emit := func(ev agent.Event) { _ = p.render.Event(ev) }
-	// Each turn starts fresh (no InitialMessages): it re-reads the spec and git
-	// state, per the Ralph principle (bounded context over long runs).
+	notices := noticeWriter(errOut)
+	emit := func(ev agent.Event) {
+		notices(ev)
+		_ = p.render.Event(ev)
+	}
+	// Each turn starts fresh (no History): it re-reads the spec and git state,
+	// per the Ralph principle (bounded context over long runs).
 	runTurn := func(prompt string) (agent.Result, error) {
-		return p.loop.Run(ctx, agent.Options{
-			WorkingDir:    p.cwd,
-			Prompt:        prompt,
-			Model:         p.model,
-			System:        p.system,
-			MaxTurns:      p.maxTurns,
-			Permission:    p.permCtx,
-			Host:          p.hostGate,
-			Approver:      p.approver,
-			DeferredTools: p.deferred,
-			Recorder:      p.recorder,
-			WebTools:      true,
-			OnSummary:     p.onSummary,
-		}, emit)
+		return p.run(ctx, agent.Turn{
+			Prompt:   prompt,
+			Emit:     emit,
+			Approver: p.approver,
+		})
 	}
 
 	lastCommit := gitCommit(p.cwd)

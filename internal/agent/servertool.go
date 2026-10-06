@@ -231,3 +231,78 @@ func pendingAssistantIndex(messages []anthropic.BetaMessageParam) int {
 	}
 	return last
 }
+
+// Announcing the repair
+//
+// The repairs above are correct and they are silent, and the silence turned out
+// to be the bigger problem in practice. A dropped web search leaves the model a
+// placeholder it sees on the *next* request, so it can recover — but the user
+// sees a search in the transcript with no results, no error and no explanation,
+// and has no way to know the answer that followed was reasoned without it. The
+// failure that prompted this was exactly that: several searches in a session
+// came back empty, and nothing anywhere said so.
+//
+// So the same detection is run for the user's benefit before the request is
+// built, and each dropped exchange is announced once.
+
+// serverToolLabel names the tool a dropped id belonged to, for the notice.
+// Either half may be the one that survived, so both are consulted; the generic
+// label covers the case where neither did.
+func serverToolLabel(content []anthropic.BetaContentBlockParamUnion, id string) string {
+	for _, b := range content {
+		if su := b.OfServerToolUse; su != nil && su.ID == id {
+			switch su.Name {
+			case anthropic.BetaServerToolUseBlockParamNameWebSearch:
+				return "web search"
+			case anthropic.BetaServerToolUseBlockParamNameWebFetch:
+				return "web fetch"
+			}
+		}
+		if r := b.OfWebSearchToolResult; r != nil && r.ToolUseID == id {
+			return "web search"
+		}
+		if r := b.OfWebFetchToolResult; r != nil && r.ToolUseID == id {
+			return "web fetch"
+		}
+	}
+	return "web search/fetch"
+}
+
+// announceDroppedServerTools emits one notice per server-tool exchange that
+// sanitizeMessages is about to drop, skipping any already announced.
+//
+// It merges first and consults pendingAssistantIndex for the same reasons
+// sanitizeMessages does: before merging, a paused search looks unpaired when it
+// is not, and a server tool withheld because the batch also held client tools
+// is waiting legitimately rather than lost. Announcing either would be a false
+// alarm about work that is about to happen.
+//
+// reported is keyed by tool_use_id and lives for the Run, so a broken exchange
+// inherited from a resumed transcript is mentioned once rather than on every
+// turn for the rest of the session.
+func announceDroppedServerTools(messages []anthropic.BetaMessageParam, emit Emitter, reported map[string]bool) {
+	if emit == nil {
+		return
+	}
+	merged := mergeSameRole(messages)
+	pending := pendingAssistantIndex(merged)
+	for i, m := range merged {
+		lost := unpairedServerToolIDs(m.Content, i == pending)
+		for _, b := range m.Content {
+			if id, ok := brokenResultToolUseID(b); ok {
+				if lost == nil {
+					lost = map[string]bool{}
+				}
+				lost[id] = true
+			}
+		}
+		for id := range lost {
+			if reported[id] {
+				continue
+			}
+			reported[id] = true
+			emit(Event{Type: "notice", Content: "an earlier " + serverToolLabel(m.Content, id) +
+				" did not complete and was dropped from the conversation — re-run it if the answer depends on it"})
+		}
+	}
+}

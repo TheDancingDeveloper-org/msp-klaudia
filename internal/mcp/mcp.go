@@ -126,6 +126,13 @@ type Server struct {
 
 	mu      sync.RWMutex
 	session *mcpsdk.ClientSession
+
+	// reviveMu serialises automatic relaunches of this one server, and
+	// lastRevive rate-limits them. Both are needed because the attempt can come
+	// from anywhere: two tool calls, or a tool call and /mcp, arriving together
+	// would otherwise each spawn a child process and close one of them.
+	reviveMu   sync.Mutex
+	lastRevive time.Time
 }
 
 // sess returns the live session, or nil when the server is disconnected.
@@ -172,13 +179,28 @@ func (s *Server) alive(ctx context.Context) bool {
 	return sess.Ping(ctx, nil) == nil
 }
 
-func newClient() *mcpsdk.Client {
-	return mcpsdk.NewClient(&mcpsdk.Implementation{Name: "klaudia", Version: version.Version}, nil)
+// newClient builds the MCP client for one server.
+//
+// Capabilities are set explicitly, which also drops the SDK's default
+// "roots":{"listChanged":true}. Klaudia never registers a root, so that default
+// advertised a feature whose only possible answer was an empty list — and roots
+// is deprecated as of protocol 2026-07-28 anyway. Elicitation is advertised
+// form-only, and only when there is a frontend to carry the question; see
+// elicit.go.
+func newClient(name string, el *Elicitor) *mcpsdk.Client {
+	opts := &mcpsdk.ClientOptions{Capabilities: &mcpsdk.ClientCapabilities{}}
+	if h := el.handlerFor(name); h != nil {
+		opts.ElicitationHandler = h
+		opts.Capabilities.Elicitation = &mcpsdk.ElicitationCapabilities{
+			Form: &mcpsdk.FormElicitationCapabilities{},
+		}
+	}
+	return mcpsdk.NewClient(&mcpsdk.Implementation{Name: "klaudia", Version: version.Version}, opts)
 }
 
 // connectServer connects to a server using the transport its config implies:
 // HTTP (streamable, or SSE) when URL is set, otherwise stdio.
-func connectServer(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+func connectServer(ctx context.Context, name string, cfg ServerConfig, el *Elicitor) (*Server, error) {
 	if url := strings.TrimSpace(cfg.URL); url != "" {
 		var t mcpsdk.Transport
 		switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
@@ -187,28 +209,29 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig) (*Server,
 		default: // "http" / "streamable" / unset
 			t = &mcpsdk.StreamableClientTransport{Endpoint: url}
 		}
-		return ConnectTransport(ctx, name, t)
+		return ConnectTransport(ctx, name, t, el)
 	}
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, fmt.Errorf("mcp %q: config has neither command (stdio) nor url (http)", name)
 	}
-	return ConnectCommand(ctx, name, cfg)
+	return ConnectCommand(ctx, name, cfg, el)
 }
 
 // ConnectCommand spawns a stdio MCP server and connects to it.
-func ConnectCommand(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+func ConnectCommand(ctx context.Context, name string, cfg ServerConfig, el *Elicitor) (*Server, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = os.Environ()
 	for k, v := range cfg.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
-	return ConnectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd})
+	return ConnectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd}, el)
 }
 
 // ConnectTransport connects to a server over an arbitrary transport (used by
-// command servers and by tests via an in-memory transport).
-func ConnectTransport(ctx context.Context, name string, t mcpsdk.Transport) (*Server, error) {
-	session, err := newClient().Connect(ctx, t, nil)
+// command servers and by tests via an in-memory transport). A nil Elicitor
+// advertises no elicitation capability.
+func ConnectTransport(ctx context.Context, name string, t mcpsdk.Transport, el *Elicitor) (*Server, error) {
+	session, err := newClient(name, el).Connect(ctx, t, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp %q connect: %w", name, err)
 	}
@@ -224,13 +247,35 @@ type Manager struct {
 	servers []*Server
 	cfg     Config
 	ctx     context.Context
+
+	// elicitor is handed to every client this manager builds, including the
+	// ones a reload or a revive builds, so a relaunched server keeps the
+	// ability to ask the user things. Nil in a headless run.
+	elicitor *Elicitor
+
+	// connect is how a server is launched, as a field so a test can relaunch
+	// one without a real binary on PATH. Nothing in production sets it; nil
+	// means connectServer.
+	connect func(ctx context.Context, name string, cfg ServerConfig, el *Elicitor) (*Server, error)
+}
+
+// dial launches one server through whatever connect is in force.
+func (m *Manager) dial(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+	m.mu.RLock()
+	fn, el := m.connect, m.elicitor
+	m.mu.RUnlock()
+	if fn == nil {
+		fn = connectServer
+	}
+	return fn(ctx, name, cfg, el)
 }
 
 // Connect launches and connects every server in cfg. Servers that fail to
 // connect are skipped (with their error collected), so one bad server does not
-// abort startup.
-func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
-	m := &Manager{cfg: cfg, ctx: ctx}
+// abort startup. A nil Elicitor means servers cannot ask the user anything,
+// which is what a headless run wants.
+func Connect(ctx context.Context, cfg Config, el *Elicitor) (*Manager, []error) {
+	m := &Manager{cfg: cfg, ctx: ctx, elicitor: el}
 	var errs []error
 	// Deterministic order for stable tool lists.
 	names := make([]string, 0, len(cfg.MCPServers))
@@ -239,7 +284,7 @@ func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		srv, err := connectServer(ctx, name, cfg.MCPServers[name])
+		srv, err := m.dial(ctx, name, cfg.MCPServers[name])
 		if err != nil {
 			errs = append(errs, err)
 			// Keep a disconnected placeholder so it can be reconnected later.
@@ -316,7 +361,7 @@ func (m *Manager) Reconnect(name string) error {
 	// TUI runs this synchronously). On timeout the server stays disconnected.
 	ctx, cancel := context.WithTimeout(m.ctx, reconnectTimeout)
 	defer cancel()
-	fresh, err := connectServer(ctx, name, cfg)
+	fresh, err := m.dial(ctx, name, cfg)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("mcp %q: reconnect timed out after %s", name, reconnectTimeout)
@@ -375,7 +420,7 @@ func (m *Manager) Reload(ctx context.Context, cfg Config) []error {
 				_ = s.Close()
 			}
 		}
-		fresh, err := connectServer(ctx, name, sc)
+		fresh, err := m.dial(ctx, name, sc)
 		if err != nil {
 			errs = append(errs, err)
 			// Keep a disconnected placeholder, so /mcp can retry it by hand.
@@ -411,6 +456,47 @@ func (m *Manager) Reload(ctx context.Context, cfg Config) []error {
 
 // reconnectTimeout bounds a single /mcp reconnect attempt.
 const reconnectTimeout = 10 * time.Second
+
+// reviveCooldown is the minimum gap between automatic relaunches of one
+// server. A server that cannot start — a bad command, a missing binary — would
+// otherwise pay a full launch timeout on every tool call the model makes, which
+// turns one misconfigured entry into a stalled session.
+const reviveCooldown = 15 * time.Second
+
+// revive brings a server back if it has died, and reports whether a usable
+// session exists afterwards.
+//
+// This is what makes a crashed server recoverable without the user doing
+// anything. A stdio server whose child process exits keeps a non-nil
+// ClientSession — nothing nils it out — so until now the first sign was a tool
+// call failing, and the only cure was /mcp or a restart: editing .mcp.json did
+// not help, because a reload leaves an unchanged entry alone.
+//
+// The liveness probe comes first and decides everything. An ordinary call
+// error — bad arguments, a tool that does not exist — must not restart a
+// perfectly healthy server, so a relaunch happens only when the server has
+// actually stopped answering.
+func (m *Manager) revive(ctx context.Context, s *Server) bool {
+	if s == nil {
+		return false
+	}
+	s.reviveMu.Lock()
+	defer s.reviveMu.Unlock()
+
+	// Re-probe under the lock: whoever held it before us may have already
+	// fixed this, and a second relaunch would kill the session they just made.
+	if s.alive(ctx) {
+		return true
+	}
+	if time.Since(s.lastRevive) < reviveCooldown {
+		return false
+	}
+	s.lastRevive = time.Now()
+	if err := m.Reconnect(s.Name); err != nil {
+		return false
+	}
+	return s.alive(ctx)
+}
 
 // livenessTimeout bounds the per-server health probe a reload runs before
 // deciding an unchanged server can be left alone. It is short because it is

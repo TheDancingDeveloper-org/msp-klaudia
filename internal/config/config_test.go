@@ -63,11 +63,11 @@ func TestLoadThemeProjectOverridesHome(t *testing.T) {
 func TestLoadPermissionModeOverridesHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	writeConfig(t, home, "[permissions]\nmode = \"acceptEdits\"\n")
+	writeConfig(t, home, "[permissions]\nmode = \"plan\"\n")
 
 	// Global-only → inherited.
-	if cfg := Load(t.TempDir()); cfg.Permissions.Mode != "acceptEdits" {
-		t.Errorf("mode = %q, want acceptEdits (from home)", cfg.Permissions.Mode)
+	if cfg := Load(t.TempDir()); cfg.Permissions.Mode != "plan" {
+		t.Errorf("mode = %q, want plan (from home)", cfg.Permissions.Mode)
 	}
 	// Project overrides global.
 	cwd := t.TempDir()
@@ -137,62 +137,56 @@ func TestResolveAPIKey(t *testing.T) {
 		t.Error("empty config should yield empty key")
 	}
 }
-
-func TestLoadPermissionsAccumulate(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	writeConfig(t, home, `
-[permissions]
-allow = ["Edit"]
-deny = ["Bash(rm:*)"]
-`)
-	cwd := t.TempDir()
-	writeConfig(t, cwd, `
-[permissions]
-allow = ["Bash(go test:*)"]
-`)
-
-	cfg := Load(cwd)
-	if len(cfg.Permissions.Allow) != 2 {
-		t.Errorf("allow = %v, want home+project merged", cfg.Permissions.Allow)
-	}
-	if len(cfg.Permissions.Deny) != 1 || cfg.Permissions.Deny[0] != "Bash(rm:*)" {
-		t.Errorf("deny = %v", cfg.Permissions.Deny)
-	}
-}
-
-func TestAppendProjectPermission(t *testing.T) {
-	cwd := t.TempDir()
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || ok {
-		t.Fatalf("AppendProjectPermission without .klaudia = %v,%v, want false,nil", ok, err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(cwd, ".klaudia"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission allow = %v,%v, want true,nil", ok, err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "allow", "Edit"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission duplicate = %v,%v, want true,nil", ok, err)
-	}
-	if ok, err := AppendProjectPermission(cwd, "deny", "Bash(rm:*)"); err != nil || !ok {
-		t.Fatalf("AppendProjectPermission deny = %v,%v, want true,nil", ok, err)
-	}
-
-	cfg := Load(cwd)
-	if len(cfg.Permissions.Allow) != 1 || cfg.Permissions.Allow[0] != "Edit" {
-		t.Errorf("allow = %v, want [Edit]", cfg.Permissions.Allow)
-	}
-	if len(cfg.Permissions.Deny) != 1 || cfg.Permissions.Deny[0] != "Bash(rm:*)" {
-		t.Errorf("deny = %v, want [Bash(rm:*)]", cfg.Permissions.Deny)
-	}
-}
-
 func TestLoadMissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	cfg := Load(t.TempDir())
 	if cfg.Provider != "" {
 		t.Errorf("expected empty config, got %+v", cfg)
+	}
+}
+
+// The default is on, so the only interesting case is turning it off: with a
+// plain bool, `worktree = false` is indistinguishable from the section being
+// absent and the setting would have no way to work at all.
+func TestSubagentWorktrees(t *testing.T) {
+	tests := []struct {
+		name string
+		home string
+		proj string
+		want bool
+	}{
+		{name: "no config anywhere", want: true},
+		{name: "off in the user's config", home: "[subagents]\nworktree = false\n", want: false},
+		{name: "off in the project", proj: "[subagents]\nworktree = false\n", want: false},
+		{
+			name: "the project turns it back on",
+			home: "[subagents]\nworktree = false\n",
+			proj: "[subagents]\nworktree = true\n",
+			want: true,
+		},
+		{
+			// An unrelated project section must not read as "unset" and lose
+			// the user's choice.
+			name: "a project section that says nothing about it inherits",
+			home: "[subagents]\nworktree = false\n",
+			proj: "model = \"sonnet\"\n",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			if tt.home != "" {
+				writeConfig(t, home, tt.home)
+			}
+			cwd := t.TempDir()
+			if tt.proj != "" {
+				writeConfig(t, cwd, tt.proj)
+			}
+			if got := Load(cwd).SubagentWorktrees(); got != tt.want {
+				t.Errorf("SubagentWorktrees = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

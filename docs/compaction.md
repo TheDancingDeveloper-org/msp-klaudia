@@ -36,6 +36,35 @@ the saving is worthwhile, so it's cheap and rarely disruptive.
 | `ToolResultTokenThreshold` | 40000 | Act only when tool-result tokens exceed this |
 | `MinTokensToSave` | 20000 | Minimum saving before eliding |
 | `EstimatedTokensPerImage` | 2000 | Flat estimate per image/document |
+| `elidedPreviewBytes` | 120 | How much of the original survives in the placeholder |
+
+### The placeholder is a handle
+
+An elided result is not simply deleted. The placeholder names the original's
+size, quotes its first non-empty line, and points at a spill file holding the
+full text:
+
+```
+[Old tool result elided to save context; 70 bytes; began: ./internal/agent/loop.go:349: for _, tu := range toolUses {; full text: /…/outputs/elided-123.log]
+```
+
+Without that, a pass left several byte-identical markers and the model had no
+way to tell which call each had been, nor to get any of them back short of
+re-running the tool. The preview and path cost a few dozen tokens against the
+thousands a pass reclaims, and recovery is an ordinary `Read`.
+
+The spill is supplied by the caller as a `Spiller` func, not imported, so this
+package keeps no dependency on `internal/tools`; the agent loop passes the same
+on-disk spill the per-result cap uses. A nil `Spiller` is valid and the
+placeholder then promises no file.
+
+`Microcompact` therefore runs two passes. `compact()` is called at the top of
+every turn, so the first pass prices the placeholders *without* paths and
+checks `MinTokensToSave`, letting the floor reject the pass before anything is
+written — a single pass would write a fresh set of spill files on every turn a
+conversation spent sitting just under that floor. The second pass spills and
+recomputes the exact saving with the real paths in place.
+
 
 ## Autocompact
 
@@ -51,6 +80,54 @@ blockingLimit    = effectiveWindow - 3000            // hard ceiling
 ```
 
 `DefaultContextWindow` (200000) is assumed when the model's window is unknown.
+
+## Before either stage: the per-result cap
+
+Compaction deals with history that has already accumulated. The cheaper defence
+is not letting a single tool result become enormous in the first place, and that
+happens at dispatch time in `internal/tools/output.go`.
+
+Two levels, deliberately:
+
+1. **Tool-level, smart.** A tool that understands its own output clamps it
+   itself. Bash is the only one today: it keeps a head *and* a tail, because the
+   verdict (`FAIL`, the error that stopped the build, the last stack frame) is at
+   the end, and it appends the exit-code annotation after clamping so that
+   survives too.
+2. **Loop-level, dumb, universal.** `tools.Cap` is the backstop the agent loop
+   applies to whatever a tool returned. It is byte-level and content-blind — the
+   weaker of the two — but it is the only one that covers tools nobody tuned,
+   including every MCP tool.
+
+Both clamp to `maxToolOutput` (30000 bytes, head-heavy at 20000/10000) and write
+the untruncated text to `~/.klaudia/outputs/<tool>-*.log`, appending a
+`[full output: <path>]` notice so the model can read the elided middle. Files
+older than 24h are pruned on each spill. Output already within budget is
+returned unchanged, so the backstop never re-cuts a self-clamped result.
+
+The UI never sees a truncated result: `tools.Result.Full` carries the complete
+text in memory for local display, separately from what the model receives.
+
+### And the per-message cap, after it
+
+A per-result cap cannot see a batch. Five results that each stop just under
+30 KB are 150 KB in one user message, and a turn is not limited to five calls:
+twenty well-behaved `Grep`s is most of a 200K window, with nothing in the
+per-result path finding anything wrong. Parallel dispatch makes that shape
+common rather than theoretical.
+
+`capMessage` (`internal/agent/batchcap.go`) holds one turn's combined
+tool-result text to `maxMessageOutput` (200000 bytes, ~50K tokens). Shares are
+allotted by water-filling, not an equal split: a result already under its share
+keeps every byte and the remainder goes to the ones that need it, because
+trimming a 200-byte result to an equal share of a budget it was never going to
+exhaust loses content to no purpose and frees nothing that matters.
+
+Two things it leaves alone. Image parts, which the model cannot recover from a
+log file. And the spill notice of a result the per-result cap already wrote: the
+tail keeps that path, and a second spill would only preserve the already-clamped
+copy. It runs after each call's events are emitted, so a local frontend still
+shows what the tool produced.
 
 ### Divergence: persisted summaries
 

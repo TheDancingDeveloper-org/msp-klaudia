@@ -6,6 +6,445 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **An editor can drive Klaudia directly: the Agent Client Protocol v1, over
+  stdio (`--input-format acp`).** Zed, Neovim's `acp.nvim` and the JetBrains
+  plugin all speak it, so the editor keeps its own UI for messages, tool calls,
+  diffs and permission prompts while Klaudia does the work. The arithmetic is
+  the argument: the stream-json channel needs an adapter written once per
+  editor, where ACP support is written once per editor *for every agent*, and
+  the editors already shipped theirs.
+
+  Served: `initialize`, `session/new`, `session/load`, `session/list`,
+  `session/close`, `session/prompt`, `session/cancel`, `session/set_mode`, and
+  `session/update` notifications for assistant text, thoughts, tool calls and
+  their outcomes, plans, diffs, token usage and the available commands. The
+  three permission modes are exposed as ACP session modes, so the editor's mode
+  picker is Klaudia's `/mode` — per session, because a client with three threads
+  open has three conversations and one process-wide mode cannot be right for all
+  of them.
+
+  `fs/read_text_file` is used when the client offers it, and that is a
+  correctness fix rather than politeness: the editor hands back the user's
+  *unsaved buffer*, and reading disk while someone looks at unsaved edits is how
+  a model ends up reasoning about text that is no longer there.
+
+  Declined, all deliberately:
+
+  - **`fs/write_text_file`.** Reading through the client is safe; writing is
+    not. Klaudia's `Edit` matches against what it read and `Write` is what
+    `/undo` checkpoints — both of which assume the file on disk is the one they
+    touched.
+  - **`terminal/*`.** Routing `Bash` through the editor's terminal hands over
+    execution, and with it the sandbox, the trust gate, job control and output
+    clamping. A nicer widget is not worth any of those.
+  - **`session/delete`.** Not advertised. A transcript is the user's record of
+    what an agent did on their machine; an editor's "close tab" should not be
+    able to erase it.
+  - **Image and audio prompt blocks.** The loop takes a string prompt, so there
+    is nowhere for the bytes to go, and claiming the capability would have the
+    editor send a screenshot that Klaudia silently discarded. `embeddedContext`
+    *is* claimed — a resource block carrying text is inlined, which is the whole
+    point of pasting the open buffer in.
+  - **MCP servers from the client.** Klaudia connects the ones in `.mcp.json`
+    itself.
+
+  Decisions worth recording:
+
+  - **v1, not v2.** v2 is published as a Draft and changes real things —
+    `tool_call` folded into an upsert-only update, a turn-lifecycle
+    `state_update`, agent-owned terminals — but v1 is what every shipping client
+    negotiates today. The version is agreed at `initialize`, so v2 is additive
+    later: answer 2 to a client asking for 2.
+  - **ACP session ids are Klaudia transcript ids.** Not a second numbering with
+    a mapping table beside it, which is how `session/load` ends up loading
+    something adjacent to what the user picked. `--resume`/`--continue` reaches
+    ACP too: the editor's first thread *is* the session the CLI resolved, and
+    keeps appending to its transcript.
+  - **One transcript per session, not per process.** ACP is the first frontend
+    with more than one conversation at a time, and a shared recorder had two
+    threads appending to one file — so `session/load` replayed an interleaving
+    that never happened.
+  - **One prompt at a time, across all sessions.** A client may open several
+    threads, but this process has one tool registry, one job store, one executor
+    and one sandbox, so two concurrent turns would interleave. A prompt arriving
+    while another runs waits, and a cancel while it waits is still honoured.
+  - **`TodoWrite` is a plan update, not a tool call.** Clients render plans as a
+    checklist, which is the entire point of the tool; left as a tool call the
+    user sees a raw JSON array. `Edit` and `Write` carry an ACP diff, and `Edit`
+    sends its own `old_string`/`new_string` rather than a reconstructed file —
+    reconstructing means reimplementing the replacement rules here, and a
+    preview that computes the change differently from the tool is worse than a
+    narrower one, because this is the text the permission prompt asks you to
+    approve.
+  - **Token usage is sent per turn, not per inner call.** Klaudia's `usage`
+    event is a delta; ACP's `usage_update` is "resident in the context, out of
+    this many". Forwarding deltas showed a session at 300% of its window.
+  - **A host-gate refusal maps to `failed`.** v1 has no fourth status, and
+    "completed" would claim the tool ran. The refusal's own text goes out as the
+    call's content so the user can read what actually happened.
+- **Sub-agents that can write get a git checkout of their own.** Two children
+  editing one working tree is not a race in the usual sense: nothing is
+  corrupted and nothing errors — one writes a file, another reads a half-written
+  version and reasons about it, a third rewrites the first one's edit, and every
+  step *succeeds*. The alternative was running children one at a time, which is
+  the thing concurrency was for. So a sub-agent holding `Write`, `Edit`,
+  `NotebookEdit` or `Bash` now runs in a `git worktree` under
+  `~/.klaudia/worktrees/<project>/<agent-type>-<timestamp>/`, and `Explore` and
+  `Plan` keep sharing the tree — they hold Read, Glob and Grep, so there is
+  nothing to isolate them from, and their whole output is paths that a checkout
+  would make wrong.
+
+  Not under the project root, because the parent's own Glob and Grep walk it:
+  the model would find two of every file and read a copy of the code it is
+  editing. And under `~/.klaudia` rather than `TMPDIR` because the trust
+  classifier reads a bare `$HOME` path as the project zone, where a temp path
+  earns a host prompt per sub-agent.
+
+  **The checkout holds your uncommitted work, not `HEAD`.** `git worktree add
+  <dir> HEAD` would hand the child the last commit — the one state nobody asked
+  about — and a child told to "test the function I just wrote" would report,
+  convincingly, that there is no such function. It is seeded with the tracked
+  delta and the untracked non-ignored files, committed on the detached HEAD as
+  the baseline the child's work is measured against, with hooks and signing
+  skipped: a repository's pre-commit hook is aimed at the user's commits, and
+  running their linter every time a sub-agent spawns is a side effect nobody
+  asked for. Ignored files are *not* copied — build output is what makes a copy
+  expensive, and a tree that builds is a different promise from a tree that
+  matches. The cost is real: a child that needs an install step before it can
+  test will pay for it, or fail, which is what `[subagents] worktree = false` is
+  for.
+
+  Coming back, the child's work is diffed against the baseline and applied with
+  `git apply`, which touches files and not the index — same reason `/undo`
+  writes loose objects instead of stashing, and your staging area is exactly as
+  you left it. `git apply` is all-or-nothing, which is the behaviour worth
+  having (a patch that no longer fits is one whose file moved underneath us), so
+  it is retried file by file and what did not fit is named to both you and the
+  model. The model is told because it asked a child to change files, and a
+  silent conflict has it carry on describing work that is not there. A checkout
+  survives any conflict — it holds the only copy of that version — and a failed
+  or interrupted child keeps its checkout with the path in the error, because
+  half a change applied to your tree is the outcome isolation exists to prevent.
+  Stale checkouts are pruned after seven days.
+
+  Adoption is serialised per repository, and that lock was measured rather than
+  assumed: without it, two concurrent adoptions of one file reported success
+  twice and silently kept one version — the precise failure the feature exists
+  to remove.
+- **Every frontend runs a turn through one contract (`agent.Turn`).** Each one
+  used to declare its own `RunFunc` — the TUI's took nine positional parameters,
+  stream-json's five — and the CLI wrote a closure per mode that filled in
+  `Options` by hand. Two consequences, both live bugs rather than hypotheticals:
+  a frontend that *omitted* a capability was indistinguishable from one that did
+  not want it (which is how `AskUserQuestion` and `ExitPlanMode` came to be dead
+  over stream-json), and adding a parameter meant touching every frontend, so
+  nobody did and the gap between the TUI and the embedding channels only
+  widened. A capability is now a field a frontend sets, the copying happens once
+  in `Turn.Apply`, and a new field left zero behaves exactly as it did before it
+  existed. `HostChange.Fields` is shared for the same reason: stream-json's
+  `host_change` payload and ACP's `_meta` have to agree about which fields are
+  omitted, and the omissions are the informative part.
+- **MCP elicitation, so a server can ask the user instead of failing.** The
+  client now speaks protocol **2026-07-28** (go-sdk v1.6.1 → v1.8.0) and
+  advertises the elicitation capability, which is how a server obtains the one
+  thing it cannot derive — a token, a branch name, a confirmation before
+  something destructive. Without it the server's only options were a degraded
+  path or an error that said nothing about what it actually wanted.
+
+  The question goes to the same prompt `AskUserQuestion` uses and is labelled
+  with the server that asked; "an MCP server wants your GitHub token" is not
+  answerable without knowing which one. Each schema field is one question —
+  booleans and enums become choices, anything else is typed — and `required`
+  fields are asked first in the order the schema lists them. That part of the
+  order is real, because `required` is a JSON array; the optional fields are
+  sorted, because object key order does not survive decoding and the schema
+  reaches us already decoded.
+
+  Answers are free text, so a declared type is a coercion that can fail. A
+  failure **cancels** rather than guessing: `cancel` is recoverable — the server
+  may ask again — where an invented number is not. An answer outside a declared
+  enum cancels for the same reason. `3.0` is accepted for an integer; `3.5` is
+  not.
+
+  Two things are deliberately not supported:
+
+  - **URL-mode elicitation is declined, and not advertised.** The spec's other
+    mode hands the client a link to open out of band and expects an immediate
+    "accept". A terminal cannot open a browser without reaching outside the
+    project, and answering yes for a link that was only printed into a
+    scrollback nobody is watching is worse for the server than being told no —
+    it waits on a flow that never started. Declaring form-only lets it choose
+    its own fallback. Nothing on the multi round-trip path enforces the declared
+    mode, so the check is made again on arrival.
+  - **Headless runs advertise no elicitation at all.** There is nobody to ask, so
+    a capability would only earn a decline on every request. A server that sees
+    nothing takes its non-interactive path instead.
+
+  Two findings from the SDK worth recording, because neither is guessable from
+  the spec text. On 2026-07-28 a server **cannot** send `elicitation/create`
+  while serving a request: it returns an `InputRequests` map in the tool result
+  and the client fulfils it and retries (multi round-trip requests, SEP-2322).
+  The SDK's client middleware already runs that loop, so `mcpTool.Execute` needed
+  no changes — but it fulfils the requests of one round **concurrently**, and the
+  frontend has a single question slot, so two prompts in flight would overwrite
+  each other's options and the user would answer the wrong question. Elicitations
+  are serialised.
+
+  Capabilities are now set explicitly, which also drops the SDK's default
+  `roots: {listChanged: true}`. Klaudia registers no root, so that advertised a
+  feature whose only possible answer was an empty list; roots is deprecated as of
+  this protocol version anyway.
+- **`/doctor` warns about the deprecated HTTP+SSE transport.** `type:"sse"` still
+  works and is still supported, but the spec has deprecated it and servers drop
+  it on their own schedule. The symptom when one does is a connect error with no
+  hint that the fix is one word in `.mcp.json`, so the check names the servers
+  still on it.
+- **Lifecycle hooks: four events, and a confirmation for the ones that arrive
+  with a clone.** The commonest request a harness gets is "run *my* thing at
+  *that* moment" — format after a write, refuse edits to generated files, paste
+  the ticket into every prompt — and every one of them is a feature Klaudia
+  would otherwise have to grow an opinion about. A hook is a line of shell and
+  the agent stays out of it.
+
+  Four events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`.
+  Claude Code has grown past thirty, and the long tail of them exists to serve
+  one workflow each; every event is a promise about when the loop calls out,
+  which is a promise about the loop's shape. `Stop`/`SubagentStop` — "the model
+  thinks it is done, make it keep going" — were left out deliberately: a hook
+  that can deny completion can hang a session, and nothing in a shell command
+  knows better than the loop whether the work is finished.
+
+  **A hook is not a security boundary, and the ordering is what keeps it from
+  pretending to be one.** `PreToolUse` runs *after* the host gate and the
+  permission check have both allowed a call, so a hook can narrow what Klaudia
+  will do and can never widen it. The alternative — a hook consulted as part of
+  the decision — is a config file that can grant permission, which is a way to
+  switch the gate off by writing a file.
+
+  Which matters because a project's `.klaudia/config.toml` arrives with a clone.
+  Cloning a repo and starting Klaudia in it would otherwise be enough to run
+  whatever that file says, before the user has read a line of it: the same shape
+  that made editors stop sourcing project-local config, and the reason `.vscode`
+  tasks and `direnv` both grew an approval step. So hooks from `~/.klaudia` are
+  the user's own and run unprompted — asking someone to confirm their own
+  settings file is how people learn to stop reading prompts — and hooks from the
+  repository are confirmed once, through the existing host-change card, with
+  every command shown. The approval is recorded in `~/.klaudia/hooks.json` keyed
+  by project directory.
+
+  The unit of approval is the whole set, fingerprinted over each hook's event,
+  matcher, command and timeout, in order. A set rather than a file, because a
+  prompt has to show what is being agreed to and "these four commands" is
+  something a person can read where "hooks: yes" is not. And a fingerprint
+  rather than a flag, because the dangerous repo is not the one that asks on day
+  one — it is the one that asks for something harmless and changes it in a later
+  pull. Reverting to a formerly-approved set re-asks too: that is precisely the
+  move available to an attacker who got a yes once. `config.merge` deliberately
+  does *not* merge the two files' hook lists, because a merged slice is one in
+  which a repository's command is indistinguishable from the user's.
+
+  Details that were decided rather than inherited:
+
+  - **Exit 2 is a verdict; any other non-zero status is a malfunction.** A hook
+    that exits 127 because the formatter is not installed has made no judgement
+    about the tool call, and reporting that to the model as a refusal would have
+    it reason about, and route around, a broken environment. Malfunctions and
+    timeouts go to the user as notices and never to the model — a broken script
+    is the operator's to fix. The convention itself is Claude Code's, and so are
+    the stdin field names (`tool_name`, `tool_input`, `tool_response`), because
+    a hook script is the most portable artefact in the ecosystem and a
+    gratuitously different payload means editing every existing one for nothing.
+  - **Hook stdout is prompt, so it is bounded.** 8 KB, with the truncation
+    reported. `command = "git log"` in a long-lived repo is megabytes pasted in
+    front of every user message.
+  - **30 seconds by default, not Claude Code's minute.** `PreToolUse` is in the
+    critical path of every single tool call, so a hook that hangs is a session
+    that looks frozen; the formatter and linter cases finish in under a second.
+  - **Injected context is its own content block, placed before the prompt.**
+    Separate, so a frontend replaying the transcript can tell what the user
+    typed from what a hook added. Before, because context that follows an
+    instruction reads as part of it — a hook that pastes a file listing after
+    "delete the stale ones" has changed what the sentence means.
+  - **`PostToolUse` output is appended to the result and labelled.** The model
+    has to be able to tell the tool's own words from a hook's commentary: a
+    formatter saying "reformatted 1 file" is not something `Write` printed. A
+    refusal here cannot undo the call, but it does make the result arrive as an
+    error with the reason attached, which is the difference between the model
+    believing its write succeeded and knowing the linter rejected it.
+  - **`SessionStart` fires once per session and cannot block.** Once per
+    session, not per turn, and the claim lives on the runner because that is the
+    only object with the session's lifetime — a `Loop` is per-process, but a
+    sub-agent builds its own, which would have fired it again on the first
+    `Agent` call. It cannot block because there is nothing left to block, and
+    treating its exit 2 as a veto would make a config typo look like a broken
+    install. Sub-agents run the two tool events and skip `UserPromptSubmit`:
+    their prompt is the parent's instruction, not the user's.
+  - **A bad entry is dropped and reported, not fatal and not silent.** A
+    mistyped event name is the likeliest error by a distance, and
+    `"SessionStarted"` quietly never firing is the worst outcome available. All
+    the problems in a file are reported, not the first.
+  - **Hooks are not sandboxed, whatever `[sandbox]` says.** That setting
+    confines the model's commands. A hook is the user's own automation, and the
+    things it exists to do — run a formatter, touch a git index, post a
+    notification — are exactly what confinement forbids; one failing under
+    `sandbox-exec` would fail invisibly from the config file that declared it.
+  - **In a headless run, project hooks do not run.** The notice distinguishes
+    that from a refusal, because nobody objecting is not the same as agreement.
+
+  `/doctor` now lists the configured hooks in the order they will run and warns
+  when a project set is still waiting on approval — the one state whose only
+  symptom is silence. See `docs/hooks.md`.
+
+- **The model is told which permission mode it is working under.** It was never
+  told, and it is the one doing the work under the constraint. In plan mode it
+  reasoned its way to an edit, called `Edit`, and was refused — a wasted turn,
+  and worse, a plan built without knowing that running the build to check it had
+  never been an option. Leaving plan mode was the mirror image: the user got a
+  banner, the transcript recorded it, and the model carried on hedging about
+  work it was now free to do.
+
+  The active mode is now a system-prompt clause, rebuilt per turn, and a change
+  is emitted as a `permission_mode` event for headless and stream-json
+  frontends (the TUI already prints its own banner and shows the mode in the
+  status bar). Per turn rather than once per run because approving a plan flips
+  the mode mid-run. Doing it in the loop — the only place that holds the live
+  mode function — covers the picker, `/mode`, `/plan`, plan approval and any
+  future control request without any of them knowing about it.
+
+  Two details. Autonomous adds no clause: it is what the base prompt already
+  assumes, and restating the default every turn is tokens spent to change
+  nothing. And the clause is a separate system block appended after the base
+  prompt rather than spliced into it, so the long identical prefix stays
+  byte-for-byte stable and a mode change invalidates nothing before the cache
+  breakpoint.
+
+- **AGENTS.md is read.** It is the cross-agent instruction standard — now a
+  Linux Foundation project, present in several hundred thousand repositories and
+  read by around twenty agents — and Klaudia read none of them. A user who had
+  already written down their conventions for exactly this purpose got a model
+  that had never seen them.
+
+  Both files are now read, at three levels, generic first at each one:
+  `~/.claude/CLAUDE.md`, `~/.klaudia/AGENTS.md`, then `AGENTS.md` and
+  `CLAUDE.md` at the git root and again in the working directory. Both rather
+  than one, because a repo may carry either or both with different content — the
+  generic file for every agent and a Claude-specific refinement beside it — and
+  reading one of them silently drops the other.
+
+  Supporting both with `ln -s AGENTS.md CLAUDE.md` is the commonest arrangement
+  in the wild, and a copy is the second commonest. Either would have sent the
+  whole instruction block twice in every request, so identity is established
+  both by resolved path (`EvalSymlinks` — `filepath.Abs` gives a symlink its own
+  path) and by content hash, which is the only thing that catches the copy. The
+  prompt's section header now names the files the instructions actually came
+  from, so a model asked to write a convention down knows which file to put it
+  in.
+
+- **Read-only tool calls in the same batch run at the same time.** A turn's
+  tool calls were dispatched strictly one after another, so the commonest shape
+  in a turn — three or four `Read`s, or a `Glob` and two `Grep`s, issued
+  together to orient — cost the *sum* of its round trips instead of the slowest
+  one. Adjacent calls to tools that have opted in now execute concurrently, up
+  to five at once.
+
+  Opting in means implementing `tools.ConcurrencySafe`, and the marker asserts
+  more than "does not write": that the tool never prompts the user, holds no
+  process-wide resource assuming one caller, and does not depend on when it ran
+  relative to its neighbours. `Read`, `Glob` and `Grep` are marked; everything
+  else keeps the old behaviour, because adding a tool should not require
+  thinking about parallelism and the cost of forgetting should be a slow batch
+  rather than a race.
+
+  Three properties are preserved rather than traded away:
+
+  - **Order.** Only *adjacent* safe calls are grouped. A `Read`, an `Edit` and
+    another `Read` stay in that order — the second `Read`'s result depends on
+    the `Edit` having happened — so groups are maximal runs and nothing is ever
+    lifted past a call it followed. Results are written by index, so the model
+    sees them paired with the calls it made however the goroutines finished.
+  - **One prompt at a time.** A call whose host-gate or permission check would
+    ask is never grouped, whatever the tool reports: there is one `Approver` and
+    one place to put a question. That is decided before anything starts, so
+    `dispatch` does not need to know it is in a group.
+  - **A readable transcript.** A group's events are delivered in call order.
+    The call at the head streams live so the user sees movement immediately;
+    later calls buffer until the ones before them finish. A group of one
+    behaves exactly like the old serial path.
+
+  The loop-breaker counters moved behind a mutex (`failureState`). The lock
+  makes each operation atomic, not the breaker *decision* atomic with the
+  update that follows it — serialising dispatch around a heuristic would undo
+  the parallelism it protects. The consequence is bounded: a group can run one
+  extra copy of a call that was about to be refused, and since only
+  concurrency-safe tools are grouped, the extra copy is a read that reads
+  again.
+
+- **A turn's tool results are capped in aggregate, not just one by one.** The
+  per-result cap cannot see this case: five results that each stop just under
+  the 30 KB budget are 150 KB in a single user message, and a turn is not
+  limited to five calls. Twenty well-behaved `Grep`s is most of a 200K window
+  in one message, with nothing in the per-result path finding anything wrong —
+  and parallel dispatch above makes that shape common rather than theoretical.
+
+  One turn's combined tool-result text is now held to 200 KB. Shares are
+  allotted by water-filling rather than an equal split: results already under
+  their share keep every byte and what they do not use is redistributed to the
+  large ones, because trimming a 200-byte result to an equal share of a budget
+  it was never going to exhaust loses real content to no purpose. Image parts
+  survive untouched — the model cannot recover vision content from a log file —
+  and a result the per-result cap already spilled keeps pointing at that file
+  rather than gaining a second notice naming a spill of the already-clamped
+  copy. The cap runs after each call's events are emitted, so a local frontend
+  still shows what the tool actually produced.
+
+- **An elided tool result now leaves a handle, not a blank.** Microcompact
+  replaced every old result with the same fixed string, so after a pass the
+  conversation held several identical `[Old tool result elided to save
+  context]` markers: the model could not tell which call each had been, and the
+  content was gone for good. The only recoveries were re-running the tool —
+  paying the latency and the tokens again, and hoping it was idempotent — or
+  reasoning without it.
+
+  The placeholder now carries the original size, its first non-empty line
+  truncated to 120 bytes, and the path of a spill file holding the full text, so
+  it reads `[Old tool result elided to save context; 70 bytes; began:
+  ./internal/agent/loop.go:349: for _, tu := range toolUses {; full text:
+  /…/elided-123.log]`. That is enough to recognise the call and recover it with
+  a `Read`, for a few dozen tokens against the thousands a pass reclaims. The
+  spill is injected as a `Spiller` function rather than imported, keeping the
+  package dependency-free, and it is the same on-disk spill the per-result cap
+  writes; with no spiller the placeholder simply promises no file.
+
+  `Microcompact` runs in two passes for a reason: `compact()` is called at the
+  top of every turn, and pricing the placeholders *before* writing anything lets
+  the `MinTokensToSave` floor reject the pass without side effects. A single
+  pass would have written a fresh set of spill files on every turn a
+  conversation spent sitting just under that floor. The second pass spills and
+  recomputes the exact saving with the real paths in place.
+
+- **Every tool's output is capped, not just Bash's.** The clamp-and-spill
+  machinery in `internal/tools/output.go` had exactly one caller — Bash — so a
+  single Grep across a large repo, a verbose MCP server, or any tool added by
+  someone who had not thought about the context window could put its entire
+  output into the conversation. Measured on a synthetic Grep-shaped result: 980
+  KB arrived at the model intact, roughly a quarter of a million tokens from one
+  call.
+
+  The agent loop now applies a backstop after collapsing a tool's results: the
+  text is clamped head-and-tail to the same 30 KB budget Bash uses, the
+  untruncated copy is written to `~/.klaudia/outputs/<tool>-*.log`, and a notice
+  names the file so the model can read what was removed. The UI is unaffected —
+  it already receives the full text out of band via `Result.Full`.
+
+  This is a backstop, not a replacement. A tool that understands its own output
+  clamps it better than a byte-level cut can: Bash keeps a tail because that is
+  where the verdict is, and appends the exit annotation afterwards so it
+  survives. Output already within budget passes through untouched, so
+  self-clamping tools are never cut twice. Spill files are now named after the
+  tool that produced them (previously all `bash-*.log`), which also meant
+  sanitising MCP names — `CreateTemp` rejects a pattern containing a path
+  separator outright.
+
 - **MCP servers can be configured globally, in `~/.klaudia/.mcp.json`.** Only
   `./.mcp.json` and `./.klaudia/.mcp.json` were read, both relative to the
   project, so a server you want in *every* project had to be copied into every
@@ -52,7 +491,193 @@ port mirrors (see `internal/version`).
   point at `/mcp`. A reload that works stays silent: announcing every one would
   print a line each time an unrelated key in the file was saved.
 
+### Removed
+- **The per-command permission model is gone, not deprecated.** No allow/deny
+  rules, no `--allowedTools`/`--disallowedTools`, no `/allow` or `/deny`, no
+  `default`/`acceptEdits`/`dontAsk` modes, no "always" answer on a prompt, and
+  no `[permissions] allow`/`deny` or `[trust]` config. `HostPolicy` goes with
+  them: the gate has no observe or off posture, because `bypassPermissions`
+  already means "check nothing" and says so.
+
+  These were kept as a migration affordance when zones landed. Running both
+  models at once turned out to be worse than either, in a way only visible in
+  use: a rule in `.klaudia/config.toml` put the next session into observe,
+  observe dropped its permission mode to `default`, and `default` asked before
+  every edit and every command. So answering "always" — the thing offered to
+  stop a prompt — was what guaranteed more prompts next session, in a project
+  that would otherwise have started autonomous. Persistence was also gated on
+  `.klaudia/` already existing, so a project acquired the behaviour the first
+  time anything created that directory. Measured on a project where `/goal`
+  wrote `.klaudia/GOAL.md`: the next "always" reached disk, and simulating the
+  following startup gave `trust=observe permissionMode=default`.
+
+  Two further dead ends went with it. `/trust upgrade` returned "Already
+  enforcing" without looking at the permission mode, so a session that reached
+  gate-enforcing with the mode left behind — `/plan off` left `default`, an
+  approved `ExitPlanMode` left `acceptEdits`, neither touching the gate — had
+  no signposted way out: the command the UI and docs pointed at reported
+  success and changed nothing. Both now land on `autonomous`, and the gate has
+  no posture to be out of step with.
+
+  Approving an operation is the replacement, and it was already the documented
+  one — `docs/trust.md` and `/trust` had both been claiming Klaudia no longer
+  created rules while `tui.go` still did. Existing configs are not migrated:
+  delete the `[permissions]` allow/deny entries and any `[trust]` section.
+  `[permissions] mode` is still read and now takes
+  `autonomous`/`plan`/`bypassPermissions`.
+
 ### Fixed
+- **Five things the stream-json embedding channel could not do.** It is the
+  channel whose entire purpose is a client with a user sitting in front of it,
+  and most of what follows was a capability the transport never carried.
+
+  - **`AskUserQuestion` and `ExitPlanMode` were dead.** The CLI passed no
+    `Asker` and no `Planner` on this path, so the model called them and was told
+    there was nobody to ask. Two new `control_request` subtypes, `ask_user` and
+    `exit_plan`, answered on the same `request_id` channel as `can_use_tool`. A
+    peer that has not implemented them should answer with an error, which reads
+    as "cancelled" and leaves the model where it was — rather than the first
+    option being picked and an answer the user never gave being attributed to
+    them.
+  - **A permission ask arrived stripped of everything but the tool name and its
+    input.** `tool_use_id`, the specifier, the suggestion and the whole host
+    change were dropped on the floor, so every ask looked the same. The host
+    change is the damaging one: "allow Bash?" is the wrong question to put to
+    someone about `systemctl restart nginx`, and a peer that cannot tell the two
+    apart cannot render the right card.
+  - **A refusal was reported as a successful result with no text.** `subtype:
+    "success"` and an empty `result` let a pipeline treat a refusal, or a hit
+    limit, as a finished task — the same bug the headless path already fixes and
+    this one had not inherited. It now reports the stop reason, `is_error`, and
+    the note explaining what stopped the turn.
+  - **`--resume`/`--continue` was resolved and then discarded.** The driver
+    started a fresh conversation while the CLI reported it had resumed one.
+  - **A control response without a `subtype` was read as a failure.** Only
+    `"success"` counted, so a peer that echoed a `request_id` and a payload —
+    the obvious minimal implementation — had every answer treated as a denial.
+- **Notices reach the operator in a headless run.** `-p` suppresses
+  intermediate events on purpose — stdout is the result and nothing else,
+  because it gets piped — but notices were going through the same renderer and
+  being dropped with them. A notice is not a step in the work; it is the one
+  class of message only the operator can act on: a hook that failed to start,
+  project hooks waiting on an approval nobody is there to give, an MCP server
+  that could not be reloaded. Reported but invisible is the same as unreported.
+
+  They now go to stderr, in every headless format, so stdout's contract is
+  untouched and a notice cannot land in the middle of a stream-json line.
+
+- **The list of slash commands a skill cannot shadow is derived from the
+  commands, not kept by hand.** `internal/cli` held its own copy, and it had
+  drifted in both directions. It still reserved `allow` and `deny` after the
+  per-command rule model was removed, so a skill could not be named either. And
+  it had never learned about `/trust`, `/undo`, `/jobs`, `/pin` and fifteen
+  others, so a skill named after one of those was shadowed by the built-in —
+  reachable only through the `Skill` tool — with no warning at all, which is the
+  exact failure the list exists to report.
+
+  It now comes from `commandList`, the table that already drives `/help` and
+  type-ahead, with the two switch-only aliases (`/?`, `/exit`) named explicitly.
+  Both lists live in `internal/tui` beside the switch they describe, and a test
+  parses `handleSlash` and fails if a case there is not claimed by one of them —
+  measured by adding a `/bogus` case and watching it fail, rather than assumed.
+
+- **A dead MCP server restarts itself on the next call.** A reload already
+  probes liveness, but only the config changing triggers a reload — so a server
+  that died mid-session with nobody editing `.mcp.json` stayed dead for the rest
+  of it. A stdio server whose child process exits keeps a non-nil
+  `ClientSession`, nothing nils it out, so the first sign was a tool call
+  failing and the only cure was `/mcp` or a restart.
+
+  A call that fails on the wire now probes the server and relaunches it if it
+  has stopped answering. The probe decides, not the error: a bad argument or an
+  unknown tool also arrives as a call error, and restarting a healthy server
+  over the model's mistake would throw away whatever state it holds — for an
+  editor bridge, the user's open session.
+
+  Whether to repeat the call is a correctness question, not a performance one.
+  The failure may have come on the way back from a call that already ran, and
+  nothing on the wire distinguishes that from one that never arrived. So a tool
+  declared read-only (`readOnlyHint`, or the per-server override) is retried,
+  and anything else is reported with the ambiguity stated — the server is back,
+  the call may or may not have taken effect, check before retrying. Reading an
+  MCP *resource* is always retried, having no side effects to be ambiguous
+  about.
+
+  Relaunches are serialised per server and rate-limited to one per 15 seconds.
+  Two tool calls, or a tool call and `/mcp`, can arrive together and would
+  otherwise each spawn a child process and close the other's; and a server that
+  simply cannot start would pay a full launch timeout on every call the model
+  makes, turning one bad entry into a stalled session.
+
+- **`ToolSearch` no longer loads tools on the strength of "the".** Ranking
+  matches instead of demanding every term fixed descriptive queries and brought
+  a cost with it: because OR-matching qualifies a tool on any single term, and a
+  match *reveals* that tool, a word that appears all over the catalog spends the
+  budget deferred loading exists to protect. Asked to "stop the background job
+  that is running", Klaudia loaded a Godot project runner — its description
+  contains "the" — and a scene manager, because "is" is a substring of "disk".
+
+  Two rules, each aimed at one of those mechanisms. A term matching more than
+  half the catalog is dropped before matches are qualified, decided against the
+  loaded catalog rather than a list of English stopwords, because which words
+  are uninformative depends on what is loaded — with 65 Godot tools present,
+  "godot" narrows nothing either. And a term shorter than three characters
+  matches whole words only, with no fuzzy tier, since document frequency cannot
+  catch "is" inside "disk" when "disk" is itself a rare word.
+
+  If every term is noise the whole query is kept: the bare "godot" case, where
+  returning all 65 is the honest answer to a question that broad and returning
+  nothing was the original bug. Measured on a mixed catalog, the two job queries
+  above went from 7 matches to 6 and from 5 to 3, losing only tools that had
+  matched on a function word.
+
+- **A dropped web search now says so.** The repair that keeps a broken
+  server-tool exchange from poisoning a session was correct and completely
+  silent, and the silence turned out to be the worse half of the bug. The model
+  reads a placeholder on the *next* request, so it can recover; the user saw a
+  search in the transcript with no results, no error and no way to know the
+  answer that followed had been reasoned without it. In the session that
+  prompted this, several searches came back empty and nothing anywhere
+  mentioned it.
+
+  Each dropped exchange is now announced once, as a new `notice` event, naming
+  whether a search or a fetch was lost and that it can be re-run. Once, not per
+  turn: the broken exchange stays in history, so a transcript inherited from a
+  resume would otherwise carry a permanent banner. Two shapes are deliberately
+  *not* announced, because a false alarm is indistinguishable from a real one —
+  a server tool the API withheld because the same batch held client tools (it
+  runs on the next request, by design) and a paused search whose two halves are
+  still in separate messages.
+
+- **The previous frame's chrome no longer shows through tab-indented output.**
+  Reading a tab-indented source file produced lines with the status bar and the
+  input placeholder embedded in the indentation — `266Klaudia…` and
+  `268-opus-5 · auto-e}` in a real session. The bleed runs were 8 and 16 columns
+  wide, which is the signature: a literal HT advances the terminal's cursor to
+  the next tab stop *without painting the cells it skips*, and Bubble Tea writes
+  a queued scrollback line straight over the rows the last frame occupied,
+  appending `EraseLineRight` only at the end of the line. Every cell a tab
+  jumped over kept the pixels the prompt box, placeholder or status line had
+  left there.
+
+  A second defect compounded it. `fitScrollback` measures lines with
+  `ansi.StringWidth`, which scores a tab as **zero** columns — HT is an
+  `ExecuteAction`, not a `PrintAction` — so a tab-heavy line was judged short,
+  skipped the wrap, and was handed to the terminal to wrap onto rows Klaudia
+  never erases. That is the same class of bug `fitScrollback` already exists to
+  prevent, arriving by a different route.
+
+  Tabs are now expanded to real tab stops (multiples of 8, counted in columns
+  with escape sequences excluded so a colour code cannot shift a later stop) in
+  `fitScrollback` — the single choke point every printed block passes through,
+  and before the width measurement, so one change fixes both. It is done there
+  rather than in `baseStyle` deliberately: `TabWidth(NoTabConversion)` is still
+  set, `m.transcript` still holds the literal tabs, and `/copy` and `/export`
+  still paste `go test` and TSV output with its columns intact. lipgloss's own
+  expansion was not an option — it writes four spaces per tab regardless of
+  column, which is what destroys that alignment and why it was disabled in the
+  first place.
+
 - **A tool call carrying one extra property is no longer thrown away.** Tool
   input schemas are generated with `additionalProperties: false`, and that was
   enforced at dispatch, so a model that supplied every field correctly plus one

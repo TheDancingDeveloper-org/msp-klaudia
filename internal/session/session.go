@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -208,67 +207,16 @@ func Read(path string) ([]Entry, error) {
 // MostRecent returns the session ID of the most recently modified transcript in
 // the project dir for cwd, or ("", false) if none exists. The current sessions
 // root and legacy projects root are both considered during migration.
+//
+// List already does the work — newest first, contentless files dropped — and
+// "most recent" is its first element. Keeping a second traversal here is how
+// the two previously disagreed about what counted as a session.
 func MostRecent(cwd string) (string, bool) {
-	matches, _ := filepath.Glob(filepath.Join(Dir(cwd), "*.jsonl"))
-	legacyMatches, _ := filepath.Glob(filepath.Join(legacyDir(cwd), "*.jsonl"))
-	matches = append(matches, legacyMatches...)
-	if len(matches) == 0 {
+	all := List(cwd)
+	if len(all) == 0 {
 		return "", false
 	}
-	type fi struct {
-		path string
-		mod  time.Time
-	}
-	var files []fi
-	for _, m := range matches {
-		st, err := os.Stat(m)
-		if err != nil || st.Size() == 0 {
-			continue // unreadable, or an empty file from a launch that recorded nothing
-		}
-		files = append(files, fi{path: m, mod: st.ModTime()})
-	}
-	if len(files) == 0 {
-		return "", false
-	}
-	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
-	// Return the newest transcript that actually holds a conversation. A launch
-	// creates its transcript eagerly (O_CREATE) but only records on a real turn,
-	// so a session abandoned before any message — or one whose turns all errored
-	// (e.g. an expired auth token) — leaves a contentless file with the newest
-	// mtime. Auto-resuming that would silently drop the user's real history
-	// ("resumed but no memory"), so skip to the newest one with messages.
-	for _, f := range files {
-		if hasMessages(f.path) {
-			name := filepath.Base(f.path)
-			return strings.TrimSuffix(name, ".jsonl"), true
-		}
-	}
-	return "", false
-}
-
-// hasMessages reports whether a transcript holds at least one user/assistant
-// message, scanning only until the first match so large transcripts stay cheap.
-// A file with only non-message lines (or none) is treated as contentless.
-func hasMessages(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
-	for sc.Scan() {
-		if len(sc.Bytes()) == 0 {
-			continue
-		}
-		var e struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(sc.Bytes(), &e) == nil && (e.Type == "user" || e.Type == "assistant") {
-			return true
-		}
-	}
-	return false
+	return all[0].ID, true
 }
 
 // LastTurnRefused reports whether the transcript's final assistant turn was a

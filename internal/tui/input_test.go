@@ -2,18 +2,18 @@ package tui
 
 import (
 	"context"
-	"github.com/charmbracelet/bubbles/spinner"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
+
 	"github.com/anthropics/anthropic-sdk-go"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/memory"
-	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 func newTestModel() *Model {
@@ -72,8 +72,8 @@ func TestEnterSubmitsMultilinePrompt(t *testing.T) {
 	m.ctx = context.Background()
 	m.events = make(chan tea.Msg, 1)
 	promptCh := make(chan string, 1)
-	m.run = func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, approver agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, _ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
-		promptCh <- prompt
+	m.run = func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		promptCh <- turn.Prompt
 		return agent.Result{}, nil
 	}
 	m.input.SetValue("first\nsecond")
