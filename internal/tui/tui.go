@@ -49,18 +49,22 @@ type RunFunc = agent.RunFunc
 // slash commands like /model can change settings for subsequent turns. The
 // RunFunc should read these fields fresh on each call.
 type Session struct {
-	SessionID      string         // transcript/session id used by --resume
-	Model          string         // model alias or full ID ("" = default)
-	ResolvedModel  string         // concrete model id for display
-	Effort         string         // reasoning effort ("" = the model's default); /effort changes it
-	PermissionMode string         // live mode (ExitPlanMode flips it out of "plan")
-	Memory         memory.Store   // backs /memory; never nil — set to memory.Disabled() when unavailable
-	Goal           string         // standing goal re-injected each turn (Ralph-style); restored on resume
-	Theme          string         // markdown render theme ("" = dark)
-	EnterInserts   bool           // Return inserts a newline; alt+Return/ctrl+j submit
-	Notify         NotifyModes    // terminal-attention mechanisms (bell/OSC9/OSC777)
-	NoTagline      bool           // [banner] tagline = "off": no rotating subtitle after the logo
-	Skills         []SkillCommand // user-defined skills dispatched as /<name>
+	SessionID      string       // transcript/session id used by --resume
+	Model          string       // model alias or full ID ("" = default)
+	ResolvedModel  string       // concrete model id for display
+	Effort         string       // reasoning effort ("" = the model's default); /effort changes it
+	PermissionMode string       // live mode (ExitPlanMode flips it out of "plan")
+	Memory         memory.Store // backs /memory; never nil — set to memory.Disabled() when unavailable
+	Goal           string       // standing goal re-injected each turn (Ralph-style); restored on resume
+	// InitialPrompt is submitted as the first user message once the TUI is up
+	// (--prompt-interactive): typed-input semantics — slash commands, @files —
+	// and the session stays open afterwards. "" sends nothing.
+	InitialPrompt string
+	Theme         string         // markdown render theme ("" = dark)
+	EnterInserts  bool           // Return inserts a newline; alt+Return/ctrl+j submit
+	Notify        NotifyModes    // terminal-attention mechanisms (bell/OSC9/OSC777)
+	NoTagline     bool           // [banner] tagline = "off": no rotating subtitle after the logo
+	Skills        []SkillCommand // user-defined skills dispatched as /<name>
 
 	// Render-only context for /config and /context (set once at startup).
 	Provider    string      // resolved provider ("anthropic" | "openai" | …)
@@ -478,6 +482,8 @@ type Model struct {
 	loopGuard func(tool string, input []byte, cwd string) string
 	// loopMode is the run's git model (no-branch / no-commit, #246).
 	loopMode goal.RunMode
+	// initialPromptSent records that Session.InitialPrompt went out.
+	initialPromptSent bool
 	// quitArmed is set by a Ctrl+C press that had nothing left to cancel (see
 	// onCtrlC). While armed the status bar says so, and an immediately repeated
 	// Ctrl+C quits; any other key disarms it. This is what stops a reflexive
@@ -913,6 +919,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingReflow = "\r" + ansi.CursorUp(d) + ansi.EraseScreenBelow
 		}
 		m.resize(msg.Width, msg.Height)
+		// An initial prompt waits for the first size: until then nothing is
+		// laid out, and the turn's first lines would render at width zero.
+		if p := m.pendingInitialPrompt(); p != "" {
+			m.input.SetValue(p)
+			return m.submitInput()
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -1584,7 +1596,33 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if action == actionSubmit && m.state == stateIdle && isBang(m.input.Value()) {
+	if action == actionSubmit && m.state == stateIdle {
+		return m.submitInput()
+	}
+
+	return m, m.updateInput(msg)
+}
+
+// pendingInitialPrompt returns the session's InitialPrompt the first time it is
+// asked while idle, and "" ever after, so a resize cannot send it twice.
+func (m *Model) pendingInitialPrompt() string {
+	if m.initialPromptSent || m.sess == nil || m.state != stateIdle {
+		return ""
+	}
+	p := strings.TrimSpace(m.sess.InitialPrompt)
+	if p == "" {
+		return ""
+	}
+	m.initialPromptSent = true
+	return p
+}
+
+// submitInput sends what is in the input box: a `!` command, a slash command,
+// or a prompt to the model. It is the Enter key's action, and also how an
+// initial prompt (--prompt-interactive) is sent, so that one takes exactly the
+// route a typed one would — @file expansion, slash routing, history.
+func (m *Model) submitInput() (tea.Model, tea.Cmd) {
+	if isBang(m.input.Value()) {
 		in := m.readInput()
 		m.input.Reset()
 		m.pushHistory(in.Display)
@@ -1593,7 +1631,7 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.runBang(in.Prompt)
 	}
 
-	if action == actionSubmit && m.state == stateIdle {
+	{
 		in := m.readInput()
 		if in.Empty() {
 			return m, nil
@@ -1623,8 +1661,6 @@ func (m *Model) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// startTurn returns only spinner/stopwatch ticks (separate cmd loops).
 		return m, m.startTurn(prompt, images)
 	}
-
-	return m, m.updateInput(msg)
 }
 
 // cmdInfo describes one slash command — the single source of truth for both
