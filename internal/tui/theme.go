@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/glamour"
@@ -63,10 +64,49 @@ var renderThemes = []renderTheme{
 	},
 	{
 		id:      "light",
-		name:    "Light",
-		desc:    "for light terminal backgrounds",
-		aliases: []string{"day", "paper"},
+		name:    "GitHub Light",
+		desc:    "plain light, GitHub's colours",
+		aliases: []string{"day", "paper", "github"},
 		palette: themePalette{light: true, fg: "#24292f", muted: "#6e7781", accent: "#0550ae", accent2: "#8250df", accent3: "#116329", bg: "#ffffff", codeBG: "#eff1f3"},
+	},
+	// Light siblings of the dark families above (#249). Colours are each
+	// scheme's own; where a slot's canonical colour is too faint on the light
+	// background, another colour from the same palette fills it — see
+	// TestLightThemesAreLegible for the contrast floors.
+	{
+		id:      "catppuccin-latte",
+		name:    "Catppuccin Latte",
+		desc:    "soft pastel light theme",
+		aliases: []string{"latte"},
+		palette: themePalette{light: true, fg: "#4c4f69", muted: "#7c7f93", accent: "#8839ef", accent2: "#1e66f5", accent3: "#179299", bg: "#eff1f5", codeBG: "#e6e9ef"},
+	},
+	{
+		id:      "gruvbox-light",
+		name:    "Gruvbox Light",
+		desc:    "warm retro groove, light",
+		aliases: []string{"gruv-light"},
+		palette: themePalette{light: true, fg: "#3c3836", muted: "#7c6f64", accent: "#b57614", accent2: "#af3a03", accent3: "#79740e", bg: "#fbf1c7", codeBG: "#ebdbb2"},
+	},
+	{
+		id:      "tokyo-night-day",
+		name:    "Tokyo Night Day",
+		desc:    "Tokyo Night's blues on a pale day background",
+		aliases: []string{"tokyo-day", "tokyonight-day"},
+		palette: themePalette{light: true, fg: "#3760bf", muted: "#6172b0", accent: "#2e7de9", accent2: "#9854f1", accent3: "#587539", bg: "#e1e2e7", codeBG: "#d0d5e3"},
+	},
+	{
+		id:      "solarized-light",
+		name:    "Solarized Light",
+		desc:    "the classic low-glare cream",
+		aliases: []string{"solarized"},
+		palette: themePalette{light: true, fg: "#586e75", muted: "#839496", accent: "#268bd2", accent2: "#6c71c4", accent3: "#cb4b16", bg: "#fdf6e3", codeBG: "#eee8d5"},
+	},
+	{
+		id:      "rose-pine-dawn",
+		name:    "Rosé Pine Dawn",
+		desc:    "muted pine and rose on warm paper",
+		aliases: []string{"rosé-pine-dawn", "rosepine-dawn", "dawn"},
+		palette: themePalette{light: true, fg: "#575279", muted: "#797593", accent: "#286983", accent2: "#907aa9", accent3: "#b4637a", bg: "#faf4ed", codeBG: "#f2e9e1"},
 	},
 	{
 		id:      "catppuccin",
@@ -134,6 +174,21 @@ func themeNames() string {
 func (m *Model) currentThemeID() string {
 	if m.sess != nil && m.sess.Theme != "" {
 		return m.sess.Theme
+	}
+	return defaultThemeID(os.Getenv("COLORFGBG"))
+}
+
+// defaultThemeID is the theme used when none is configured: "dark" (the
+// default chrome palette), or "light" when the terminal says its background
+// is light. COLORFGBG ("fg;bg", set by rxvt, Konsole, iTerm2 and others) is
+// the only signal read: asking the terminal itself (OSC 11) can stall start-up
+// on one that never answers. Background colours 7 and 15 are white/light
+// grey; 0–6 and 8 are dark. Anything else, or no variable, stays dark.
+func defaultThemeID(colorfgbg string) string {
+	parts := strings.Split(colorfgbg, ";")
+	switch parts[len(parts)-1] {
+	case "7", "15":
+		return "light"
 	}
 	return "dark"
 }

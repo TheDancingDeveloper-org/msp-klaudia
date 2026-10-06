@@ -299,8 +299,11 @@ list longer than the terminal scrolls, so `/model` offers everything the
 endpoint serves.
 
 `/theme` switches the colour theme (Markdown + chrome) for the session; set a
-durable default with `theme = "nord"` in `.klaudia/config.toml` (dracula |
-gruvbox | tokyo-night | nord | light | catppuccin). `NO_COLOR` is honoured.
+durable default with `theme = "nord"` in `.klaudia/config.toml`. Dark:
+dracula | gruvbox | tokyo-night | nord | catppuccin. Light: light (GitHub) |
+catppuccin-latte | gruvbox-light | tokyo-night-day | solarized-light |
+rose-pine-dawn. With no theme set, a terminal whose `COLORFGBG` reports a light
+background gets `light`. `NO_COLOR` is honoured.
 
 Long-running commands run detached as **managed jobs**: `Bash` with
 `run_in_background` returns a shell id, `BashOutput` reads new output
@@ -1071,8 +1074,11 @@ startup rather than being skipped in silence.
 ## Themes
 
 `/theme` recolors the whole UI — banner, prompts, menus, type-ahead, and
-Markdown rendering, not just code blocks. Built in: `dracula`, `gruvbox`,
-`tokyo-night`, `nord`, `light`, `catppuccin`. Persist a default in config
+Markdown rendering, not just code blocks. Built in, dark: `dracula`,
+`gruvbox`, `tokyo-night`, `nord`, `catppuccin`; light: `light` (GitHub's
+colours), `catppuccin-latte`, `gruvbox-light`, `tokyo-night-day`,
+`solarized-light`, `rose-pine-dawn`. Every light theme is checked for WCAG
+contrast on its own background. Persist a default in config
 (project `.klaudia` overrides `~/.klaudia`):
 
 ```toml
