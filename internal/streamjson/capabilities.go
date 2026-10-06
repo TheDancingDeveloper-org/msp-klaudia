@@ -24,6 +24,9 @@ type Capabilities struct {
 	// PermissionModes are the values --permission-mode and set_permission_mode
 	// accept.
 	PermissionModes []string `json:"permission_modes"`
+	// PermissionModeAliases are retired mode names still accepted, and the
+	// mode each selects.
+	PermissionModeAliases map[string]string `json:"permission_mode_aliases"`
 	// Providers are the values of the config's provider key.
 	Providers []string `json:"providers"`
 }
@@ -60,7 +63,7 @@ func GetCapabilities(modes, providers []string) Capabilities {
 			Input:           []string{"user", "control_request", "control_response"},
 			ControlRequests: []string{"interrupt", "set_permission_mode", "set_model", "initialize"},
 			Output:          []string{"system/init", "assistant", "user", "usage", "tool_progress", "compaction", "warning", "notice", "control_request", "control_response", "result"},
-			ControlAsks:     []string{"can_use_tool"},
+			ControlAsks:     []string{"can_use_tool", "ask_user", "exit_plan"},
 			ResultFields:    []string{"type", "subtype", "is_error", "result", "session_id", "duration_ms", "num_turns", "stop_reason", "total_cost_usd", "usage"},
 			UsageFields:     []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"},
 			InitFields:      []string{"session_id", "cwd", "model", "permissionMode", "resumed", "resumed_from", "history_messages"},
@@ -69,6 +72,9 @@ func GetCapabilities(modes, providers []string) Capabilities {
 		},
 		Session:         []string{"session-id", "resume", "resume-across-cwd", "fork-session", "continue"},
 		PermissionModes: modes,
-		Providers:       providers,
+		PermissionModeAliases: map[string]string{
+			"default": "autonomous", "acceptEdits": "autonomous", "dontAsk": "autonomous",
+		},
+		Providers: providers,
 	}
 }

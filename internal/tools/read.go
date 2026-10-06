@@ -156,7 +156,7 @@ func (r *Read) CheckPermissions(pctx permission.Context, _ permission.Permission
 	return allowAlways(pctx)
 }
 
-func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
+func (r *Read) Execute(ctx context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
 	var in ReadInput
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, err
@@ -176,6 +176,33 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 		return readImage(in.FilePath)
 	}
 
+	start := max(in.Offset, 1)
+	limit := in.Limit
+	if limit <= 0 {
+		limit = readDefaultLimit
+	}
+
+	// Ask the frontend first when it offers to serve the file. Under ACP that is
+	// the editor, which returns the buffer *including unsaved edits* — the whole
+	// reason the hook exists. It applies start/limit itself, so what comes back
+	// is already the window and nothing is skipped; numbering still begins at
+	// start so the line numbers mean the same thing either way.
+	if tctx.ReadText != nil {
+		if text, rerr := tctx.ReadText(ctx, in.FilePath, start, limit); rerr == nil {
+			out, emitted, errRes := numbered(strings.NewReader(text), 0, start, limit)
+			if errRes != nil {
+				return []Result{*errRes}, nil
+			}
+			if emitted == 0 {
+				return []Result{{Content: "<file is empty or offset is past end of file>"}}, nil
+			}
+			return []Result{{Content: out}}, nil
+		}
+		// Fall through to disk. The hook is an improvement on reading the file,
+		// never a restriction on it: a client that cannot serve this path must
+		// not turn a readable file into a failed Read.
+	}
+
 	f, err := os.Open(in.FilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -191,40 +218,10 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 		return []Result{{Content: fmt.Sprintf("<binary file, %d bytes; not shown as text>", size)}}, nil
 	}
 
-	start := max(in.Offset, 1)
-	limit := in.Limit
-	if limit <= 0 {
-		limit = readDefaultLimit
+	out, emitted, errRes := numbered(f, start-1, start, limit)
+	if errRes != nil {
+		return []Result{*errRes}, nil
 	}
-
-	var b strings.Builder
-	br := bufio.NewReaderSize(f, 64*1024)
-	lineNo := 0
-	emitted := 0
-	for emitted < limit {
-		line, more, err := readCappedLine(br, readMaxLineLen)
-		if err != nil && line == nil {
-			if err == io.EOF {
-				break
-			}
-			return []Result{{Content: fmt.Sprintf("Error reading file: %v", err), IsError: true}}, nil
-		}
-		lineNo++
-		if lineNo < start {
-			continue
-		}
-		text := string(line)
-		if more > 0 {
-			text += fmt.Sprintf("… [line truncated: %d more bytes]", more)
-		}
-		// cat -n format: line number right-aligned in a 6-wide field, then a tab.
-		fmt.Fprintf(&b, "%6d\t%s\n", lineNo, text)
-		emitted++
-		if err == io.EOF {
-			break
-		}
-	}
-
 	if emitted == 0 {
 		return []Result{{Content: "<file is empty or offset is past end of file>"}}, nil
 	}
@@ -234,10 +231,52 @@ func (r *Read) Execute(_ context.Context, tctx Context, raw json.RawMessage) ([]
 	if emitted == limit {
 		last := start + emitted - 1
 		if total, err := countLines(f); err == nil && total > last {
-			fmt.Fprintf(&b, "\n(showing lines %d–%d of %d; pass offset=%d to continue)\n", start, last, total, last+1)
+			out += fmt.Sprintf("\n(showing lines %d–%d of %d; pass offset=%d to continue)\n", start, last, total, last+1)
 		}
 	}
-	return []Result{{Content: b.String()}}, nil
+	return []Result{{Content: out}}, nil
+}
+
+// numbered renders src in cat -n form: drop the first skip lines, emit at most
+// limit of the rest, and number the first emitted line `first`. A line longer
+// than readMaxLineLen is cut at a rune boundary and says how much was dropped,
+// so one minified line cannot fail the whole read.
+//
+// skip and first are separate because the two sources differ in exactly that
+// way — a file on disk starts at line 1 and has to be wound forward, while a
+// window the frontend already cut starts at the line the caller asked for.
+func numbered(src io.Reader, skip, first, limit int) (string, int, *Result) {
+	var b strings.Builder
+	br := bufio.NewReaderSize(src, 64*1024)
+	read := 0
+	emitted := 0
+	for emitted < limit {
+		line, more, err := readCappedLine(br, readMaxLineLen)
+		if err != nil && line == nil {
+			if err == io.EOF {
+				break
+			}
+			return "", 0, &Result{Content: fmt.Sprintf("Error reading file: %v", err), IsError: true}
+		}
+		read++
+		if read <= skip {
+			if err == io.EOF {
+				break
+			}
+			continue
+		}
+		text := string(line)
+		if more > 0 {
+			text += fmt.Sprintf("… [line truncated: %d more bytes]", more)
+		}
+		// cat -n format: line number right-aligned in a 6-wide field, then a tab.
+		fmt.Fprintf(&b, "%6d\t%s\n", first+emitted, text)
+		emitted++
+		if err == io.EOF {
+			break
+		}
+	}
+	return b.String(), emitted, nil
 }
 
 // readCappedLine reads one line and returns at most max bytes of it, cut on a

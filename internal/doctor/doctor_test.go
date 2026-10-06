@@ -261,3 +261,123 @@ func TestSkillsCheckDistinguishesEmptyFromBroken(t *testing.T) {
 		}
 	}
 }
+
+func TestHooksCheck(t *testing.T) {
+	// A hook is a shell command attached to the model's work, and the two
+	// states that need distinguishing are "none configured" and "configured but
+	// waiting on an approval it will never get" — both look like silence.
+	tests := []struct {
+		name   string
+		hooks  []Hook
+		status string
+		want   []string
+	}{
+		{
+			name:   "none configured says where to put one",
+			status: StatusInfo,
+			want:   []string{"none configured", "[[hooks]]", "config.toml"},
+		},
+		{
+			name: "user hooks are listed with their matchers",
+			hooks: []Hook{
+				{Event: "SessionStart", Scope: "user"},
+				{Event: "PreToolUse", Matcher: "Bash", Scope: "user"},
+			},
+			status: StatusOK,
+			want:   []string{"2 user", "SessionStart", "PreToolUse(Bash)"},
+		},
+		{
+			name: "scopes are counted separately",
+			hooks: []Hook{
+				{Event: "PostToolUse", Scope: "user"},
+				{Event: "PreToolUse", Scope: "project"},
+			},
+			status: StatusOK,
+			want:   []string{"1 user", "1 project"},
+		},
+		{
+			name: "an unapproved project hook warns that it will not run",
+			hooks: []Hook{
+				{Event: "PreToolUse", Scope: "project", Dormant: true},
+			},
+			status: StatusWarn,
+			want:   []string{"1 project", "will not run"},
+		},
+		{
+			name: "declaration order is preserved",
+			hooks: []Hook{
+				{Event: "PostToolUse", Matcher: "Write", Scope: "user"},
+				{Event: "PostToolUse", Matcher: "Edit", Scope: "user"},
+			},
+			status: StatusOK,
+			want:   []string{"PostToolUse(Write), PostToolUse(Edit)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := find(Run(Input{Hooks: tt.hooks}), "hooks")
+			if !ok {
+				t.Fatal("no hooks check in report")
+			}
+			if got.Status != tt.status {
+				t.Errorf("status = %q, want %q (detail %q)", got.Status, tt.status, got.Detail)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("detail %q missing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestMCPTransportCheck(t *testing.T) {
+	// The legacy HTTP+SSE transport still works. The point of the check is that
+	// when a server drops it, the only symptom is a connect error that says
+	// nothing about the one word in .mcp.json that fixes it.
+	tests := []struct {
+		name   string
+		in     Input
+		absent bool
+		want   []string
+	}{
+		{
+			name:   "no sse servers raises nothing",
+			in:     Input{MCPServers: 2},
+			absent: true,
+		},
+		{
+			name: "an sse server is named with the fix",
+			in:   Input{MCPServers: 1, MCPLegacySSE: []string{"legacy"}},
+			want: []string{"legacy", "deprecated", "sse", "streamable"},
+		},
+		{
+			name: "several are listed together",
+			in:   Input{MCPServers: 3, MCPLegacySSE: []string{"alpha", "beta"}},
+			want: []string{"alpha, beta"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := find(Run(tt.in), "mcp:transport")
+			if tt.absent {
+				if ok {
+					t.Fatalf("unexpected mcp:transport check: %q", got.Detail)
+				}
+				return
+			}
+			if !ok {
+				t.Fatal("no mcp:transport check in report")
+			}
+			if got.Status != StatusWarn {
+				t.Errorf("status = %q, want %q", got.Status, StatusWarn)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("detail %q missing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}

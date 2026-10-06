@@ -62,7 +62,7 @@ func TestCreateConfig(t *testing.T) {
 				`#   provider = "openai"`,      // the alternative stays commented out
 				`#   baseURL = "https://api.example.com/v1"`,
 				`#   apiKeyEnv = "MY_API_KEY"`,
-				`bypassPermissions | dontAsk`,
+				`autonomous | plan | bypassPermissions`,
 				`# Klaudia config`,
 				`# contextWindow = 8192`, // commented example for OpenAI-compatible hosts
 			} {

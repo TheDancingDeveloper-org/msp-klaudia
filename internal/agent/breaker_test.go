@@ -25,13 +25,13 @@ func TestShapeStreakDoesNotLatchTheTool(t *testing.T) {
 		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver:   HeadlessApprover(false),
 	}
-	failures, streaks := map[string]int{}, map[string]errStreak{}
+	fs := newFailureState()
 
 	run := func(cmd string) string {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		out := l.dispatch(context.Background(),
 			anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(raw)},
-			opts, nil, nil, failures, streaks)
+			opts, nil, nil, fs)
 		return resultText(out)
 	}
 
@@ -70,12 +70,12 @@ func TestShapeStreakRefiresAfterMoreFailures(t *testing.T) {
 		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver:   HeadlessApprover(false),
 	}
-	failures, streaks := map[string]int{}, map[string]errStreak{}
+	fs := newFailureState()
 	run := func(cmd string) string {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		return resultText(l.dispatch(context.Background(),
 			anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(raw)},
-			opts, nil, nil, failures, streaks))
+			opts, nil, nil, fs))
 	}
 
 	run("a")

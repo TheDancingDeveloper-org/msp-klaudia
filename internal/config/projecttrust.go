@@ -133,8 +133,6 @@ func withholdUntrusted(c *Config) []string {
 	hold(c.APIKeyEnv != "", "apiKeyEnv", func() { c.APIKeyEnv = "" })
 	hold(len(c.ExtraHeadersEnv) > 0, "extraHeadersEnv", func() { c.ExtraHeadersEnv = nil })
 	hold(c.Permissions.Mode != "", "permissions.mode", func() { c.Permissions.Mode = "" })
-	hold(len(c.Permissions.Allow) > 0, "permissions.allow", func() { c.Permissions.Allow = nil })
-	hold(c.Trust.Mode != "", "trust.mode", func() { c.Trust.Mode = "" })
 	hold(c.Sandbox.Mode != "", "sandbox.mode", func() { c.Sandbox.Mode = "" })
 	hold(len(c.Sandbox.WriteRoots) > 0, "sandbox.writeRoots", func() { c.Sandbox.WriteRoots = nil })
 	hold(c.Sandbox.Runtime != "", "sandbox.runtime", func() { c.Sandbox.Runtime = "" })

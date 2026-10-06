@@ -8,7 +8,7 @@ embedded run stops matching this document.
 
 ```bash
 klaudia --input-format stream-json --output-format stream-json --verbose \
-        --permission-mode dontAsk --session-id <id>
+        --permission-mode autonomous --session-id <id>
 ```
 
 Once the session starts, Klaudia writes stream-json whatever `--output-format`
@@ -46,7 +46,7 @@ unconfigured host:
     "control_requests": ["interrupt", "set_permission_mode", "set_model", "initialize"],
     "output": ["system/init", "assistant", "user", "usage", "tool_progress", "compaction",
                "warning", "notice", "control_request", "control_response", "result"],
-    "control_asks": ["can_use_tool"],
+    "control_asks": ["can_use_tool", "ask_user", "exit_plan"],
     "result_fields": ["type", "subtype", "is_error", "result", "session_id", "duration_ms",
                       "num_turns", "stop_reason", "total_cost_usd", "usage"],
     "usage_fields": ["input_tokens", "output_tokens", "cache_read_input_tokens",
@@ -57,7 +57,8 @@ unconfigured host:
     "ask_timeout_flag": "--ask-timeout"
   },
   "session": ["session-id", "resume", "resume-across-cwd", "fork-session", "continue"],
-  "permission_modes": ["autonomous", "default", "acceptEdits", "plan", "dontAsk", "bypassPermissions"],
+  "permission_modes": ["autonomous", "plan", "bypassPermissions"],
+  "permission_mode_aliases": {"default": "autonomous", "acceptEdits": "autonomous", "dontAsk": "autonomous"},
   "providers": ["anthropic", "openai"]
 }
 ```
@@ -126,7 +127,7 @@ failure like `{"subtype":"error","request_id":"r1","error":"…"}`.
 
 ```json
 {"type":"system","subtype":"init","session_id":"chat-42","cwd":"/work/repo",
- "model":"claude-sonnet-5-5","permissionMode":"dontAsk","resumed":true,
+ "model":"claude-sonnet-5-5","permissionMode":"autonomous","resumed":true,
  "resumed_from":"chat-42","history_messages":14}
 ```
 
@@ -159,18 +160,51 @@ may appear; skip what you do not render.
 
 ```json
 {"type":"control_request","request_id":"<id>",
- "request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make test"}}}
+ "request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"make test"},
+            "tool_use_id":"toolu_…","specifier":"make test","suggestion":"…",
+            "host_change":{…}}}
 ```
 
-This is sent only for a call the permission flow could not settle on its own.
-A tool on the `[permissions] allow` list, or one a deny rule refuses, never
-reaches the driver. The turn blocks until the answer arrives, or until
-`--ask-timeout` passes (default 10m; `0` waits forever). After the timeout the
-call is denied with a tool result saying no answer came.
+`tool_use_id`, `specifier`, `suggestion` and `host_change` are optional and
+present when known. `host_change` marks an ask about a change to this machine
+rather than about a tool (summary, reason, paths, services, packages) — render
+it as such; "allow Bash?" is the wrong question for `systemctl restart nginx`.
 
-A driver that never answers asks should not be asked at all. Run it with
-`--permission-mode dontAsk` (or `mode = "dontAsk"` in config), plus allow
-rules for what it may do.
+This is sent only for a call nothing else could settle. There are no
+allow/deny rules (the per-command model was removed upstream, 0fa00a6): in
+`autonomous`, project work runs without asking, so what reaches the driver is
+a change to this machine or a write to project knowledge
+(`.klaudia/KNOWLEDGE.md`); `bypassPermissions` asks nothing. The turn blocks
+until the answer arrives, or until `--ask-timeout` passes (default 10m; `0`
+waits forever). After the timeout the call is denied with a tool result saying
+no answer came.
+
+The retired modes `default`, `acceptEdits` and `dontAsk` are still accepted on
+the command line, in config and over `set_permission_mode`, as aliases for
+`autonomous` (a `note:` line on stderr says so), so a launcher written against
+them keeps starting.
+
+### `control_request` `ask_user` and `exit_plan` (stable)
+
+The model's own questions (`AskUserQuestion`, and an MCP server's elicitation)
+and plan approvals (`ExitPlanMode`) use the same channel:
+
+```json
+{"type":"control_request","request_id":"<id>",
+ "request":{"subtype":"ask_user","question":"Which database?",
+            "options":[{"label":"Postgres","description":"…"},{"label":"SQLite"}]}}
+→ {"type":"control_response","response":{"subtype":"success","request_id":"<id>",
+   "response":{"label":"Postgres"}}}
+
+{"type":"control_request","request_id":"<id>","request":{"subtype":"exit_plan","plan":"1. …"}}
+→ {"type":"control_response","response":{"subtype":"success","request_id":"<id>",
+   "response":{"approved":true}}}
+```
+
+A driver that does not implement one answers `{"subtype":"error","error":"…"}`:
+that reads as "cancelled" and the model carries on without inventing an answer.
+A response with no `subtype` at all is treated as success. Both are bounded by
+`--ask-timeout` like `can_use_tool`.
 
 ### `result`: end of a turn (stable)
 
@@ -184,7 +218,7 @@ rules for what it may do.
 
 | field | meaning |
 |---|---|
-| `subtype` | `success`, or `error_during_execution` (the turn failed or was interrupted) |
+| `subtype` | `success`; `error_during_execution` (the turn failed or was interrupted); or the stop reason (`refusal`, `max_tokens`, …) with `is_error` true when the turn ended with **no text** — a refusal is not a finished task |
 | `is_error` | the turn ended in an error |
 | `result` | the final assistant text; for an error, `"Error: <readable reason>"` |
 | `num_turns` | model calls in this turn (one per tool round-trip) |

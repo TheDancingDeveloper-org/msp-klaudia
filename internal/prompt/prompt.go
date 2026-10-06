@@ -1,6 +1,6 @@
 // Package prompt assembles Klaudia's system prompt: base agent instructions, a
 // security clause, live environment context (cwd, git, platform, date), and any
-// CLAUDE.md project instructions. A richer prompt makes Klaudia a materially
+// AGENTS.md / CLAUDE.md project instructions. A richer prompt makes Klaudia a materially
 // better coding agent — important for self-hosting (using Klaudia to develop
 // Klaudia).
 package prompt
@@ -80,16 +80,16 @@ func build(cwd, root, model string, project bool) string {
 	// Instructions, memory and knowledge are files a checkout or an earlier
 	// session wrote; invisible characters in them are stripped, so the model
 	// reads what a person reviewing the file would see.
-	instr := ""
+	instr, sources := "", []string{"CLAUDE.md"}
 	if project {
-		instr = loadProjectInstructions(cwd)
+		instr, sources = loadProjectInstructionsNamed(cwd)
 	} else if home, err := os.UserHomeDir(); err == nil {
 		if data, err := os.ReadFile(filepath.Join(home, ".claude", "CLAUDE.md")); err == nil {
 			instr = strings.TrimSpace(string(data))
 		}
 	}
 	if instr = textsafe.StripInvisible(instr); instr != "" {
-		b.WriteString("\n\n# Project instructions (from CLAUDE.md)\n")
+		fmt.Fprintf(&b, "\n\n# Project instructions (from %s)\n", strings.Join(sources, ", "))
 		b.WriteString(instr)
 	}
 	if !project {

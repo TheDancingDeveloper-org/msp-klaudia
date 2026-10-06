@@ -6,11 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
-	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 // Candidates for an ambiguous @path belong under the prompt while Tab is
@@ -91,7 +89,8 @@ func TestQueuedFollowUpIsIndexed(t *testing.T) {
 	m.ctx = context.Background()
 	m.events = make(chan tea.Msg, 4)
 	sent := make(chan string, 1)
-	m.run = func(ctx context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam, _ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter, _ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
+	m.run = func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+		prompt := turn.Prompt
 		sent <- prompt
 		return agent.Result{}, nil
 	}

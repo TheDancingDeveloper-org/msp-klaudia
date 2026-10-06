@@ -21,7 +21,7 @@ func TestEditPathDecisionAsksForExecGrantingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, mode := range []permission.Mode{permission.ModeAutonomous, permission.ModeAcceptEdits} {
+	for _, mode := range []permission.Mode{permission.ModeAutonomous} {
 		pctx := permission.Context{Mode: permission.StaticMode(mode)}
 		for _, p := range []string{
 			filepath.Join(hooks, "pre-commit"),

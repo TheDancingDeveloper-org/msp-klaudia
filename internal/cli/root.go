@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
+	"github.com/greenthread-ai/klaudia/internal/acp"
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/browser"
@@ -62,7 +64,7 @@ type agentWiring struct {
 
 // withAgentTool returns a registry that is the base tools plus the Agent tool,
 // wired to a sub-agent spawner that draws from the base tools.
-func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.Model, perm permission.Context, approver agent.Approver, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type) (*agentWiring, error) {
+func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.Model, perm permission.Context, approver agent.Approver, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type, worktrees bool) (*agentWiring, error) {
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
@@ -70,9 +72,12 @@ func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.
 		WithWorkingDir(workingDir).
 		WithHostGate(host).
 		WithTypes(types).
+		// A synchronous sub-agent that can write gets its own seeded checkout,
+		// adopted back when it finishes ([subagents] worktree, on by default).
+		WithWorktrees(worktrees).
 		// Background writers run in their own git worktree so concurrent writers
 		// cannot corrupt the shared tree; read-only agents share it.
-		WithWorktrees(agent.NewGitWorktrees())
+		WithBackgroundWorktrees(agent.NewGitWorktrees())
 
 	infos := make([]tools.AgentTypeInfo, 0)
 	for _, t := range types {
@@ -111,7 +116,7 @@ var builtinSlashCommands = map[string]bool{
 	"help": true, "?": true, "quit": true, "exit": true, "clear": true,
 	"model": true, "effort": true, "mode": true, "goal": true,
 	"memory": true, "mcp": true, "stats": true,
-	"allow": true, "deny": true, "status": true,
+	"status": true,
 	"config": true, "agents": true, "context": true,
 	"compact": true, "add-dir": true,
 	"plan": true, "doctor": true, "diff": true, "commit": true, "export": true,
@@ -138,7 +143,11 @@ func sessionRoots(home, cwd string, extra []string) trust.Roots {
 }
 
 // buildDoctorInput gathers the facts /doctor reports, without prompting.
-func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string, mcpServers int) doctor.Input {
+//
+// hookRunner may be nil — the common case, meaning no hook is configured
+// anywhere; doctor is told "none" rather than being left silent about a
+// subsystem that runs shell commands when it is on.
+func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string, mcpCfg mcp.Config, hookRunner *hooks.Runner) doctor.Input {
 	servers, hints := lsp.Survey(cwd)
 	// Loaded silently: skill.Load's warnings go to the session that owns the
 	// prompt, not to /doctor, which must stay quiet on stderr.
@@ -163,9 +172,11 @@ func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string
 		Model:           string(model),
 		SandboxMode:     sandboxMode(cfg.Sandbox),
 		ConfigFound:     configFileExists(cwd),
-		MCPServers:      mcpServers,
+		MCPServers:      len(mcpCfg.MCPServers),
+		MCPLegacySSE:    legacySSEServers(mcpCfg),
 		LSPServers:      lspServers,
 		Skills:          doctorSkills,
+		Hooks:           doctorHooks(hookRunner),
 		MissingLSPHints: hints,
 		AuthKind:        "none",
 		ContextWindow:   ctxLimit,
@@ -185,6 +196,39 @@ func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string
 		}
 	}
 	return in
+}
+
+// doctorHooks flattens the session's hooks for the report.
+func doctorHooks(r *hooks.Runner) []doctor.Hook {
+	all := r.All()
+	out := make([]doctor.Hook, 0, len(all))
+	approved := r.ProjectApproved()
+	for _, h := range all {
+		scope := "user"
+		if h.Project {
+			scope = "project"
+		}
+		out = append(out, doctor.Hook{
+			Event:   string(h.Event),
+			Matcher: h.Matcher(),
+			Scope:   scope,
+			Dormant: h.Project && !approved,
+		})
+	}
+	return out
+}
+
+// legacySSEServers names the configured MCP servers still pinned to the
+// deprecated HTTP+SSE transport, sorted so /doctor reads the same every run.
+func legacySSEServers(cfg mcp.Config) []string {
+	var out []string
+	for name, sc := range cfg.MCPServers {
+		if strings.EqualFold(strings.TrimSpace(sc.Type), "sse") {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // configFileExists reports whether the global config (config.GlobalPath) or
@@ -242,7 +286,7 @@ func tuiSkills(skills []skill.Skill, warn func(string)) []tui.SkillCommand {
 	out := make([]tui.SkillCommand, 0, len(skills))
 	for _, sk := range skills {
 		sk := sk
-		if builtinSlashCommands[sk.Name] {
+		if tui.IsBuiltinCommand(sk.Name) {
 			warn(fmt.Sprintf("skill %q shadows built-in /%s; reachable only via the Skill tool", sk.Name, sk.Name))
 		}
 		out = append(out, tui.SkillCommand{Name: sk.Name, Description: sk.Description, Render: sk.Render})
@@ -278,6 +322,81 @@ func mcpPromptCommands(ctx context.Context, mgr *mcp.Manager) []tui.SkillCommand
 				}
 				return text
 			},
+		})
+	}
+	return out
+}
+
+// acpCommands adapts loaded skills into the /commands an ACP client offers in
+// its command picker.
+//
+// Skills only, and no shadowing check: ACP has no built-in commands of its own
+// to collide with, because Klaudia's own slash commands live in the TUI and
+// cannot run from here (see internal/acp/commands.go).
+//
+// The hint is set only for skills that actually interpolate $ARGUMENTS. A client
+// renders it as placeholder text, so offering "arguments" for a skill that takes
+// none invites the user to type something the skill would then append to its own
+// body as a stray trailing line.
+func acpCommands(skills []skill.Skill) []acp.Command {
+	out := make([]acp.Command, 0, len(skills))
+	for _, sk := range skills {
+		sk := sk
+		c := acp.Command{Name: sk.Name, Description: sk.Description, Render: sk.Render}
+		if strings.Contains(sk.Body, "$ARGUMENTS") {
+			c.Hint = "arguments"
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// acpTranscript opens one transcript per ACP session.
+//
+// Best effort, matching every other transcript call site: a record that cannot
+// be opened is reported to the client's log and the session runs unrecorded,
+// because losing the history is not a reason to refuse the work.
+func acpTranscript(cwd string, mode permission.Mode) func(string) acp.Transcript {
+	return func(sessionID string) acp.Transcript {
+		tr, err := session.NewTranscript(session.Meta{
+			SessionID:      sessionID,
+			CWD:            cwd,
+			Version:        version.Version,
+			GitBranch:      gitBranch(cwd),
+			PermissionMode: string(mode),
+		})
+		if err != nil {
+			return nil
+		}
+		return tr
+	}
+}
+
+// acpLoadHistory reads a persisted session back for session/load.
+//
+// The full transcript, not the compacted summary --resume prefers: the client is
+// reopening a conversation to *show* it, and a summary would replay four
+// paragraphs of prose in place of the thread the user is looking for. The token
+// cost of the longer history is the same cost --resume --full pays.
+func acpLoadHistory(cwd string) func(string) ([]anthropic.BetaMessageParam, error) {
+	return func(sessionID string) ([]anthropic.BetaMessageParam, error) {
+		entries, err := session.Read(session.ExistingPath(cwd, sessionID))
+		if err != nil {
+			return nil, fmt.Errorf("no session %s in this project: %w", sessionID, err)
+		}
+		return agent.MessagesFromEntries(entries)
+	}
+}
+
+// acpSessions lists the project's persisted sessions for session/list.
+func acpSessions(cwd string) []acp.SessionSummary {
+	all := session.ListProject(cwd)
+	out := make([]acp.SessionSummary, 0, len(all))
+	for _, s := range all {
+		out = append(out, acp.SessionSummary{
+			ID:        s.ID,
+			Title:     s.Title,
+			UpdatedAt: s.Modified.UTC().Format(time.RFC3339),
 		})
 	}
 	return out
@@ -533,24 +652,44 @@ func (c mcpController) Servers() []tui.MCPServerInfo {
 func (c mcpController) Reconnect(name string) error  { return c.mgr.Reconnect(name) }
 func (c mcpController) Disconnect(name string) error { return c.mgr.Disconnect(name) }
 
-// mcpReloadNotifier carries reload outcomes from the config watcher to the TUI.
+// turnSettings is the part of a run that one frontend changes between turns and
+// another pins for the whole process. The TUI reads Model and ExtraDirs live
+// from its Session so /model and /add-dir take effect on the next turn. Every
+// non-interactive mode resolves them once at startup.
 //
-// The two run on different goroutines and the watcher starts first — it is
-// wired before the TUI model exists — so the listener is registered late and
-// the emit side tolerates there being nobody home. In headless runs nobody ever
-// registers, and emit is a no-op.
-type mcpReloadNotifier struct {
-	mu sync.Mutex
-	fn func(tui.MCPReloadEvent)
+// Permission is here for the frontends with one fixed mode. The two that vary
+// it — the TUI and ACP, where the mode is per editor session — supply it on the
+// Turn instead, which also makes it live: see agent.Turn.Mode.
+//
+// It exists so that baseOptions can be shared: these were the only fields the
+// per-mode options blocks actually disagreed about, and keeping a whole
+// duplicated block per mode in order to vary three values is what let the other
+// dozen drift apart unnoticed.
+type turnSettings struct {
+	Model      anthropic.Model
+	Effort     string // the TUI reads /effort per turn; other modes pin it
+	Permission permission.Context
+	ExtraDirs  []string
 }
 
-func (n *mcpReloadNotifier) register(fn func(tui.MCPReloadEvent)) {
+// mcpReloadNotifier carries reload outcomes from the config watcher to whichever
+// frontend is listening.
+//
+// The two run on different goroutines and the watcher starts first — it is
+// wired before the frontend exists — so the listener is registered late and the
+// emit side tolerates there being nobody home.
+type mcpReloadNotifier struct {
+	mu sync.Mutex
+	fn func(mcp.ReloadEvent)
+}
+
+func (n *mcpReloadNotifier) register(fn func(mcp.ReloadEvent)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.fn = fn
 }
 
-func (n *mcpReloadNotifier) emit(ev tui.MCPReloadEvent) {
+func (n *mcpReloadNotifier) emit(ev mcp.ReloadEvent) {
 	n.mu.Lock()
 	fn := n.fn
 	n.mu.Unlock()
@@ -646,9 +785,10 @@ provider = "anthropic"
 # dontAsk runs allow-listed tools and denies the rest without prompting —
 # the mode for headless and embedded runs.
 # [permissions]
-# mode = "autonomous" # autonomous | plan | bypassPermissions | dontAsk
-# allow = ["Bash(go test:*)"]
-# deny = ["Bash(rm:*)"]
+# mode = "autonomous" # autonomous | plan | bypassPermissions
+#
+# [subagents]
+# worktree = true # a writing sub-agent gets its own git checkout (default)
 #
 # [tui]
 # notify = "bell" # attention when a turn finishes / a prompt waits: comma list
@@ -714,8 +854,6 @@ type options struct {
 	fullResume       bool    // --full (replay entire transcript, not the summary)
 	sessionID        string  // --session-id <id>: the id to record under (embedders)
 
-	allowedTools    []string
-	disallowedTools []string
 	partialMessages bool   // --include-partial-messages
 	createConfig    string // --create-config global|local
 	capabilities    bool   // --capabilities: print the embedding capabilities as JSON and exit
@@ -1016,9 +1154,9 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.StringVar(&opts.effort, "effort", "", "Reasoning effort: low|medium|high|xhigh|max (default: config effort, else the model's own default)")
 	f.StringVar(&opts.fallbackModel, "fallback-model", "", "Model to use when the model is overloaded (retried once) or not found (for the rest of the session); overrides config fallbackModel")
 	f.StringVar(&opts.outputFormat, "output-format", "text", "Output format: text|json|stream-json")
-	f.StringVar(&opts.inputFormat, "input-format", "text", "Input format: text|stream-json (stream-json drives a persistent agent over stdin)")
-	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|plan|bypassPermissions|dontAsk (default: config [permissions] mode, else autonomous; dontAsk runs allow-listed tools and denies the rest without prompting — for headless and embedded runs)")
-	f.DurationVar(&opts.askTimeout, "ask-timeout", streamjson.DefaultAskTimeout, "With --input-format stream-json: how long a can_use_tool control_request waits for the client's control_response before it is denied (0 = wait forever)")
+	f.StringVar(&opts.inputFormat, "input-format", "text", "Input format: text|stream-json|acp (stream-json and acp both drive a persistent agent over stdin; acp speaks the Agent Client Protocol for editors such as Zed)")
+	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|plan|bypassPermissions (default: config [permissions] mode, else autonomous). The retired default|acceptEdits|dontAsk are accepted as aliases for autonomous")
+	f.DurationVar(&opts.askTimeout, "ask-timeout", streamjson.DefaultAskTimeout, "With --input-format stream-json: how long a control_request (can_use_tool, ask_user, exit_plan) waits for the client's control_response before it is denied (0 = wait forever)")
 	f.BoolVar(&opts.allowHostChanges, "allow-host-changes", false, "Non-interactive runs: permit changes to this machine (packages, services, /etc, …) without a human to approve them")
 	f.BoolVar(&opts.dangerouslySkip, "dangerously-skip-permissions", false, "Skip all permission checks (sets bypassPermissions)")
 	f.BoolVar(&opts.verbose, "verbose", false, "Verbose output (required for stream-json)")
@@ -1030,8 +1168,6 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.forkSession, "fork-session", false, "When resuming, start a new session ID (preserves the original)")
 	f.BoolVar(&opts.fullResume, "full", false, "When resuming, replay the entire transcript instead of the compacted summary")
 	f.StringVar(&opts.sessionID, "session-id", "", "Use this id for the session instead of minting one (must not exist yet; with --resume of another id, forks into it)")
-	f.StringSliceVar(&opts.allowedTools, "allowedTools", nil, "Auto-allow tool rules, e.g. 'Edit' or 'Bash(git status:*)' (repeatable, comma-separated)")
-	f.StringSliceVar(&opts.disallowedTools, "disallowedTools", nil, "Deny tool rules (same format as --allowedTools)")
 	f.BoolVar(&opts.partialMessages, "include-partial-messages", false, "Include partial message chunks as they arrive (only with --print and --output-format=stream-json)")
 	f.BoolVar(&opts.trustedProjectConfig, "trusted-project-config", false, "Apply ./.klaudia/config.toml in full for this run without adding the folder to the trust list — for a launcher that wrote that file itself")
 	f.BoolVar(&opts.trustProject, "trust-project", false, "Trust the current folder so its .klaudia/config.toml applies in full (permission mode and rules, trust, sandbox, provider endpoint and keys), and exit")
@@ -1131,8 +1267,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// Before config and credentials: a driver probes this on a host that
 		// may not be configured yet.
 		var modes []string
-		for _, m := range []permission.Mode{permission.ModeAutonomous, permission.ModeDefault, permission.ModeAcceptEdits,
-			permission.ModePlan, permission.ModeDontAsk, permission.ModeBypassPermissions} {
+		for _, m := range permission.SelectableModes() {
 			modes = append(modes, string(m))
 		}
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -1160,12 +1295,25 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		return nil
 	}
 
-	// Mode: autonomous --loop | stream-json input (embedding) | headless -p |
-	// interactive TUI. --loop is non-interactive and renders as text.
-	interactive := !opts.print && !opts.loop && opts.inputFormat != "stream-json"
+	// Mode: autonomous --loop | an embedding protocol on stdin (stream-json or
+	// ACP) | headless -p | interactive TUI. --loop is non-interactive and
+	// renders as text.
+	embedded := opts.inputFormat == "stream-json" || opts.inputFormat == "acp"
+	interactive := !opts.print && !opts.loop && !embedded
+	// attended is the other question, and it is not the same one: whether a
+	// human is reachable to answer something. An embedding peer has a user
+	// sitting in front of it; it just does not have a terminal of ours. Asking
+	// "interactive?" when the real question was "is anyone there?" is why MCP
+	// elicitation was advertised to the TUI alone.
+	attended := interactive || embedded
+	switch opts.inputFormat {
+	case "text", "stream-json", "acp":
+	default:
+		return usageErrorf("--input-format must be text, stream-json or acp")
+	}
 	if opts.loop {
-		if opts.inputFormat == "stream-json" {
-			return usageErrorf("--loop cannot be combined with --input-format stream-json")
+		if embedded {
+			return usageErrorf("--loop cannot be combined with --input-format %s", opts.inputFormat)
 		}
 		if format != FormatText {
 			return usageErrorf("--loop only supports --output-format text")
@@ -1175,6 +1323,17 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		}
 	} else if opts.loopNoBranch || opts.loopNoCommit {
 		return usageErrorf("--no-branch and --no-commit only apply to --loop")
+	}
+	if opts.inputFormat == "acp" {
+		if format != FormatText {
+			// ACP owns stdout: every byte on it is a JSON-RPC frame. A renderer
+			// writing there too would interleave with the protocol and the
+			// editor would see a parse error rather than an explanation.
+			return usageErrorf("--input-format acp does not use --output-format; it speaks JSON-RPC on stdout")
+		}
+		if opts.print {
+			return usageErrorf("--input-format acp cannot be combined with --print: ACP is a persistent session, not a single shot")
+		}
 	}
 	if opts.print && format == FormatStreamJSON && !opts.verbose {
 		return usageErrorf("--output-format stream-json requires --verbose")
@@ -1273,15 +1432,11 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		}
 	}
 
-	// Lifecycle hooks (user-level only; project hooks are dropped by
-	// config.LoadTrusting). nil when none are configured, which disables the
-	// feature in the loop.
-	hookRunner := hooks.New(cfg.Hooks, cwd)
-	if hookRunner != nil {
-		hookRunner.Logf = func(format string, args ...any) {
-			fmt.Fprintf(cmd.ErrOrStderr(), "hook: "+format+"\n", args...)
-		}
-	}
+	// Lifecycle hooks, if any are configured. Nil when neither config file
+	// declares one, which every hook call site treats as "do nothing". A
+	// project's hooks run only once the user has approved that exact set
+	// (internal/hooks/trust.go).
+	hookRunner := hooks.Load(cwd, sessionID)
 
 	// Prune stale sessions once at startup, best effort. The session opened for
 	// this run is passed as the active id so retention can never delete it.
@@ -1323,52 +1478,22 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// provider unwrapped.
 	provider = api.WithFallback(provider, firstNonEmpty(opts.fallbackModel, cfg.FallbackModel))
 
-	// Build allow/deny rules from config (.klaudia) + CLI flags.
-	allowRules, err := permission.ParseRules(append(append([]string{}, cfg.Permissions.Allow...), opts.allowedTools...))
-	if err != nil {
-		return usageErrorf("--allowedTools/permissions.allow: %v", err)
-	}
-	denyRules, err := permission.ParseRules(append(append([]string{}, cfg.Permissions.Deny...), opts.disallowedTools...))
-	if err != nil {
-		return usageErrorf("--disallowedTools/permissions.deny: %v", err)
-	}
-	// The host gate. extraDirs is read at check time rather than captured, so a
-	// directory added mid-session with /add-dir counts as project work on the
-	// next tool call.
-	//
-	// Only rules from config count as legacy here. Starting in observe is the
-	// migration path for a config written for the per-command model
-	// (docs/trust.md); --allowedTools on one command line has nothing to
-	// migrate, and letting it switch the guardrail off made
-	// `--allowedTools Read --permission-mode autonomous` a usage error.
-	hostPolicy, hostNotice := agent.ResolveHostPolicy(
-		cfg.Trust.Mode, len(cfg.Permissions.Allow) > 0 || len(cfg.Permissions.Deny) > 0)
-
 	// Resolve the permission mode: --permission-mode flag wins, else the config
-	// default ([permissions] mode), else autonomous — but only when the host
-	// gate is enforcing. Autonomous without an enforcing gate is
-	// bypassPermissions wearing a friendlier name, so a session with trust off
-	// or in observe keeps asking per action until the user upgrades.
-	// --dangerously-skip wins over all.
+	// default ([permissions] mode), else autonomous. --dangerously-skip wins
+	// over all.
 	modeStr := opts.permissionMode
 	if modeStr == "" {
 		modeStr = cfg.Permissions.Mode
 	}
 	if modeStr == "" {
-		if hostPolicy == agent.HostEnforce {
-			modeStr = string(permission.ModeAutonomous)
-		} else {
-			modeStr = string(permission.ModeDefault)
-		}
+		modeStr = string(permission.ModeAutonomous)
 	}
-	mode := permission.Mode(modeStr)
+	mode, retired := permission.Resolve(permission.Mode(modeStr))
+	if retired {
+		fmt.Fprintln(cmd.ErrOrStderr(), "note:", permission.DeprecatedNotice(permission.Mode(modeStr)))
+	}
 	if !mode.Valid() {
-		return usageErrorf("invalid permission mode %q (autonomous|plan|bypassPermissions|dontAsk, or legacy default|acceptEdits)", modeStr)
-	}
-	if mode == permission.ModeAutonomous && hostPolicy != agent.HostEnforce {
-		return usageErrorf("permission mode %q needs the host guardrail enforcing, but [trust] mode is %q — "+
-			"autonomous without it would allow everything, which is what bypassPermissions is for",
-			mode, hostPolicy)
+		return usageErrorf("invalid permission mode %q (autonomous|plan|bypassPermissions)", modeStr)
 	}
 	if opts.dangerouslySkip {
 		mode = permission.ModeBypassPermissions
@@ -1389,19 +1514,12 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// in one go, rather than leaving it to retry the command.
 		DeclareTool: "RequestHostChange",
 	}
-	hostGate.SetPolicy(hostPolicy)
-
 	// Headless path: the mode is fixed for the lifetime of this command,
 	// except that a stream-json peer may change it with a set_permission_mode
 	// control request. It is read live, not captured, so that change reaches
 	// every holder of permCtx — sub-agents included — at their next tool call.
 	liveMode := newModeVar(mode)
-	permCtx := permission.Context{
-		Mode:     liveMode.Get,
-		Allow:    allowRules,
-		Deny:     denyRules,
-		Trusting: func() bool { return hostGate.Policy() == agent.HostEnforce },
-	}
+	permCtx := permission.Context{Mode: liveMode.Get}
 
 	// Refresh MEMORY.md's links to the .klaudia/memory/*.md detail notes before
 	// building the prompt, so recall surfaces them (best-effort; idempotent).
@@ -1492,7 +1610,17 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		mcp.SetStderr(cmd.ErrOrStderr())
 		defer mcp.SetStderr(nil)
 	}
-	mcpMgr, mcpErrs := mcp.Connect(ctx, mcpCfg)
+	// Only an attended run gets an elicitor. It is what makes Klaudia advertise
+	// the elicitation capability, and a server told the user can be asked for an
+	// API key will wait for one that is never coming when there is no frontend
+	// to ask. Unattended servers see no capability and take their own
+	// non-interactive path. Note this is `attended`, not `interactive`: the
+	// stream-json peer can put a question to someone.
+	var elicitor *mcp.Elicitor
+	if attended {
+		elicitor = mcp.NewElicitor()
+	}
+	mcpMgr, mcpErrs := mcp.Connect(ctx, mcpCfg, elicitor)
 	defer mcpMgr.Close()
 	for _, e := range mcpErrs {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning:", e)
@@ -1598,12 +1726,15 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// do rather than only what failed.
 	approver := agent.HeadlessApprover(opts.allowHostChanges)
 	agentTypes := subagent.Load(cwd, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
-	wiring, err := withAgentTool(base, provider, model, permCtx, approver, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes)
+	wiring, err := withAgentTool(base, provider, model, permCtx, approver, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
 	if err != nil {
 		return err
 	}
 	wiring.spawner.WithProviderName(cfg.Provider)
 	registry := wiring.registry
+	// Sub-agents inherit the hooks for the same reason they inherit the host
+	// gate: a child must not be the way around a rule the user set.
+	wiring.spawner.WithHooks(hookRunner)
 
 	// rebuildTools reassembles both tool registries from the live MCP state. It
 	// is called from two goroutines — the config watcher and the MCP client's
@@ -1647,7 +1778,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// effect at the next edit without a restart.
 		cfg, held, lerr := loadMCP()
 		if lerr != nil {
-			mcpReloads.emit(tui.MCPReloadEvent{ConfigErr: lerr.Error()})
+			mcpReloads.emit(mcp.ReloadEvent{ConfigErr: lerr.Error()})
 			return
 		}
 		errs := mcpMgr.Reload(ctx, cfg)
@@ -1660,11 +1791,18 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			for _, e := range errs {
 				msgs = append(msgs, e.Error())
 			}
-			mcpReloads.emit(tui.MCPReloadEvent{ServerErrs: msgs})
+			mcpReloads.emit(mcp.ReloadEvent{ServerErrs: msgs})
 		}
 	})
 	if werr == nil {
 		defer stopWatch()
+	}
+	// The TUI registers its own listener once its model exists and prints into
+	// the transcript. Every other mode gets stderr, which is where its other
+	// diagnostics already go — and is not stdout, so a notice cannot land in the
+	// middle of a stream-json line.
+	if !interactive {
+		mcpReloads.register(mcpReloadWriter(cmd.ErrOrStderr()))
 	}
 
 	// Open the transcript for this session (best effort: a transcript failure
@@ -1726,19 +1864,43 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		_ = persistSummary(summary)
 	}
 
+	// One options builder for every frontend.
+	//
+	// There used to be a separate one per mode, each spelling out its own list
+	// of ~15 Options fields, and they had drifted: the stream-json copy was
+	// missing Asker, Planner and InitialMessages, so questions, plan approval
+	// and --resume were all quietly inert over that transport. The per-turn half
+	// now comes from agent.Turn.Apply and the per-mode half from turnSettings,
+	// which is small enough to read at a glance and lists only what genuinely
+	// differs between modes.
+	baseOptions := func(turn agent.Turn, s turnSettings) agent.Options {
+		opts := agent.Options{
+			WorkingDir:    cwd,
+			Model:         s.Model,
+			Effort:        s.Effort,
+			Thinking:      thinking,
+			ProviderName:  cfg.Provider,
+			System:        withExtraDirs(sysPrompt, s.ExtraDirs),
+			MaxTurns:      opts.maxTurns,
+			MaxBudgetUSD:  opts.maxBudgetUSD,
+			Diagnostics:   lspPool.Diagnostics,
+			ContextWindow: cfg.ContextWindow,
+			MaxTokens:     int64(cfg.MaxTokens),
+			Permission:    s.Permission,
+			Host:          hostGate,
+			DeferredTools: currentDeferred(),
+			Recorder:      recorder,
+			WebTools:      true,
+			OnSummary:     onSummary,
+			Hooks:         hookRunner,
+		}
+		turn.Apply(&opts)
+		return opts
+	}
+
 	// Interactive TUI: the default when not headless and not stream-json input.
 	// It drives the same loop, prompting the user to resolve permission asks.
 	if interactive {
-		// This config predates the trust model and already carries permission
-		// rules, so the gate starts in observe: it reports what it finds and
-		// changes nothing. Said once, at startup, because a behaviour change in
-		// this particular area should not be discovered by accident.
-		if hostNotice {
-			fmt.Fprintln(cmd.ErrOrStderr(),
-				"note: Klaudia now works autonomously inside the project and asks before changing this machine. "+
-					"Your existing permission rules still apply, so this session only reports what the new model "+
-					"would have done — run /trust to see it, or /trust upgrade to switch over.")
-		}
 		// Shared settings so slash commands can read/change them between turns.
 		ctxLimit, ctxSource := api.ContextWindowFor(cfg.Provider, string(model), cfg.ContextWindow)
 		goalPath, restoredGoal := standingGoal(root, sessionID, transcriptPath, resumeID)
@@ -1773,7 +1935,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			Rewind: rewindFn,
 
 			Doctor: func() string {
-				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, root, len(mcpCfg.MCPServers))))
+				return doctor.Format(doctor.Run(buildDoctorInput(cfg, model, cwd, root, mcpCfg, hookRunner)))
 			},
 			// Nil unless the provider can enumerate its models; /model falls
 			// back to type-the-id when it is.
@@ -1842,58 +2004,34 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			return hist, nil
 		}
 
-		runFn := func(ctx context.Context, prompt string, images []tools.ResultImage, history []anthropic.BetaMessageParam, ap agent.Approver, asker tools.Asker, planner tools.Planner, emit agent.Emitter, interject func() agent.Interjection, beforeEdit func(string, []string)) (agent.Result, error) {
-			// Permission mode reads live from the session every check, so a
-			// /mode bypass (or ExitPlanMode flipping out of plan) takes effect
-			// on the very next tool dispatch inside the agent loop — not just
-			// at the next TUI turn boundary. The Context itself is rebuilt
-			// here so the rule lists stay snapshot-stable for the duration of
-			// this turn, but the mode probe is live.
-			turnPerm := permission.Context{
-				Mode:  func() permission.Mode { return permission.Mode(sess.PermissionMode) },
-				Allow: allowRules,
-				Deny:  denyRules,
-				// Live for the same reason the mode is: /trust upgrade should
-				// stop the MCP prompts on the next tool call, not the next turn.
-				Trusting: func() bool { return hostGate.Policy() == agent.HostEnforce },
-			}
-			return loop.Run(ctx, agent.Options{
-				WorkingDir:    cwd,
-				Prompt:        prompt,
-				PromptImages:  images,
-				Model:         api.ResolveModelFor(cfg.Provider, sess.Model), // resolved fresh each turn
-				Effort:        sess.Effort,                                   // read per turn, like the model
-				Thinking:      thinking,
-				ProviderName:  cfg.Provider,
-				System:        withExtraDirs(sysPrompt, sess.ExtraDirs),
-				MaxTurns:      opts.maxTurns,
-				MaxBudgetUSD:  opts.maxBudgetUSD,
-				ContextWindow: cfg.ContextWindow,
-				MaxTokens:     int64(cfg.MaxTokens),
-				Permission:    turnPerm,
-				Host:          hostGate,
-				Hooks:         hookRunner,
-				Interject:     interject,
-				// Deliver finished background sub-agents into the next turn.
-				CollectBackground: wiring.spawner.Background().PendingReport,
-				BeforeEdit:        beforeEdit,
-				DeferredTools:     currentDeferred(),
-				Approver:          ap,
-				Asker:             asker,
-				Planner:           planner,
-				InitialMessages:   history,
-				Recorder:          rec,
-				WebTools:          true,
-				OnSummary:         onSummary,
-				Diagnostics:       lspPool.Diagnostics,
-			}, emit)
+		runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+			// An MCP server's elicitation has to reach the same prompt the
+			// model's own questions use, and the Asker that reaches it is
+			// handed over per turn. Point the elicitor at this turn's.
+			elicitor.SetAsker(turn.Asker)
+			o := baseOptions(turn, turnSettings{
+				Model:     api.ResolveModelFor(cfg.Provider, sess.Model), // resolved fresh each turn
+				Effort:    sess.Effort,                                   // read per turn, like the model
+				ExtraDirs: sess.ExtraDirs,
+				// Permission is not set here: the mode comes with the Turn
+				// (tui.Model.liveMode), so a /mode bypass or an approved
+				// ExitPlanMode takes effect on the very next tool dispatch
+				// inside the running turn rather than at the next TUI turn
+				// boundary.
+			})
+			// The swappable recorder, so /resume can repoint the transcript.
+			o.Recorder = rec
+			// Deliver finished background sub-agents into the next turn.
+			o.CollectBackground = wiring.spawner.Background().PendingReport
+			return loop.Run(ctx, o, turn.Emit)
 		}
 		return tui.Run(ctx, tui.RunFunc(runFn), initialMessages, sess)
 	}
 
 	// Stream-json input: drive a persistent agent over stdin/stdout (the
-	// embedding channel). Each user message is a turn; permission asks are
-	// surfaced as control_request and answered by the peer.
+	// embedding channel). Each user message is a turn; permission asks,
+	// questions and plan approvals are surfaced as control_request and answered
+	// by the peer.
 	if opts.inputFormat == "stream-json" {
 		driver := streamjson.NewDriver(cmd.OutOrStdout())
 		driver.AskTimeout = opts.askTimeout
@@ -1907,38 +2045,65 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			PermissionMode: string(mode),
 			ResumedFrom:    resumeID,
 		}
-		driver.SetPermissionMode = streamModeSetter(liveMode, mode,
-			func() bool { return hostGate.Policy() == agent.HostEnforce })
+		driver.SetPermissionMode = streamModeSetter(liveMode, mode, cmd.ErrOrStderr())
 		liveModel := newModelVar(model)
 		driver.SetModel = liveModel.Set
-		runFn := func(ctx context.Context, prompt string, history []anthropic.BetaMessageParam, ap agent.Approver, rec agent.Recorder, emit agent.Emitter) (agent.Result, error) {
-			return loop.Run(ctx, agent.Options{
-				WorkingDir:      cwd,
-				Prompt:          prompt,
-				Model:           liveModel.Get(), // set_model applies from the next turn
-				Effort:          effort,
-				Thinking:        thinking,
-				ProviderName:    cfg.Provider,
-				System:          headlessSys,
-				MaxTurns:        opts.maxTurns,
-				MaxBudgetUSD:    opts.maxBudgetUSD,
-				ContextWindow:   cfg.ContextWindow,
-				MaxTokens:       int64(cfg.MaxTokens),
-				Permission:      permCtx,
-				Host:            hostGate,
-				Hooks:           hookRunner,
-				Approver:        ap,
-				DeferredTools:   currentDeferred(),
-				InitialMessages: history,
-				// The transcript on disk and the peer's envelope stream are
-				// fed from the same Record calls, as in the -p path.
-				Recorder:    multiRecorder{recorder, rec},
-				WebTools:    true,
-				OnSummary:   onSummary,
-				Diagnostics: lspPool.Diagnostics,
-			}, emit)
+		runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+			elicitor.SetAsker(turn.Asker)
+			o := baseOptions(turn, turnSettings{
+				Model:      liveModel.Get(), // set_model applies from the next turn
+				Effort:     effort,
+				Permission: permCtx,
+				ExtraDirs:  cliExtraDirs,
+			})
+			// The transcript on disk and the peer's envelope stream are fed
+			// from the same Record calls, as in the -p path.
+			o.Recorder = multiRecorder{recorder, turn.Recorder}
+			return loop.Run(ctx, o, turn.Emit)
 		}
+		// initialMessages, not nil: an explicit --resume/--continue was being
+		// resolved and then dropped on this path, so the agent started a fresh
+		// conversation while the CLI reported it had resumed one.
 		return driver.Run(ctx, cmd.InOrStdin(), runFn)
+	}
+
+	// ACP input: serve the Agent Client Protocol over stdio, so an editor
+	// drives Klaudia with its own UI. Same loop, same tools; only the wire
+	// format and the permission plumbing differ from stream-json.
+	if opts.inputFormat == "acp" {
+		runFn := func(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+			elicitor.SetAsker(turn.Asker)
+			return loop.Run(ctx, baseOptions(turn, turnSettings{
+				// Permission comes from the Turn: an ACP client keeps a mode
+				// per editor session, so one resolved here would be wrong for
+				// every session but the first.
+				Model: model,
+			}), turn.Emit)
+		}
+		acpCtxLimit, _ := api.ContextWindow(string(model), cfg.ContextWindow)
+		srv := acp.New(acp.Options{
+			Run:  runFn,
+			CWD:  cwd,
+			Mode: mode,
+			// The editor's first thread *is* the session the CLI resolved, so
+			// --resume/--continue reaches ACP: same id, same transcript, same
+			// seeded history.
+			SessionID: sessionID,
+			History:   initialMessages,
+			// Per session, not the process-wide recorder baseOptions installs.
+			// An editor opens several threads and each is its own conversation;
+			// one transcript for all of them interleaves them on disk. Turn.
+			// Recorder overrides the process one for every ACP turn, so the
+			// outer transcript stays unused — and because a Writer creates its
+			// file on the first append, an unused one leaves nothing behind.
+			Transcript:    acpTranscript(cwd, mode),
+			LoadHistory:   acpLoadHistory(cwd),
+			ListSessions:  func() []acp.SessionSummary { return acpSessions(cwd) },
+			Commands:      acpCommands(skills),
+			ContextWindow: acpCtxLimit,
+			Log:           func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "acp:", m) },
+		}, cmd.OutOrStdout())
+		return srv.Serve(ctx, cmd.InOrStdin())
 	}
 
 	// Autonomous goal loop: iterate against the spec until complete or capped.
@@ -1980,36 +2145,29 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		var writeMu sync.Mutex
 		out := cmd.OutOrStdout()
 		runRecorder = multiRecorder{recorder, newEnvelopeRecorder(out, sessionID)}
+		// The envelope recorder emits the conversation, so the renderer is not
+		// asked to; notices still go to stderr (withNotices, below), where they
+		// do not collide with the JSON stream.
 		emit = func(agent.Event) {}
 		if opts.partialMessages {
 			partial = newPartialEmitter(out, sessionID, &writeMu).emit
 		}
 	}
 	emit = withNotices(emit, cmd.ErrOrStderr())
-	res, err := loop.Run(ctx, agent.Options{
-		WorkingDir:      cwd,
-		Prompt:          opts.prompt,
-		Model:           model,
-		Effort:          effort,
-		Thinking:        thinking,
-		ProviderName:    cfg.Provider,
-		System:          headlessSys,
-		MaxTurns:        opts.maxTurns,
-		MaxBudgetUSD:    opts.maxBudgetUSD,
-		ContextWindow:   cfg.ContextWindow,
-		MaxTokens:       int64(cfg.MaxTokens),
-		Permission:      permCtx,
-		Host:            hostGate,
-		Hooks:           hookRunner,
-		Approver:        approver,
-		DeferredTools:   deferredTools,
-		InitialMessages: initialMessages,
-		Recorder:        runRecorder,
-		WebTools:        true,
-		OnSummary:       onSummary,
-		PartialMessages: partial,
-		Diagnostics:     lspPool.Diagnostics,
-	}, emit)
+	headlessOpts := baseOptions(agent.Turn{
+		Prompt:   opts.prompt,
+		History:  initialMessages,
+		Emit:     emit,
+		Approver: approver,
+	}, turnSettings{Model: model, Effort: effort, Permission: permCtx, ExtraDirs: cliExtraDirs})
+	// Three fields the shared builder has no business knowing about: a headless
+	// run uses the envelope recorder rather than the plain transcript, it is the
+	// only mode that streams raw model events, and its deferred set is fixed at
+	// startup because there is no turn boundary for a reload to land on.
+	headlessOpts.Recorder = runRecorder
+	headlessOpts.PartialMessages = partial
+	headlessOpts.DeferredTools = deferredTools
+	res, err := loop.Run(ctx, headlessOpts, emit)
 
 	out := ResultMessage{
 		Type:          "result",

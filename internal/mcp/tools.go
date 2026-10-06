@@ -30,24 +30,22 @@ import (
 // by reading their inputs, and it has no model of what an MCP server does, so
 // an MCP call raises no concerns and is allowed. Trusting the zone model here
 // means trusting the servers in .mcp.json roughly as much as the shell —
-// which is the same bet as running them at all, and is why this follows the
-// trust posture rather than being unconditional.
+// which is the same bet as running them at all.
 //
-// Without trust enforcing, the old behaviour stands: ask in interactive modes,
-// refuse where there is nobody to ask.
+// A server you want available without that bet can be marked read-only in
+// .mcp.json and reached from a read-only sub-agent; that path is governed by
+// the readOnlyHint annotation rather than by the mode.
 func mcpPermission(pctx permission.Context) permission.Decision {
 	if permission.CurrentMode(pctx) == permission.ModePlan {
 		// Plan mode is read-only for every tool, trusted or not.
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; MCP tools are not allowed"}
 	}
-	if permission.IsTrusting(pctx) {
-		return permission.Decision{Behavior: permission.Allow}
-	}
-	if permission.CurrentMode(pctx) == permission.ModeDontAsk {
-		return permission.Decision{Behavior: permission.Deny, Message: "not pre-approved (dontAsk mode)"}
-	}
-	return permission.Decision{Behavior: permission.Ask}
+	return permission.Decision{Behavior: permission.Allow}
 }
+
+// errTimedOut marks a call that ran out of its own per-call budget, as
+// distinct from the turn being cancelled.
+var errTimedOut = errors.New("mcp call timed out")
 
 // mcpTool adapts a single MCP server tool to the Klaudia Tool interface. Its
 // name is namespaced "mcp__<server>__<tool>" to avoid collisions.
@@ -58,9 +56,9 @@ type mcpTool struct {
 	inputSchema   json.RawMessage
 	server        *Server
 	readOnly      bool
-	// reconnect re-establishes the server's session (Manager.Reconnect).
-	reconnect func() error
-	timeout   time.Duration
+	timeout       time.Duration
+	// mgr is held so a call can relaunch its own server; see Execute.
+	mgr *Manager
 }
 
 func (t *mcpTool) Name() string                                { return t.qualifiedName }
@@ -105,7 +103,14 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 	}
 	sess := t.server.sess()
 	if sess == nil {
-		return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected; reconnect it with /mcp.", t.server.Name), IsError: true}}, nil
+		// A server that failed to launch at startup, or was disconnected.
+		// Worth one attempt before telling the model it is unusable: the
+		// common cause is transient, and the alternative is a dead tool for
+		// the rest of the session unless the user notices and runs /mcp.
+		if !t.revive(ctx) {
+			return []tools.Result{{Content: fmt.Sprintf("MCP server %q is disconnected and could not be restarted; reconnect it with /mcp.", t.server.Name), IsError: true}}, nil
+		}
+		sess = t.server.sess()
 	}
 	// Bounded: a server that stops answering mid-call (a dropped HTTP or SSE
 	// connection) used to hold the turn until the user interrupted it, and a
@@ -114,31 +119,69 @@ func (t *mcpTool) Execute(ctx context.Context, _ tools.Context, raw json.RawMess
 	if timeout <= 0 {
 		timeout = toolTimeout(ServerConfig{})
 	}
-	cctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	params := &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args}
-	res, err := sess.CallTool(cctx, params)
-	// A session that is gone - the connection closed, or a remote server
-	// that restarted and no longer knows it - used to leave the server
-	// "connected" and every call failing until someone ran /mcp. Neither
-	// error means the call ran (it was not sent, or the server had no session
-	// to run it in), so reconnect once and send it again.
-	if err != nil && ctx.Err() == nil && t.reconnect != nil &&
-		(errors.Is(err, mcpsdk.ErrConnectionClosed) || errors.Is(err, mcpsdk.ErrSessionMissing)) {
-		if rerr := t.reconnect(); rerr == nil {
-			if fresh := t.server.sess(); fresh != nil {
-				res, err = fresh.CallTool(cctx, params)
-			}
+	call := func(sess *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		res, err := sess.CallTool(cctx, &mcpsdk.CallToolParams{Name: t.remoteName, Arguments: args})
+		if err != nil && errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, errTimedOut
 		}
+		return res, err
 	}
-	if err != nil {
-		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			return []tools.Result{{Content: fmt.Sprintf("MCP call to %s timed out after %s — the server may be stuck; /mcp can reconnect it. Set \"timeout\" (seconds) on the server in .mcp.json, or KLAUDIA_MCP_TOOL_TIMEOUT, if the tool is just slow.", t.qualifiedName, timeout), IsError: true}}, nil
-		}
+	res, err := call(sess)
+	if err == nil {
+		// Capped like Bash output: a server can return megabytes in one call.
+		return []tools.Result{tools.CapResult(resultOf(res))}, nil
+	}
+	if errors.Is(err, errTimedOut) {
+		return []tools.Result{{Content: fmt.Sprintf("MCP call to %s timed out after %s — the server may be stuck; /mcp can reconnect it. Set \"timeout\" (seconds) on the server in .mcp.json, or KLAUDIA_MCP_TOOL_TIMEOUT, if the tool is just slow.", t.qualifiedName, timeout), IsError: true}}, nil
+	}
+
+	// The call failed on the wire. revive probes liveness first, so a bad
+	// argument or an unknown tool — which also arrive as errors — cannot
+	// restart a healthy server.
+	if ctx.Err() != nil || !t.revive(ctx) {
 		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
 	}
-	// Capped like Bash output: a server can return megabytes in one call.
+
+	// The server is back. Whether to run the call again is not a performance
+	// question, it is a correctness one: the failure may have happened on the
+	// way back from a call that already ran, and nothing on the wire
+	// distinguishes that from one that never arrived. A read can be repeated
+	// at worst wastefully; anything else is reported, with the ambiguity
+	// stated, so the model checks rather than silently doing it twice.
+	//
+	// One case is not ambiguous: the server answering that it does not know
+	// the session means it never ran the call, so that call is re-sent
+	// whatever the tool does. A closed connection is NOT that case — it can
+	// close after the server has already run the call (upstream's
+	// TestAMutatingToolCallIsNotRepeatedAfterARevive).
+	notSent := errors.Is(err, mcpsdk.ErrSessionMissing)
+	if !t.readOnly && !notSent {
+		return []tools.Result{{Content: fmt.Sprintf(
+			"MCP call failed: %v. Server %q had stopped responding and has been restarted. "+
+				"The call may or may not have taken effect before it died — check the state before retrying.",
+			err, t.server.Name), IsError: true}}, nil
+	}
+	sess = t.server.sess()
+	if sess == nil {
+		return []tools.Result{{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}}, nil
+	}
+	res, err = call(sess)
+	if err != nil {
+		return []tools.Result{{Content: fmt.Sprintf("MCP call failed after restarting server %q: %v", t.server.Name, err), IsError: true}}, nil
+	}
 	return []tools.Result{tools.CapResult(resultOf(res))}, nil
+}
+
+// revive relaunches the tool's server if it has died. It is a no-op returning
+// false when the tool was built without a Manager (tests that wire a Server
+// directly), so the old behaviour stands there.
+func (t *mcpTool) revive(ctx context.Context) bool {
+	if t.mgr == nil {
+		return false
+	}
+	return t.mgr.revive(ctx, t.server)
 }
 
 // Tools lists every connected server's tools and wraps them. Servers that fail
@@ -175,8 +218,8 @@ func (m *Manager) Tools(ctx context.Context) []tools.Tool {
 				inputSchema:   schema,
 				server:        srv,
 				readOnly:      readOnly,
-				reconnect:     func() error { return m.Reconnect(srv.Name) },
 				timeout:       toolTimeout(cfg),
+				mgr:           m,
 			})
 		}
 	}

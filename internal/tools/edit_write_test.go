@@ -172,10 +172,8 @@ func TestEditClassPermissionByMode(t *testing.T) {
 		mode permission.Mode
 		want permission.Behavior
 	}{
-		{permission.ModeDefault, permission.Ask},
-		{permission.ModeAcceptEdits, permission.Allow},
+		{permission.ModeAutonomous, permission.Allow},
 		{permission.ModePlan, permission.Deny},
-		{permission.ModeDontAsk, permission.Deny},
 		{permission.ModeBypassPermissions, permission.Allow},
 	}
 	for _, c := range cases {

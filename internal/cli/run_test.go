@@ -148,9 +148,7 @@ func TestRunUsageErrorsExit2WithoutCallingTheModel(t *testing.T) {
 		{"loop with json output", "", []string{"--loop", "--output-format", "json"}, "--loop only supports --output-format text"},
 		{"invalid permission mode", "", []string{"-p", "x", "--permission-mode", "yolo"}, `invalid permission mode "yolo"`},
 		{"invalid mode from config", "[permissions]\nmode = \"yolo\"\n", []string{"-p", "x"}, `invalid permission mode "yolo"`},
-		{"autonomous without enforcing gate", "[trust]\nmode = \"off\"\n", []string{"-p", "x", "--permission-mode", "autonomous"}, "needs the host guardrail enforcing"},
-		{"malformed allow rule", "", []string{"-p", "x", "--allowedTools", "Bash(git"}, "--allowedTools/permissions.allow"},
-		{"malformed deny rule", "", []string{"-p", "x", "--disallowedTools", "Bash(rm"}, "--disallowedTools/permissions.deny"},
+		{"removed --allowedTools", "", []string{"-p", "x", "--allowedTools", "Bash"}, "unknown flag: --allowedTools"},
 		{"unknown flag", "", []string{"--no-such-flag"}, "unknown flag"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -312,27 +310,6 @@ func TestRunHostChangeBlockedExits4(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(e.Home, ".bashrc")); err == nil {
 		t.Error("~/.bashrc was written despite the block")
-	}
-}
-
-// A --disallowedTools rule stops the tool; the model is told so and the file
-// is not written.
-func TestRunDisallowedToolIsDenied(t *testing.T) {
-	m := newFakeModel(t,
-		use("Write", map[string]any{"file_path": "no.txt", "content": "x"}),
-		say("ok"),
-	)
-	e := newCLIEnv(t, m)
-	r := e.run(nil, "-p", "x", "--disallowedTools", "Write", "--permission-mode", "bypassPermissions", "--output-format", "json")
-	if r.Err != nil {
-		t.Fatal(r.dump())
-	}
-	if _, err := os.Stat(filepath.Join(e.Dir, "no.txt")); err == nil {
-		t.Error("a disallowed Write ran")
-	}
-	reqs := m.Requests()
-	if len(reqs) != 2 || !strings.Contains(reqs[1].Raw(), `"is_error":true`) {
-		t.Errorf("the denial did not reach the model as an error result")
 	}
 }
 

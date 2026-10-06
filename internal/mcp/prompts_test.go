@@ -41,7 +41,7 @@ func startPromptServer(t *testing.T) (*Manager, func()) {
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client, err := ConnectTransport(ctx, "psrv", clientT)
+	client, err := ConnectTransport(ctx, "psrv", clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}

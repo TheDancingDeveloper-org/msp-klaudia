@@ -29,7 +29,7 @@ func TestMCPToolCallTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := ConnectTransport(ctx, "s", clientT)
+	server, err := ConnectTransport(ctx, "s", clientT, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestConnectDeadlineAndParallel(t *testing.T) {
 		"mute3": {Command: "sleep", Args: []string{"30"}},
 	}}
 	start := time.Now()
-	m, errs := Connect(context.Background(), cfg)
+	m, errs := Connect(context.Background(), cfg, nil)
 	took := time.Since(start)
 	defer m.Close()
 	if len(errs) != 3 {

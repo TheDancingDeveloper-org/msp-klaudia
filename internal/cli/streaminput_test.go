@@ -131,19 +131,22 @@ func TestRunStreamJSONInputCarriesHistoryAcrossTurns(t *testing.T) {
 }
 
 // A tool the permission flow cannot settle is put to the peer as a
-// can_use_tool control_request; the peer's allow lets it run.
+// can_use_tool control_request; the peer's allow lets it run. A write to
+// project knowledge asks even in autonomous (it is loaded into every later
+// session), which makes it the ask a stream-json peer still sees now that the
+// per-command modes are gone.
 func TestRunStreamJSONInputAsksPeerAndHonoursAllow(t *testing.T) {
 	m := newFakeModel(t,
-		use("Write", map[string]any{"file_path": "asked.txt", "content": "allowed"}),
+		use("Memory", map[string]any{"operation": "add", "scope": "project", "content": "always run make release"}),
 		say("wrote"),
 	)
 	e := newCLIEnv(t, m)
-	s := startStream(t, e, "--permission-mode", "default")
+	s := startStream(t, e)
 
 	s.sendUser("write it")
 	req := s.out.next(t, "control_request")
 	body, _ := req["request"].(map[string]any)
-	if body["subtype"] != "can_use_tool" || body["tool_name"] != "Write" {
+	if body["subtype"] != "can_use_tool" || body["tool_name"] != "Memory" {
 		t.Fatalf("control_request = %v", req)
 	}
 	s.send(map[string]any{"type": "control_response", "response": map[string]any{
@@ -156,8 +159,8 @@ func TestRunStreamJSONInputAsksPeerAndHonoursAllow(t *testing.T) {
 	if err := s.finish(); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(filepath.Join(e.Dir, "asked.txt")); err != nil || string(got) != "allowed" {
-		t.Errorf("asked.txt = %q, %v", got, err)
+	if got, err := os.ReadFile(filepath.Join(e.Dir, ".klaudia", "KNOWLEDGE.md")); err != nil || !strings.Contains(string(got), "make release") {
+		t.Errorf("KNOWLEDGE.md = %q, %v", got, err)
 	}
 }
 
@@ -165,11 +168,11 @@ func TestRunStreamJSONInputAsksPeerAndHonoursAllow(t *testing.T) {
 // still finishes.
 func TestRunStreamJSONInputAskTimeoutDenies(t *testing.T) {
 	m := newFakeModel(t,
-		use("Write", map[string]any{"file_path": "never.txt", "content": "x"}),
+		use("Memory", map[string]any{"operation": "add", "scope": "project", "content": "x"}),
 		say("gave up"),
 	)
 	e := newCLIEnv(t, m)
-	s := startStream(t, e, "--permission-mode", "default", "--ask-timeout", "100ms")
+	s := startStream(t, e, "--ask-timeout", "100ms")
 
 	s.sendUser("write it")
 	s.out.next(t, "control_request") // deliberately unanswered
@@ -179,7 +182,7 @@ func TestRunStreamJSONInputAskTimeoutDenies(t *testing.T) {
 	if err := s.finish(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(e.Dir, "never.txt")); err == nil {
+	if _, err := os.Stat(filepath.Join(e.Dir, ".klaudia", "KNOWLEDGE.md")); err == nil {
 		t.Error("an unanswered ask was treated as allow")
 	}
 	if reqs := m.Requests(); len(reqs) != 2 || !strings.Contains(reqs[1].Raw(), "no control_response arrived within 100ms") {

@@ -66,7 +66,7 @@ func TestStdioServerStderrIsForwardedAndLogged(t *testing.T) {
 	logDir := t.TempDir()
 	t.Setenv("KLAUDIA_MCP_STDERR", logDir)
 
-	srv, err := ConnectCommand(context.Background(), "test", helperServer(t, "chatty"))
+	srv, err := ConnectCommand(context.Background(), "test", helperServer(t, "chatty"), nil)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestStdioServerStderrIsForwardedAndLogged(t *testing.T) {
 
 func TestStdioServerConnectFailureCarriesStderrTail(t *testing.T) {
 	SetStderr(nil)
-	_, err := ConnectCommand(context.Background(), "loki", helperServer(t, "broken"))
+	_, err := ConnectCommand(context.Background(), "loki", helperServer(t, "broken"), nil)
 	if err == nil {
 		t.Fatal("connect to a server that exits at startup succeeded")
 	}

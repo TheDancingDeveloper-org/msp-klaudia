@@ -30,7 +30,7 @@ func TestToolsListChangedRefreshesRegistry(t *testing.T) {
 	m := &Manager{}
 	// Connect through the manager's client options so the tools/list_changed
 	// handler is installed on the session, exactly as Connect/Reconnect do.
-	client, err := connectTransport(ctx, "live", clientT, m.clientOptions())
+	client, err := connectTransport(ctx, "live", clientT, m.clientOptions(), nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}

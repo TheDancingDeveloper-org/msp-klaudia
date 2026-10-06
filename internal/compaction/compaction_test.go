@@ -27,7 +27,7 @@ func TestMicrocompactNoOpWhenSmall(t *testing.T) {
 		userText("hi"),
 		toolResult("t1", "small result"),
 	}
-	out, res := Microcompact(msgs)
+	out, res := Microcompact(msgs, nil)
 	if res.Compacted {
 		t.Error("should not compact small conversations")
 	}
@@ -45,7 +45,7 @@ func TestMicrocompactElidesOldResults(t *testing.T) {
 	}
 
 	before := EstimateTokens(msgs)
-	out, res := Microcompact(msgs)
+	out, res := Microcompact(msgs, nil)
 	if !res.Compacted {
 		t.Fatalf("expected compaction; tokens before=%d", before)
 	}

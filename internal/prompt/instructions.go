@@ -1,9 +1,11 @@
 package prompt
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -30,33 +32,52 @@ type instructionFile struct {
 // loadProjectInstructions gathers instructions for a session in cwd, farthest
 // first so the closest have the last word:
 //
-//  1. the user's own: ~/.claude/CLAUDE.md and ~/.claude/rules/*.md;
-//  2. for each directory from the filesystem root down to cwd: its CLAUDE.md,
-//     or AGENTS.md when it has no CLAUDE.md, then its .claude/rules/*.md.
+//  1. the user's own: ~/.claude/CLAUDE.md, ~/.claude/rules/*.md, then
+//     ~/.klaudia/AGENTS.md;
+//  2. for each directory from the filesystem root down to cwd: its AGENTS.md
+//     then its CLAUDE.md — generic first, so the agent-specific file reads as
+//     the refinement — then its .claude/rules/*.md.
+//
+// Both files are read where both exist (upstream 0fa00a6): a repo that keeps
+// generic instructions in AGENTS.md and Claude-specific ones in CLAUDE.md
+// means both. A file is included once however it is reached — through an
+// @import, a symlink (`ln -s AGENTS.md CLAUDE.md`), or as a copy with the same
+// content.
 //
 // In each file, a line that is only "@path" is replaced by that file's
 // contents (relative to the importing file; "~/" is home), to a depth of
 // five; an "@path" inside a line is left as written and the file it names is
-// appended after it. HTML comments are removed. A file is included once
-// however many ways it is reached.
+// appended after it. HTML comments are removed.
 func loadProjectInstructions(cwd string) string {
-	l := &instrLoader{seen: map[string]bool{}}
+	text, _ := loadProjectInstructionsNamed(cwd)
+	return text
+}
+
+// loadProjectInstructionsNamed is loadProjectInstructions plus the distinct
+// file names the text came from, for the section header: a model asked to
+// record a convention should know which file to put it in.
+func loadProjectInstructionsNamed(cwd string) (string, []string) {
+	l := &instrLoader{seen: map[string]bool{}, seenBody: map[[32]byte]bool{}}
 	if home, err := os.UserHomeDir(); err == nil {
 		l.home = home
 		l.add(filepath.Join(home, ".claude", "CLAUDE.md"), 0)
 		l.addRules(filepath.Join(home, ".claude", "rules"))
+		l.add(filepath.Join(home, ".klaudia", "AGENTS.md"), 0)
 	}
 	for _, dir := range ancestors(cwd) {
-		if !l.add(filepath.Join(dir, "CLAUDE.md"), 0) {
-			l.add(filepath.Join(dir, "AGENTS.md"), 0)
-		}
+		l.add(filepath.Join(dir, "AGENTS.md"), 0)
+		l.add(filepath.Join(dir, "CLAUDE.md"), 0)
 		l.addRules(filepath.Join(dir, ".claude", "rules"))
 	}
 	parts := make([]string, 0, len(l.files))
+	var names []string
 	for _, f := range l.files {
 		parts = append(parts, "Contents of "+f.path+":\n\n"+f.text)
+		if base := filepath.Base(f.path); !slices.Contains(names, base) {
+			names = append(names, base)
+		}
 	}
-	return strings.Join(parts, "\n\n")
+	return strings.Join(parts, "\n\n"), names
 }
 
 // ancestors returns dir and every directory above it, root first.
@@ -79,9 +100,10 @@ func ancestors(dir string) []string {
 }
 
 type instrLoader struct {
-	home  string
-	seen  map[string]bool
-	files []instructionFile
+	home     string
+	seen     map[string]bool
+	seenBody map[[32]byte]bool
+	files    []instructionFile
 }
 
 // add loads path (and what it imports) and reports whether the file exists.
@@ -96,10 +118,19 @@ func (l *instrLoader) add(path string, depth int) bool {
 		return true
 	}
 	l.seen[key] = true
-	body := l.expand(text, filepath.Dir(path), depth)
-	if strings.TrimSpace(body) != "" {
-		l.files = append(l.files, instructionFile{path: path, text: strings.TrimSpace(body)})
+	body := strings.TrimSpace(l.expand(text, filepath.Dir(path), depth))
+	if body == "" {
+		return true
 	}
+	// A copy (AGENTS.md duplicated as CLAUDE.md) has two paths and one body;
+	// only the content can tell, and without this the whole block is sent
+	// twice in every request.
+	sum := sha256.Sum256([]byte(body))
+	if l.seenBody[sum] {
+		return true
+	}
+	l.seenBody[sum] = true
+	l.files = append(l.files, instructionFile{path: path, text: body})
 	return true
 }
 

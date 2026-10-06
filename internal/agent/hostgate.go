@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
@@ -13,14 +12,18 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/trust"
 )
 
-// The host gate sits in front of every tool call, before the allow/deny rules.
+// The host gate sits in front of every tool call, before the permission check.
 //
 // Order matters, and this is the one placement decision in the whole feature
-// that is not negotiable. A user's allow rule says "Bash(git status:*) is fine";
-// it does not say "and therefore anything I can get a matching prefix on is
-// fine". If the gate ran after rule matching, an allow rule would launder a
-// command line, and the protection would be defeatable by a prefix. So the gate
-// runs first, and rules can only narrow what it permits.
+// that is not negotiable. The permission check is per-tool and mode-driven, and
+// autonomous — the default mode — allows every tool it is asked about. A gate
+// running second would therefore never be reached by the calls it exists for.
+// It runs first, and the permission check can only narrow what it permits.
+//
+// The same argument held against the allow/deny rules this replaced: a rule
+// saying `Bash(git status:*)` is fine did not say that anything sharing that
+// prefix may change the machine, so rules first would have let one launder the
+// other. The rules are gone; the ordering constraint outlived them.
 //
 // It also keeps internal/permission a leaf package. permission is imported by
 // both tools and agent; giving it a dependency on trust — which needs a
@@ -35,29 +38,17 @@ import (
 // its strength is "Klaudia asks before host changes it can detect". The real
 // boundary is internal/sandbox, which is kernel enforcement and off by default.
 
-// HostPolicy is how the gate behaves when it finds a change to this machine.
-type HostPolicy string
-
-const (
-	// HostEnforce refuses undeclared host changes. The default.
-	HostEnforce HostPolicy = "enforce"
-	// HostObserve classifies and reports but changes no decisions. This is the
-	// migration setting for sessions that already carry allow/deny rules: the
-	// user can see what the new model *would* do for a while before it starts
-	// doing it.
-	HostObserve HostPolicy = "observe"
-	// HostOff disables classification entirely.
-	HostOff HostPolicy = "off"
-)
-
 // HostGate classifies tool calls and checks them against the session's grants.
-// The zero value is inert, so a caller that has not wired trust up gets the old
-// behaviour rather than a panic.
+//
+// There is no posture to configure. The gate used to have enforce/observe/off,
+// where observe existed to ease configs carrying allow/deny rules into the zone
+// model and off existed to switch the whole thing back out. Both are gone with
+// the rules: "check nothing" is bypassPermissions, which is honest about what
+// it is and is checked before the gate rather than inside it.
+//
+// A nil gate is inert, so a caller that has not wired trust up gets no
+// classification rather than a panic.
 type HostGate struct {
-	// policy is read on every tool call from the agent's goroutine and written
-	// by /trust from the Bubble Tea update loop, so it cannot be a plain field.
-	// Use Policy and SetPolicy.
-	policy atomic.Value // HostPolicy
 	// Roots is a function, not a value, for the same reason
 	// permission.Context.Mode is: a session that adds a directory with /add-dir
 	// should start treating it as project work on the next tool call, not at
@@ -69,9 +60,9 @@ type HostGate struct {
 	// change directly to the user through the Approver.
 	DeclareTool string
 	// Observed, if set, is called for every call that raised a concern —
-	// including the ones that were allowed. This is what feeds `/trust` and the
-	// observe-mode reporting, and it is deliberately called for allowed calls
-	// too: "a grant covered this" is the interesting half.
+	// including the ones that were allowed. This is what feeds `/trust`, and it
+	// is deliberately called for allowed calls too: "a grant covered this" is
+	// the interesting half.
 	Observed func(HostReport)
 	// Granted, if set, is called when an approval mints a grant. The UI uses it
 	// to show what the approval actually bought — the widened scope, not the
@@ -82,21 +73,9 @@ type HostGate struct {
 	reports []HostReport
 }
 
-// Policy reports the current posture. The zero value — a gate nobody set a
-// policy on — reads as "", which every caller already treats as off.
-func (g *HostGate) Policy() HostPolicy {
-	p, _ := g.policy.Load().(HostPolicy)
-	return p
-}
-
-// SetPolicy changes the posture, for /trust upgrade and downgrade. Safe to call
-// from the UI goroutine while the agent is mid-turn: the next tool call reads
-// the new value, and one already in flight keeps the one it read.
-func (g *HostGate) SetPolicy(p HostPolicy) { g.policy.Store(p) }
-
 // maxHostReports bounds the in-memory log. It exists so /trust can show what
-// the classifier found, especially in observe mode where nothing else does;
-// a session that runs for hours should not accumulate it without limit.
+// the classifier found; a session that runs for hours should not accumulate it
+// without limit.
 const maxHostReports = 200
 
 func (g *HostGate) record(r HostReport) {
@@ -172,7 +151,7 @@ type HostDecision struct {
 
 // Check classifies a tool call and decides whether it may proceed.
 func (g *HostGate) Check(tool string, input []byte, cwd string) HostDecision {
-	if g == nil || g.Policy() == HostOff || g.Policy() == "" {
+	if g == nil {
 		return HostDecision{Allow: true}
 	}
 
@@ -202,11 +181,6 @@ func (g *HostGate) Check(tool string, input []byte, cwd string) HostDecision {
 	}
 
 	if len(drift) == 0 {
-		g.record(report)
-		return HostDecision{Allow: true, Assessment: as}
-	}
-
-	if g.Policy() == HostObserve {
 		g.record(report)
 		return HostDecision{Allow: true, Assessment: as}
 	}
@@ -265,32 +239,6 @@ func (g *HostGate) refusal(as trust.Assessment, drift []trust.Effect, hadGrants 
 		"If it has to be done this way, call %s to describe the whole operation and why.",
 		g.DeclareTool))
 	return b.String()
-}
-
-// ResolveHostPolicy decides the gate's policy for a session.
-//
-// The default is enforce. The exception is a config that already carries
-// allow/deny rules: those users have a working setup built around
-// command-level approval, and silently switching them to a different model
-// mid-upgrade would be a surprise in the one area where surprises are least
-// welcome. They get observe — the classifier runs and `/trust` shows what it
-// found, but nothing is refused — plus a one-time notice. `/trust upgrade`
-// flips them over when they are ready.
-//
-// The bool reports whether that notice should be shown.
-func ResolveHostPolicy(configured string, hasLegacyRules bool) (HostPolicy, bool) {
-	switch HostPolicy(strings.TrimSpace(configured)) {
-	case HostEnforce:
-		return HostEnforce, false
-	case HostObserve:
-		return HostObserve, false
-	case HostOff:
-		return HostOff, false
-	}
-	if hasLegacyRules {
-		return HostObserve, true
-	}
-	return HostEnforce, false
 }
 
 func describeAll(effects []trust.Effect) string {

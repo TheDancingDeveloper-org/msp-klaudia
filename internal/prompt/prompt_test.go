@@ -304,3 +304,98 @@ func TestSystemInRecallsRootThenCWDState(t *testing.T) {
 		t.Error("root == cwd should recall the memory once")
 	}
 }
+
+// AGENTS.md is the cross-agent standard — several hundred thousand
+// repositories carry one, and Klaudia read none of them. A user who had
+// written the instructions for this exact purpose got a model that had never
+// seen them.
+func TestSystemLoadsAgentsMd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "AGENTS.md"), "# Conventions\nUse tabs, never spaces.")
+
+	p := System(dir, "")
+	if !strings.Contains(p, "Use tabs, never spaces.") {
+		t.Error("AGENTS.md content was not included")
+	}
+	if !strings.Contains(p, "Project instructions (from AGENTS.md)") {
+		t.Error("the section header should name the file the instructions came from")
+	}
+}
+
+// Both files, with different content, is a real configuration: the generic one
+// for every agent and a Claude-specific refinement beside it. Reading one and
+// ignoring the other silently drops instructions.
+func TestSystemLoadsBothInstructionFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "AGENTS.md"), "generic: run the linter")
+	write(t, filepath.Join(dir, "CLAUDE.md"), "specific: sign your commits")
+
+	p := System(dir, "")
+	for _, want := range []string{"generic: run the linter", "specific: sign your commits"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	// Generic first, agent-specific after it, so the specific one reads as the
+	// refinement rather than being contradicted by what follows.
+	if strings.Index(p, "generic:") > strings.Index(p, "specific:") {
+		t.Error("AGENTS.md should come before CLAUDE.md")
+	}
+	if !strings.Contains(p, "(from AGENTS.md, CLAUDE.md)") {
+		t.Error("the header should name both files")
+	}
+}
+
+// `ln -s AGENTS.md CLAUDE.md` is the commonest way a repo supports both today.
+// filepath.Abs gives the two names different paths, so without resolving the
+// link the entire instruction block is sent twice in every request.
+func TestSymlinkedInstructionFileIsReadOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "AGENTS.md"), "a distinctive instruction line")
+	if err := os.Symlink("AGENTS.md", filepath.Join(dir, "CLAUDE.md")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	p := System(dir, "")
+	if n := strings.Count(p, "a distinctive instruction line"); n != 1 {
+		t.Errorf("instructions appear %d times, want 1", n)
+	}
+}
+
+// And the second commonest way: a copy. No path comparison can catch that, so
+// identity is also established by content.
+func TestDuplicatedInstructionContentIsReadOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	body := "the same instructions in two files"
+	write(t, filepath.Join(dir, "AGENTS.md"), body)
+	write(t, filepath.Join(dir, "CLAUDE.md"), body)
+
+	p := System(dir, "")
+	if n := strings.Count(p, body); n != 1 {
+		t.Errorf("instructions appear %d times, want 1", n)
+	}
+	if !strings.Contains(p, "(from AGENTS.md)") {
+		t.Error("the header should name only the file that was actually used")
+	}
+}
+
+// A global AGENTS.md belongs with skills and .mcp.json under ~/.klaudia. The
+// home-level ~/.claude/CLAUDE.md is still read for ecosystem compatibility.
+func TestSystemLoadsGlobalInstructions(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	write(t, filepath.Join(home, ".claude", "CLAUDE.md"), "ecosystem global")
+	write(t, filepath.Join(home, ".klaudia", "AGENTS.md"), "klaudia global")
+
+	p := System(t.TempDir(), "")
+	for _, want := range []string{"ecosystem global", "klaudia global"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

@@ -53,12 +53,6 @@ func validateStarter(t *testing.T, cfg config.Config) api.Provider {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	if _, err := permission.ParseRules(cfg.Permissions.Allow); err != nil {
-		t.Errorf("permissions.allow: %v", err)
-	}
-	if _, err := permission.ParseRules(cfg.Permissions.Deny); err != nil {
-		t.Errorf("permissions.deny: %v", err)
-	}
 	if m := cfg.Permissions.Mode; m != "" && !permission.Mode(m).Valid() {
 		t.Errorf("permissions.mode %q is not valid", m)
 	}

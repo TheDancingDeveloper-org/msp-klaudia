@@ -9,7 +9,13 @@
 // close enough to drive the same thresholds.
 package compaction
 
-import "github.com/anthropics/anthropic-sdk-go"
+import (
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/anthropics/anthropic-sdk-go"
+)
 
 // Microcompact constants (05-app-core.js).
 const (
@@ -29,8 +35,63 @@ const (
 // DefaultContextWindow is the assumed window when the model's is unknown.
 const DefaultContextWindow = 200000
 
-// elidedPlaceholder replaces an old tool result's content during microcompact.
-const elidedPlaceholder = "[Old tool result elided to save context]"
+// Spiller writes an elided tool result somewhere durable and returns a path
+// the model can read. It is injected rather than imported so this package
+// stays dependency-free; the agent loop supplies the same on-disk spill the
+// per-result cap uses. A nil Spiller means "nowhere to put it", and the
+// placeholder then promises no file.
+type Spiller func(content string) (path string, ok bool)
+
+// elidedPreviewBytes is how much of the original result survives in the
+// placeholder. Enough to identify which call it was — a grep's first match, a
+// test run's first line — and not enough to matter against what is saved.
+const elidedPreviewBytes = 120
+
+// elidedPlaceholder builds the text that replaces an old tool result.
+//
+// It used to be a single fixed string, which saved the most tokens possible
+// and told the model nothing: three elided results were indistinguishable
+// from each other, and there was no way to recover any of them. A result the
+// model cannot identify is one it must either re-run or reason without. The
+// first line and a path cost a few dozen tokens against the thousands this
+// reclaims.
+func elidedPlaceholder(content, path string) string {
+	var b strings.Builder
+	b.WriteString("[Old tool result elided to save context")
+	if n := len(content); n > 0 {
+		fmt.Fprintf(&b, "; %d bytes", n)
+	}
+	if p := firstLine(content, elidedPreviewBytes); p != "" {
+		b.WriteString("; began: ")
+		b.WriteString(p)
+	}
+	if path != "" {
+		b.WriteString("; full text: ")
+		b.WriteString(path)
+	}
+	b.WriteString("]")
+	return b.String()
+}
+
+// firstLine returns the first non-empty line of s, truncated to max bytes on a
+// rune boundary.
+func firstLine(s string, max int) string {
+	for _, ln := range strings.SplitN(s, "\n", 4) {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if len(ln) > max {
+			ln = ln[:max]
+			for len(ln) > 0 && !utf8.ValidString(ln) {
+				ln = ln[:len(ln)-1]
+			}
+			ln += "…"
+		}
+		return ln
+	}
+	return ""
+}
 
 // EstimateTokens approximates the token count of a message list. Text is
 // charged at ~4 chars/token; images/documents at a flat per-item estimate.
@@ -87,7 +148,11 @@ type Result struct {
 // KeepLastNResults, but only when tool-result tokens exceed the threshold and
 // the savings clear MinTokensToSave. It never calls the model. The returned
 // slice is a new slice; inputs are not mutated.
-func Microcompact(messages []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, Result) {
+//
+// spill, when non-nil, receives each elided result's full text and returns a
+// path named in the placeholder, so an elision is recoverable rather than a
+// deletion. See Spiller.
+func Microcompact(messages []anthropic.BetaMessageParam, spill Spiller) ([]anthropic.BetaMessageParam, Result) {
 	// Locate every tool_result block as (msgIdx, blockIdx).
 	type loc struct{ m, b int }
 	var locs []loc
@@ -108,22 +173,43 @@ func Microcompact(messages []anthropic.BetaMessageParam) ([]anthropic.BetaMessag
 	// Candidates to elide: all but the last KeepLastNResults.
 	elide := locs[:len(locs)-KeepLastNResults]
 
-	// Compute potential savings first (only act if it clears the floor).
+	// Two passes, because spilling has a side effect on disk and the floor
+	// below can still say no. compact() runs at the top of every turn, so a
+	// single pass that spilled first would write a fresh set of files every
+	// turn a conversation sat just under MinTokensToSave. Pass one prices the
+	// placeholders without paths — the only part that is free to compute.
+	content := make([]string, len(elide))
 	saved := 0
-	for _, l := range elide {
+	for i, l := range elide {
 		tr := messages[l.m].Content[l.b].OfToolResult
-		cur := toolResultTokens(tr)
-		saved += cur - charTokens(elidedPlaceholder)
+		content[i] = toolResultText(tr)
+		saved += toolResultTokens(tr) - charTokens(elidedPlaceholder(content[i], ""))
 	}
 	if saved < MinTokensToSave {
 		return messages, Result{}
+	}
+
+	// Pass two: committed now, so spill and build the real placeholders. The
+	// saving is recomputed rather than adjusted, because each path has its own
+	// length and the reported figure feeds a user-visible message.
+	replacement := make([]string, len(elide))
+	saved = 0
+	for i, l := range elide {
+		path := ""
+		if spill != nil && content[i] != "" {
+			if p, ok := spill(content[i]); ok {
+				path = p
+			}
+		}
+		replacement[i] = elidedPlaceholder(content[i], path)
+		saved += toolResultTokens(messages[l.m].Content[l.b].OfToolResult) - charTokens(replacement[i])
 	}
 
 	// Apply: deep-copy the affected messages and replace elided blocks.
 	out := make([]anthropic.BetaMessageParam, len(messages))
 	copy(out, messages)
 	touched := map[int]bool{}
-	for _, l := range elide {
+	for i, l := range elide {
 		if !touched[l.m] {
 			nc := make([]anthropic.BetaContentBlockParamUnion, len(messages[l.m].Content))
 			copy(nc, messages[l.m].Content)
@@ -132,10 +218,22 @@ func Microcompact(messages []anthropic.BetaMessageParam) ([]anthropic.BetaMessag
 		}
 		orig := out[l.m].Content[l.b].OfToolResult
 		isErr := orig.IsError.Or(false)
-		out[l.m].Content[l.b] = anthropic.NewBetaToolResultBlock(orig.ToolUseID, elidedPlaceholder, isErr)
+		out[l.m].Content[l.b] = anthropic.NewBetaToolResultBlock(orig.ToolUseID, replacement[i], isErr)
 	}
 
 	return out, Result{Compacted: true, TokensSaved: saved, ElidedCount: len(elide)}
+}
+
+// toolResultText concatenates the text blocks of a tool result. Images carry
+// no text and are not recoverable through a spill file, so they are skipped.
+func toolResultText(tr *anthropic.BetaToolResultBlockParam) string {
+	var b strings.Builder
+	for _, c := range tr.Content {
+		if c.OfText != nil {
+			b.WriteString(c.OfText.Text)
+		}
+	}
+	return b.String()
 }
 
 // Thresholds holds the computed autocompact thresholds for a context window.

@@ -31,7 +31,7 @@ func TestHTTPFallsBackToSSE(t *testing.T) {
 	hs := httptest.NewServer(mcpsdk.NewSSEHandler(func(*http.Request) *mcpsdk.Server { return srv }, nil))
 	defer hs.Close()
 
-	m, errs := Connect(context.Background(), Config{MCPServers: map[string]ServerConfig{"legacy": {URL: hs.URL}}})
+	m, errs := Connect(context.Background(), Config{MCPServers: map[string]ServerConfig{"legacy": {URL: hs.URL}}}, nil)
 	defer m.Close()
 	if len(errs) > 0 {
 		t.Fatalf("connect: %v", errs)
@@ -71,7 +71,7 @@ func TestCallReconnectsAfterSessionLoss(t *testing.T) {
 	defer hs.Close()
 
 	ctx := context.Background()
-	m, errs := Connect(ctx, Config{MCPServers: map[string]ServerConfig{"remote": {Type: "http", URL: hs.URL}}})
+	m, errs := Connect(ctx, Config{MCPServers: map[string]ServerConfig{"remote": {Type: "http", URL: hs.URL}}}, nil)
 	defer m.Close()
 	if len(errs) > 0 {
 		t.Fatalf("connect: %v", errs)

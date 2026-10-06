@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 
@@ -44,16 +45,18 @@ func (v *modeVar) set(m permission.Mode) {
 //     Claude Code refuses it the same way for a session not started with
 //     --dangerously-skip-permissions: the operator who launched the process
 //     decides whether checks can be switched off, not the peer driving it.
-func streamModeSetter(live *modeVar, launch permission.Mode, hostEnforcing func() bool) func(string) error {
+func streamModeSetter(live *modeVar, launch permission.Mode, warn io.Writer) func(string) error {
 	return func(s string) error {
-		m := permission.Mode(strings.TrimSpace(s))
+		name := permission.Mode(strings.TrimSpace(s))
+		m, retired := permission.Resolve(name)
 		switch {
 		case !m.Valid():
-			return fmt.Errorf("invalid permission mode %q (autonomous|plan|bypassPermissions|dontAsk, or legacy default|acceptEdits)", s)
-		case m == permission.ModeAutonomous && !hostEnforcing():
-			return fmt.Errorf("permission mode %q needs the host guardrail enforcing, and it is not in this session", m)
+			return fmt.Errorf("invalid permission mode %q (autonomous|plan|bypassPermissions)", s)
 		case m == permission.ModeBypassPermissions && launch != permission.ModeBypassPermissions:
 			return fmt.Errorf("cannot switch to %s: the session was not launched with --dangerously-skip-permissions or --permission-mode bypassPermissions", m)
+		}
+		if retired && warn != nil {
+			fmt.Fprintln(warn, "note:", permission.DeprecatedNotice(name))
 		}
 		live.set(m)
 		return nil

@@ -10,9 +10,11 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
+	"github.com/greenthread-ai/klaudia/internal/worktree"
 )
 
 // Spawner runs sub-agents. It implements tools.Spawner so the Agent tool can
@@ -42,6 +44,14 @@ type Spawner struct {
 	// without them (older callers, tests) still runs synchronous sub-agents.
 	background *BackgroundRegistry
 	worktrees  WorktreeProvider
+
+	// hooks runs the user's lifecycle hooks in every child, so a formatter
+	// that runs on each edit also runs on a sub-agent's edits.
+	hooks *hooks.Runner
+	// isolate gives a synchronous sub-agent that can write its own seeded git
+	// checkout (internal/worktree), adopted back into the user's tree when it
+	// finishes. Upstream's design; see docs/working-tree.md.
+	isolate bool
 }
 
 // Background returns the registry of background sub-agents this Spawner has
@@ -60,7 +70,7 @@ func (s *Spawner) Background() *BackgroundRegistry {
 // disables isolation (writers then share the parent tree — acceptable for a
 // single writer, unsafe for concurrent ones). The default wiring supplies a
 // git-backed provider; tests inject a fake.
-func (s *Spawner) WithWorktrees(w WorktreeProvider) *Spawner {
+func (s *Spawner) WithBackgroundWorktrees(w WorktreeProvider) *Spawner {
 	s.worktrees = w
 	return s
 }
@@ -108,6 +118,20 @@ func (s *Spawner) WithProviderName(name string) *Spawner {
 // should cover the child doing the work. Without this a sub-agent's Bash calls
 // would be unclassified, which is the easiest hole to leave and the hardest to
 // notice.
+// WithHooks runs h in every child loop.
+func (s *Spawner) WithHooks(h *hooks.Runner) *Spawner {
+	s.hooks = h
+	return s
+}
+
+// WithWorktrees turns per-sub-agent checkouts on or off for synchronous
+// sub-agents that can write ([subagents] worktree in config; on by default).
+// Background writers are isolated separately (WithBackgroundWorktrees).
+func (s *Spawner) WithWorktrees(on bool) *Spawner {
+	s.isolate = on
+	return s
+}
+
 func (s *Spawner) WithHostGate(g *HostGate) *Spawner {
 	s.hostGate = g
 	return s
@@ -156,10 +180,42 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir)
 
+	// A child that can write gets a checkout of its own, seeded with the
+	// user's uncommitted work and adopted back when it finishes: two writers in
+	// one tree both succeed at producing a mess. A failure to create it falls
+	// back to sharing the tree, and says so.
+	dir := s.workingDir
+	var tree *worktree.Tree
+	if s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir) {
+		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
+			reportf(progress, "  (sharing the working tree: %v)", err)
+		} else {
+			tree, dir = wt, wt.Dir
+			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
+		}
+	}
+
 	// Relay the child's activity upward. Without an emitter the child ran
 	// completely dark: the frontend saw one Agent tool call and nothing until it
 	// returned, so a twenty-minute research run and a hang looked identical.
-	return s.runChild(ctx, t, prompt, s.workingDir, progressEmitter(progress))
+	// Paths in the child's own checkout are paths the user cannot open, so they
+	// are rewritten to where the file really is.
+	var emit Emitter
+	if progress != nil {
+		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
+	}
+	text, err := s.runChild(ctx, t, prompt, dir, emit)
+	if tree == nil {
+		return text, err
+	}
+	if err != nil {
+		// Whatever the child wrote stays where it is: applying half a change to
+		// the user's tree is the one outcome isolation exists to prevent.
+		return tree.Rewrite(text), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
+	}
+	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
+	defer cancel()
+	return s.collect(done, tree, tree.Rewrite(text), progress), nil
 }
 
 // progressEmitter adapts a per-line progress callback into a child Emitter.
@@ -205,6 +261,8 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 		ContextWindow: ctxWindow,
 		ProviderName:  s.providerName,
 		DeferredTools: filterDeferred(s.deferred(), childTools),
+		Hooks:         s.hooks,
+		SubAgent:      true,
 	}, emit)
 	if err != nil {
 		// What the sub-agent had already worked out is not lost with it: the
@@ -278,6 +336,66 @@ func (s *Spawner) SpawnBackground(subagentType, prompt, label string, progress f
 	}()
 
 	return id, nil
+}
+
+// worktreeCleanupTimeout bounds adoption and removal. Both are a handful of git
+// commands on a tree that is already on disk; a limit this generous only ever
+// fires on a repository that has gone wrong, and the alternative is a tool call
+// that never returns.
+const worktreeCleanupTimeout = 2 * time.Minute
+
+// collect applies the child's work to the user's tree and tells the model what
+// landed.
+//
+// The model is told because it has to be: it asked a child to change files, and
+// "b.txt was not applied" changes what it should do next. A silent conflict
+// would have it carry on describing work that is not in the tree.
+func (s *Spawner) collect(ctx context.Context, tree *worktree.Tree, text string, progress func(string)) string {
+	rep, err := tree.Adopt(ctx)
+	if err != nil {
+		reportf(progress, "  (could not apply the sub-agent's changes: %v)", err)
+		return text + fmt.Sprintf("\n\n[The sub-agent's file changes could not be applied to the "+
+			"working tree (%v). They are in %s.]", err, tree.Dir)
+	}
+	if len(rep.Conflicted) > 0 {
+		// The conflicting version exists only in the checkout, so removing it
+		// would destroy the only copy of work the user may want.
+		reportf(progress, "  ↳ %s", rep.Summary())
+		return text + fmt.Sprintf("\n\n[Working tree: %s. The sub-agent's versions of those files "+
+			"are in %s.]", rep.Summary(), tree.Dir)
+	}
+	if err := tree.Remove(ctx); err != nil {
+		reportf(progress, "  (left the sub-agent's checkout at %s: %v)", tree.Dir, err)
+	}
+	if rep.Empty() {
+		return text
+	}
+	reportf(progress, "  ↳ %s", rep.Summary())
+	return text + fmt.Sprintf("\n\n[Working tree: %s.]", rep.Summary())
+}
+
+// writesFiles reports whether this toolset can change the working tree.
+//
+// Four names rather than a capability on the Tool interface: these are the
+// local tools that touch files, and the list is short and stable. MCP tools are
+// deliberately not counted even when they are not read-only — their writes land
+// on a server, which a second checkout does not isolate, and counting them
+// would hand a research agent a pointless copy of the repository.
+func writesFiles(r *tools.Registry) bool {
+	for _, name := range []string{"Write", "Edit", "NotebookEdit", "Bash"} {
+		if _, ok := r.Lookup(name); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// reportf sends one formatted progress line, if anyone is listening.
+func reportf(progress func(string), format string, args ...any) {
+	if progress == nil {
+		return
+	}
+	progress(fmt.Sprintf(format, args...))
 }
 
 func filterDeferred(deferred map[string]bool, registry *tools.Registry) map[string]bool {

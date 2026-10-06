@@ -13,161 +13,82 @@ func (f fakeTool) CheckPermissions(Context, PermissionRequest) Decision {
 	return f.intrinsic
 }
 
-func TestCheckDenyRuleWins(t *testing.T) {
-	pctx := Context{
-		Mode: StaticMode(ModeBypassPermissions), // even bypass must lose to an explicit deny
-		Deny: []Rule{{Tool: "Bash", Specifier: "rm -rf:*"}},
-	}
-	tool := fakeTool{name: "Bash", intrinsic: Decision{Behavior: Allow}}
-	got := Check(pctx, tool, PermissionRequest{Specifier: "rm -rf /tmp/x"})
-	if got.Behavior != Deny {
-		t.Errorf("behavior = %q, want deny", got.Behavior)
-	}
-}
-
 func TestCheckBypassAllows(t *testing.T) {
 	pctx := Context{Mode: StaticMode(ModeBypassPermissions)}
-	tool := fakeTool{name: "Bash", intrinsic: Decision{Behavior: Ask}}
+	tool := fakeTool{name: "Bash", intrinsic: Decision{Behavior: Deny}}
 	if got := Check(pctx, tool, PermissionRequest{Specifier: "ls"}); got.Behavior != Allow {
 		t.Errorf("bypass behavior = %q, want allow", got.Behavior)
 	}
 }
 
-func TestCheckAllowRule(t *testing.T) {
-	pctx := Context{
-		Mode:  StaticMode(ModeDefault),
-		Allow: []Rule{{Tool: "Bash", Specifier: "git status"}},
-	}
-	tool := fakeTool{name: "Bash", intrinsic: Decision{Behavior: Ask}}
-	if got := Check(pctx, tool, PermissionRequest{Specifier: "git status"}); got.Behavior != Allow {
-		t.Errorf("allow-rule behavior = %q, want allow", got.Behavior)
-	}
-	// A non-matching specifier falls through to the intrinsic (ask).
-	if got := Check(pctx, tool, PermissionRequest{Specifier: "git push"}); got.Behavior != Ask {
-		t.Errorf("non-matching behavior = %q, want ask", got.Behavior)
-	}
-}
-
-// TestCheckPlanModeBeatsAllowRule pins the plan-mode bypass: an allow rule
-// used to be consulted before the tool's plan-mode refusal, so an allowed
-// Bash or Edit ran while the session was only meant to be planning.
-func TestCheckPlanModeBeatsAllowRule(t *testing.T) {
-	pctx := Context{
-		Mode:  StaticMode(ModePlan),
-		Allow: []Rule{{Tool: "Bash", Specifier: "git:*"}, {Tool: "Read"}},
-	}
-	planDeny := Decision{Behavior: Deny, Message: "plan mode is read-only"}
-	bash := fakeTool{name: "Bash", intrinsic: planDeny}
-	if got := Check(pctx, bash, PermissionRequest{Specifier: "git commit"}); got.Behavior != Deny {
-		t.Errorf("allowed Bash in plan mode: behavior = %q, want deny", got.Behavior)
-	}
-	// A read-only tool still gets its allow in plan mode.
-	read := fakeTool{name: "Read", intrinsic: Decision{Behavior: Allow}}
-	if got := Check(pctx, read, PermissionRequest{}); got.Behavior != Allow {
-		t.Errorf("Read in plan mode: behavior = %q, want allow", got.Behavior)
-	}
-	// Outside plan mode the same allow rule still wins over an intrinsic ask.
-	pctx.Mode = StaticMode(ModeDefault)
-	bash.intrinsic = Decision{Behavior: Ask}
-	if got := Check(pctx, bash, PermissionRequest{Specifier: "git commit"}); got.Behavior != Allow {
-		t.Errorf("allowed Bash in default mode: behavior = %q, want allow", got.Behavior)
-	}
-}
-
 func TestCheckFallsThroughToIntrinsic(t *testing.T) {
-	pctx := Context{Mode: StaticMode(ModeDefault)}
-	tool := fakeTool{name: "Write", intrinsic: Decision{Behavior: Ask}}
-	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Ask {
-		t.Errorf("behavior = %q, want ask", got.Behavior)
+	pctx := Context{Mode: StaticMode(ModePlan)}
+	tool := fakeTool{name: "Write", intrinsic: Decision{Behavior: Deny, Message: "read-only"}}
+	got := Check(pctx, tool, PermissionRequest{})
+	if got.Behavior != Deny || got.Message != "read-only" {
+		t.Errorf("decision = %+v, want the tool's own deny", got)
 	}
 }
 
-// TestCheckModeIsLive pins the actual bug we fixed: a Context built once at
-// turn start used to freeze the mode for every inner permission check, so a
-// `/mode bypass` mid-turn didn't take effect until the next TUI turn —
-// painful in a long /goal iteration. Now Mode is a function that re-reads
-// the live session setting on every Check.
-func TestCheckModeIsLive(t *testing.T) {
-	current := ModeDefault
-	pctx := Context{Mode: func() Mode { return current }}
-	tool := fakeTool{name: "Write", intrinsic: Decision{Behavior: Ask}}
+// A zero-value Context is what a test or an embedding caller builds when it
+// has no session to read a mode from. It must not land on a mode that blocks
+// ordinary work: the host gate runs ahead of this package and is unaffected by
+// the mode, so there is nothing for a restrictive default to protect.
+func TestZeroValueContextIsAutonomous(t *testing.T) {
+	if got := CurrentMode(Context{}); got != ModeAutonomous {
+		t.Errorf("CurrentMode(zero) = %q, want autonomous", got)
+	}
+}
 
-	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Ask {
-		t.Fatalf("default mode: behavior = %q, want ask", got.Behavior)
+// TestCheckModeIsLive pins the bug this shape exists to prevent: a Context
+// built once at turn start used to freeze the mode for every inner check, so
+// a `/mode bypass` mid-turn didn't take effect until the next TUI turn —
+// painful in a long /goal iteration. Mode is a function that re-reads the
+// live session setting on every Check.
+func TestCheckModeIsLive(t *testing.T) {
+	current := ModePlan
+	pctx := Context{Mode: func() Mode { return current }}
+	tool := fakeTool{name: "Write", intrinsic: Decision{Behavior: Deny}}
+
+	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Deny {
+		t.Fatalf("plan mode: behavior = %q, want deny", got.Behavior)
 	}
 	// Flip the live source between calls — same Context, new mode picked up.
 	current = ModeBypassPermissions
 	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Allow {
 		t.Errorf("after live flip to bypass: behavior = %q, want allow", got.Behavior)
 	}
-	current = ModeDefault
-	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Ask {
-		t.Errorf("after live flip back to default: behavior = %q, want ask", got.Behavior)
+	current = ModePlan
+	if got := Check(pctx, tool, PermissionRequest{}); got.Behavior != Deny {
+		t.Errorf("after live flip back to plan: behavior = %q, want deny", got.Behavior)
 	}
 }
 
-func TestRulePrefixMatch(t *testing.T) {
-	r := Rule{Tool: "Bash", Specifier: "npm run:*"}
-	if !r.matches("Bash", "npm run build") {
-		t.Error("expected prefix match for 'npm run:*'")
+// The legacy modes are gone, not merely unlisted. A config carrying one must
+// fail loudly at startup rather than resolve to something that looks like it
+// worked.
+func TestLegacyModesAreNoLongerValid(t *testing.T) {
+	for _, m := range []Mode{"default", "acceptEdits", "dontAsk"} {
+		if m.Valid() {
+			t.Errorf("mode %q is still valid", m)
+		}
 	}
-	if r.matches("Bash", "npm install") {
-		t.Error("did not expect match for 'npm install'")
-	}
-}
-
-// TestRuleMCPServerScope pins the MCP rule forms the JS reference documents:
-// "mcp__<server>" and "mcp__<server>__*" cover every tool on that server, while
-// "mcp__<server>__<tool>" covers just the one. Before this, a config that
-// allowed "mcp__loki" matched nothing — the rule tool name was compared for
-// equality against "mcp__loki__loki_query" — so a headless embedder that
-// relied on its allow list was asked anyway (issue: stream-json control_request
-// emitted for an allow-listed MCP tool).
-func TestRuleMCPServerScope(t *testing.T) {
-	tests := []struct {
-		rule string
-		tool string
-		want bool
-	}{
-		{"mcp__loki", "mcp__loki__loki_query", true},
-		{"mcp__loki__*", "mcp__loki__loki_query", true},
-		{"mcp__loki__loki_query", "mcp__loki__loki_query", true},
-		{"mcp__loki", "mcp__loki", true}, // exact name still matches itself
-		// Server scope is the whole server name, not a prefix of it.
-		{"mcp__loki", "mcp__lokitwo__query", false},
-		{"mcp__lok", "mcp__loki__query", false},
-		// One tool's rule does not spread to its siblings.
-		{"mcp__loki__loki_query", "mcp__loki__label_values", false},
-		// Not MCP at all.
-		{"Read", "mcp__loki__loki_query", false},
-		{"mcp__", "mcp__loki__loki_query", false},
-	}
-	for _, tt := range tests {
-		r := Rule{Tool: tt.rule}
-		// MCP tools report their own qualified name as the specifier.
-		if got := r.matches(tt.tool, tt.tool); got != tt.want {
-			t.Errorf("Rule{%q}.matches(%q) = %v, want %v", tt.rule, tt.tool, got, tt.want)
+	for _, m := range SelectableModes() {
+		if !m.Valid() {
+			t.Errorf("selectable mode %q is not valid", m)
 		}
 	}
 }
 
-// TestCheckMCPServerRules runs the server-scoped forms through the full Check
-// flow, in both directions: an allow rule short-circuits the tool's own "ask",
-// and a deny rule wins even under bypassPermissions.
-func TestCheckMCPServerRules(t *testing.T) {
-	tool := fakeTool{name: "mcp__loki__loki_query", intrinsic: Decision{Behavior: Ask}}
-	req := PermissionRequest{Specifier: tool.name}
-
-	allow := Context{Mode: StaticMode(ModeDefault), Allow: []Rule{{Tool: "mcp__loki"}}}
-	if got := Check(allow, tool, req); got.Behavior != Allow {
-		t.Errorf("allow mcp__loki: behavior = %q, want allow", got.Behavior)
+func TestResolveLegacyModes(t *testing.T) {
+	for _, m := range []Mode{"default", "acceptEdits", "dontAsk"} {
+		if got, dep := Resolve(m); got != ModeAutonomous || !dep {
+			t.Errorf("Resolve(%q) = %q, %v; want autonomous, deprecated", m, got, dep)
+		}
 	}
-	other := Context{Mode: StaticMode(ModeDefault), Allow: []Rule{{Tool: "mcp__prom"}}}
-	if got := Check(other, tool, req); got.Behavior != Ask {
-		t.Errorf("allow mcp__prom only: behavior = %q, want ask", got.Behavior)
-	}
-	deny := Context{Mode: StaticMode(ModeBypassPermissions), Deny: []Rule{{Tool: "mcp__loki__*"}}}
-	if got := Check(deny, tool, req); got.Behavior != Deny {
-		t.Errorf("deny mcp__loki__*: behavior = %q, want deny", got.Behavior)
+	for _, m := range []Mode{ModeAutonomous, ModePlan, ModeBypassPermissions, "bogus"} {
+		if got, dep := Resolve(m); got != m || dep {
+			t.Errorf("Resolve(%q) = %q, %v; want unchanged", m, got, dep)
+		}
 	}
 }

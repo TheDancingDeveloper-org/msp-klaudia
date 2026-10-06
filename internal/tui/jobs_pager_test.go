@@ -346,10 +346,6 @@ func TestTrustControllerWrapsARealGate(t *testing.T) {
 	g := &agent.HostGate{Roots: func() trust.Roots { return roots }, Ledger: trust.NewLedger(roots)}
 	tc := NewTrustController(g)
 
-	tc.SetPolicy(agent.HostEnforce)
-	if tc.Policy() != agent.HostEnforce {
-		t.Errorf("policy = %q", tc.Policy())
-	}
 	if len(tc.Reports()) != 0 || len(tc.Grants()) != 0 {
 		t.Error("a fresh gate has history")
 	}

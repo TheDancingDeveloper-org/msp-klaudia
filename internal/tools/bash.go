@@ -13,7 +13,6 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/sandbox"
 	"github.com/greenthread-ai/klaudia/internal/schema"
-	"github.com/greenthread-ai/klaudia/internal/trust"
 )
 
 // bashDefaultTimeout is applied when the model doesn't specify one.
@@ -107,59 +106,7 @@ func (b *Bash) PermissionRequest(raw json.RawMessage) permission.PermissionReque
 			req.Specifier = p
 		}
 	}
-	req.RuleSpecifiers = bashRuleSpecifiers(in.Command)
-	req.Commands, req.Opaque = bashRuleCommands(in.Command, 0)
 	return req
-}
-
-// bashRuleSpecifiers returns the allow-rule specifiers to persist when the user
-// chooses "always allow" for command.
-//
-// A single simple command yields exactly one specifier equal to Prefix() — the
-// same string saved before this change — so a lone command's saved rule is
-// unchanged. A compound line (chained or piped) yields one "program subcommand"
-// short form per distinct command, so that under every-command rule matching
-// (PR #16) each command in the line is individually allowed rather than only
-// the first. Saving a single first-command rule either over-permitted (the old
-// first-command-only matching) or, once rules must match every command, would
-// silently fail to allow the same line next time.
-//
-// It returns nil — the caller then falls back to the single Specifier, the
-// prior behaviour — whenever the line cannot be reduced to a clean set of named
-// commands: a parse error, any parameter expansion or command substitution
-// (its text is not the whole command, so a rule built from it could both
-// over-permit and miss the substituted command), or an inline shell / eval
-// whose payload commands are not enumerated here. In those cases guessing a
-// rule set risks over-permitting and would not reliably allow the line anyway,
-// so the conservative single-rule fallback is preferred.
-func bashRuleSpecifiers(command string) []string {
-	a, err := bashparser.Parse(command)
-	if err != nil || len(a.Commands) == 0 {
-		return nil
-	}
-	// An expansion anywhere means at least one word is not the whole story;
-	// refuse the line rather than name a command from partial text.
-	if a.HasExpansion {
-		return nil
-	}
-	var specs []string
-	seen := make(map[string]bool)
-	for _, c := range a.Commands {
-		// A program that is an expansion, or an inline shell whose script this
-		// pass does not read, cannot be named by a clean rule.
-		if c.Name == "" || !c.NameWord.Literal || isInlineShellCommand(c.Name) {
-			return nil
-		}
-		spec := commandShortForm(c.Name, c.Args)
-		if spec == "" {
-			return nil
-		}
-		if !seen[spec] {
-			seen[spec] = true
-			specs = append(specs, spec)
-		}
-	}
-	return specs
 }
 
 // commandShortForm is a command's "program subcommand" specifier: the program
@@ -197,46 +144,6 @@ const (
 	// maxPayloadDepth bounds the recursion into `bash -c` and eval scripts.
 	maxPayloadDepth = 3
 )
-
-// bashRuleCommands lists the commands a Bash line runs, each with the forms a
-// permission rule may name it by (see permission.PermissionRequest.Commands).
-// opaque is true when some command could not be read.
-func bashRuleCommands(line string, depth int) (cmds [][]string, opaque bool) {
-	if len(line) > maxRuleCommandLen || depth > maxPayloadDepth {
-		return nil, true
-	}
-	a, err := bashparser.Parse(line)
-	if err != nil {
-		return nil, true
-	}
-	for _, c := range a.Commands {
-		if !c.NameWord.Literal {
-			opaque = true // `$CMD rm -rf x` names no program a rule can match
-			continue
-		}
-		forms := commandForms(c.Name, c.Args, nil)
-		name, args, ok := trust.Unwrapped(c)
-		if !ok {
-			opaque = true // a wrapper around an expansion: `sudo "$X" …`
-			cmds = append(cmds, forms)
-			continue
-		}
-		cmds = append(cmds, commandForms(name, args, forms))
-		// The script of `bash -c` or eval — found after unwrapping, so
-		// `sudo bash -c '…'` is read too — runs commands of its own, each
-		// checked like the rest. One that is an expansion cannot be read.
-		if payload, isShell := bashparser.ShellPayload(name, args); isShell {
-			if hasExpansion(c.ArgWords) {
-				opaque = true
-				continue
-			}
-			inner, innerOpaque := bashRuleCommands(payload, depth+1)
-			cmds = append(cmds, inner...)
-			opaque = opaque || innerOpaque
-		}
-	}
-	return cmds, opaque
-}
 
 // hasExpansion reports whether any word is an expansion rather than literal.
 func hasExpansion(words []bashparser.Word) bool {
@@ -575,7 +482,7 @@ func formatBashOutput(resp sandbox.Response, command string) (model, full string
 		// The spill file is the *model's* escape hatch to the elided middle —
 		// it can Read or grep the path. The UI doesn't need it: `full` carries
 		// the same text in memory.
-		if path, ok := spillOutput(raw); ok {
+		if path, ok := spillOutput("bash", raw); ok {
 			out += "\n" + spillMarker + path + "]"
 		}
 		full = raw

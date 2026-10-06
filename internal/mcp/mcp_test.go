@@ -36,7 +36,7 @@ func startTestServer(t *testing.T) (*Manager, func()) {
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	server, err := ConnectTransport(ctx, "testsrv", clientT)
+	server, err := ConnectTransport(ctx, "testsrv", clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestLoadConfigHandlesProjectDirEqualToConfigRoot(t *testing.T) {
 
 func TestConnectServerRejectsEmptyConfig(t *testing.T) {
 	// No command and no url → a clear error, without attempting any connection.
-	if _, err := connectServer(context.Background(), "bad", ServerConfig{}, nil); err == nil {
+	if _, err := connectServer(context.Background(), "bad", ServerConfig{}, nil, nil); err == nil {
 		t.Error("expected error for a config with neither command nor url")
 	}
 }
@@ -374,7 +374,7 @@ func TestToolsCarryTheReadOnlyHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client, err := ConnectTransport(ctx, "annotated", clientT)
+	client, err := ConnectTransport(ctx, "annotated", clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestReadOnlyFalseRefusesToBelieveTheServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
-	client, err := ConnectTransport(ctx, "boastful", clientT)
+	client, err := ConnectTransport(ctx, "boastful", clientT, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}

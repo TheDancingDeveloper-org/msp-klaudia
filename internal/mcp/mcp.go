@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -240,6 +241,17 @@ type Server struct {
 	session *mcpsdk.ClientSession
 	// listErr is why the last tools/list failed, or nil.
 	listErr error
+
+	// reviveMu serialises automatic relaunches of this one server, and
+	// lastRevive rate-limits them. Both are needed because the attempt can come
+	// from anywhere: two tool calls, or a tool call and /mcp, arriving together
+	// would otherwise each spawn a child process and close one of them.
+	reviveMu   sync.Mutex
+	lastRevive time.Time
+	// parked is set by an explicit Disconnect (/mcp) and cleared by
+	// Reconnect. Automatic revival leaves a parked server alone: the user
+	// turned it off, and a tool call is not a request to turn it back on.
+	parked atomic.Bool
 }
 
 // sess returns the live session, or nil when the server is disconnected.
@@ -301,7 +313,28 @@ func (s *Server) alive(ctx context.Context) bool {
 	return sess.Ping(ctx, nil) == nil
 }
 
-func newClient(opts *mcpsdk.ClientOptions) *mcpsdk.Client {
+// newClient builds the MCP client for one server. opts carries the
+// Manager's per-session handlers (tools/list_changed); it may be nil.
+//
+// Capabilities are set explicitly, which also drops the SDK's default
+// "roots":{"listChanged":true}. Klaudia never registers a root, so that default
+// advertised a feature whose only possible answer was an empty list — and roots
+// is deprecated as of protocol 2026-07-28 anyway. Elicitation is advertised
+// form-only, and only when there is a frontend to carry the question; see
+// elicit.go.
+func newClient(name string, opts *mcpsdk.ClientOptions, el *Elicitor) *mcpsdk.Client {
+	o := mcpsdk.ClientOptions{}
+	if opts != nil {
+		o = *opts
+	}
+	opts = &o
+	opts.Capabilities = &mcpsdk.ClientCapabilities{}
+	if h := el.handlerFor(name); h != nil {
+		opts.ElicitationHandler = h
+		opts.Capabilities.Elicitation = &mcpsdk.ElicitationCapabilities{
+			Form: &mcpsdk.FormElicitationCapabilities{},
+		}
+	}
 	return mcpsdk.NewClient(&mcpsdk.Implementation{Name: "klaudia", Version: version.Version}, opts)
 }
 
@@ -313,8 +346,9 @@ func newClient(opts *mcpsdk.ClientOptions) *mcpsdk.Client {
 //
 // opts carries the client options (e.g. the tools/list_changed handler) the
 // Manager wants on this session. It may be nil — tests and callers that do not
-// need server-initiated notifications pass nothing.
-func connectServer(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions) (*Server, error) {
+// need server-initiated notifications pass nothing. el, when non-nil, lets
+// the server ask the user a question (elicitation).
+func connectServer(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions, el *Elicitor) (*Server, error) {
 	// Remember what each ${VAR} resolved to, so a failure can be reported
 	// without it: a URL or argument carrying a token ends up in the SDK's
 	// error text (and a server may echo it to stderr, which is appended), and
@@ -327,14 +361,14 @@ func connectServer(ctx context.Context, name string, cfg ServerConfig, opts *mcp
 		}
 		return v, ok
 	}
-	srv, err := connectExpanded(ctx, name, cfg, lookup, opts)
+	srv, err := connectExpanded(ctx, name, cfg, lookup, opts, el)
 	if err != nil {
 		return nil, redactValues(err, resolved)
 	}
 	return srv, nil
 }
 
-func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup func(string) (string, bool), opts *mcpsdk.ClientOptions) (*Server, error) {
+func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup func(string) (string, bool), opts *mcpsdk.ClientOptions, el *Elicitor) (*Server, error) {
 	cfg, err := expandServerConfig(name, cfg, lookup)
 	if err != nil {
 		return nil, err
@@ -360,19 +394,19 @@ func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup 
 		}
 		switch strings.ToLower(strings.TrimSpace(cfg.Type)) {
 		case "sse":
-			return connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
+			return connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts, el)
 		case "http", "streamable":
-			return connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
+			return connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts, el)
 		}
 		// Type unset: try streamable HTTP, and if the server does not speak
 		// it, the legacy SSE transport. Plenty of deployed servers are
 		// SSE-only, and a config written for another client often gives no
 		// type; they used to fail here with an HTTP error and no hint.
-		srv, err := connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts)
+		srv, err := connectTransport(ctx, name, &mcpsdk.StreamableClientTransport{Endpoint: url, HTTPClient: httpClient}, opts, el)
 		if err == nil || ctx.Err() != nil {
 			return srv, err
 		}
-		if sseSrv, sseErr := connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts); sseErr == nil {
+		if sseSrv, sseErr := connectTransport(ctx, name, &mcpsdk.SSEClientTransport{Endpoint: url, HTTPClient: httpClient}, opts, el); sseErr == nil {
 			return sseSrv, nil
 		}
 		return nil, fmt.Errorf("%w (legacy SSE was tried too; set \"type\" to choose one)", err)
@@ -380,15 +414,16 @@ func connectExpanded(ctx context.Context, name string, cfg ServerConfig, lookup 
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, fmt.Errorf("mcp %q: config has neither command (stdio) nor url (http)", name)
 	}
-	return connectCommand(ctx, name, cfg, opts)
+	return connectCommand(ctx, name, cfg, opts, el)
 }
 
-// ConnectCommand spawns a stdio MCP server and connects to it.
-func ConnectCommand(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
-	return connectCommand(ctx, name, cfg, nil)
+// ConnectCommand spawns a stdio MCP server and connects to it. A nil Elicitor
+// advertises no elicitation capability.
+func ConnectCommand(ctx context.Context, name string, cfg ServerConfig, el *Elicitor) (*Server, error) {
+	return connectCommand(ctx, name, cfg, nil, el)
 }
 
-func connectCommand(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions) (*Server, error) {
+func connectCommand(ctx context.Context, name string, cfg ServerConfig, opts *mcpsdk.ClientOptions, el *Elicitor) (*Server, error) {
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Env = os.Environ()
 	for k, v := range cfg.Env {
@@ -396,7 +431,7 @@ func connectCommand(ctx context.Context, name string, cfg ServerConfig, opts *mc
 	}
 	stderr := newServerStderr(name)
 	cmd.Stderr = stderr
-	srv, err := connectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd}, opts)
+	srv, err := connectTransport(ctx, name, &mcpsdk.CommandTransport{Command: cmd}, opts, el)
 	if err != nil {
 		// A failed connect has closed the transport and waited for the child,
 		// so its stderr has been drained: what it said is why it failed.
@@ -409,13 +444,14 @@ func connectCommand(ctx context.Context, name string, cfg ServerConfig, opts *mc
 }
 
 // ConnectTransport connects to a server over an arbitrary transport (used by
-// command servers and by tests via an in-memory transport).
-func ConnectTransport(ctx context.Context, name string, t mcpsdk.Transport) (*Server, error) {
-	return connectTransport(ctx, name, t, nil)
+// command servers and by tests via an in-memory transport). A nil Elicitor
+// advertises no elicitation capability.
+func ConnectTransport(ctx context.Context, name string, t mcpsdk.Transport, el *Elicitor) (*Server, error) {
+	return connectTransport(ctx, name, t, nil, el)
 }
 
-func connectTransport(ctx context.Context, name string, t mcpsdk.Transport, opts *mcpsdk.ClientOptions) (*Server, error) {
-	session, err := newClient(opts).Connect(ctx, t, nil)
+func connectTransport(ctx context.Context, name string, t mcpsdk.Transport, opts *mcpsdk.ClientOptions, el *Elicitor) (*Server, error) {
+	session, err := newClient(name, opts, el).Connect(ctx, t, nil)
 	if err != nil {
 		return nil, fmt.Errorf("mcp %q connect: %w", name, err)
 	}
@@ -431,6 +467,16 @@ type Manager struct {
 	servers []*Server
 	cfg     Config
 	ctx     context.Context
+
+	// elicitor is handed to every client this manager builds, including the
+	// ones a reload or a revive builds, so a relaunched server keeps the
+	// ability to ask the user things. Nil in a headless run.
+	elicitor *Elicitor
+
+	// connectFn is how a server is launched, as a field so a test can relaunch
+	// one without a real binary on PATH. Nothing in production sets it; nil
+	// means connectServer with the Manager's client options.
+	connectFn func(ctx context.Context, name string, cfg ServerConfig, el *Elicitor) (*Server, error)
 
 	// onToolsChanged, when set, is called after a server sends
 	// notifications/tools/list_changed. It lets the host rebuild its tool
@@ -483,7 +529,18 @@ func (m *Manager) clientOptions() *mcpsdk.ClientOptions {
 // server the Manager brings up (at startup, on reconnect, or on reload) reports
 // tool-list changes back to the Manager.
 func (m *Manager) connect(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
-	return connectServer(ctx, name, cfg, m.clientOptions())
+	return m.dial(ctx, name, cfg)
+}
+
+// dial launches one server through whatever connect is in force.
+func (m *Manager) dial(ctx context.Context, name string, cfg ServerConfig) (*Server, error) {
+	m.mu.RLock()
+	fn, el := m.connectFn, m.elicitor
+	m.mu.RUnlock()
+	if fn == nil {
+		return connectServer(ctx, name, cfg, m.clientOptions(), el)
+	}
+	return fn(ctx, name, cfg, el)
 }
 
 // Connect launches and connects every server in cfg. Servers that fail to
@@ -494,8 +551,11 @@ func (m *Manager) connect(ctx context.Context, name string, cfg ServerConfig) (*
 // one after another with no deadline, so one server that never answered its
 // initialize held up startup indefinitely, and every server's start-up time
 // added to Klaudia's.
-func Connect(ctx context.Context, cfg Config) (*Manager, []error) {
-	m := &Manager{cfg: cfg, ctx: ctx}
+//
+// A nil Elicitor means servers cannot ask the user anything, which is what a
+// headless run wants.
+func Connect(ctx context.Context, cfg Config, el *Elicitor) (*Manager, []error) {
+	m := &Manager{cfg: cfg, ctx: ctx, elicitor: el}
 	// Deterministic order for stable tool lists.
 	names := make([]string, 0, len(cfg.MCPServers))
 	for n := range cfg.MCPServers {
@@ -616,6 +676,7 @@ func (m *Manager) Disconnect(name string) error {
 	if s == nil {
 		return fmt.Errorf("no such MCP server %q", name)
 	}
+	s.parked.Store(true)
 	if prev := s.swapSession(nil); prev != nil {
 		return prev.Close()
 	}
@@ -633,6 +694,7 @@ func (m *Manager) Reconnect(name string) error {
 	if !ok {
 		return fmt.Errorf("no launch config for MCP server %q", name)
 	}
+	s.parked.Store(false)
 	if prev := s.swapSession(nil); prev != nil {
 		_ = prev.Close()
 	}
@@ -735,6 +797,47 @@ func (m *Manager) Reload(ctx context.Context, cfg Config) []error {
 
 // reconnectTimeout bounds a single /mcp reconnect attempt.
 const reconnectTimeout = 10 * time.Second
+
+// reviveCooldown is the minimum gap between automatic relaunches of one
+// server. A server that cannot start — a bad command, a missing binary — would
+// otherwise pay a full launch timeout on every tool call the model makes, which
+// turns one misconfigured entry into a stalled session.
+const reviveCooldown = 15 * time.Second
+
+// revive brings a server back if it has died, and reports whether a usable
+// session exists afterwards.
+//
+// This is what makes a crashed server recoverable without the user doing
+// anything. A stdio server whose child process exits keeps a non-nil
+// ClientSession — nothing nils it out — so until now the first sign was a tool
+// call failing, and the only cure was /mcp or a restart: editing .mcp.json did
+// not help, because a reload leaves an unchanged entry alone.
+//
+// The liveness probe comes first and decides everything. An ordinary call
+// error — bad arguments, a tool that does not exist — must not restart a
+// perfectly healthy server, so a relaunch happens only when the server has
+// actually stopped answering.
+func (m *Manager) revive(ctx context.Context, s *Server) bool {
+	if s == nil || s.parked.Load() {
+		return false
+	}
+	s.reviveMu.Lock()
+	defer s.reviveMu.Unlock()
+
+	// Re-probe under the lock: whoever held it before us may have already
+	// fixed this, and a second relaunch would kill the session they just made.
+	if s.alive(ctx) {
+		return true
+	}
+	if time.Since(s.lastRevive) < reviveCooldown {
+		return false
+	}
+	s.lastRevive = time.Now()
+	if err := m.Reconnect(s.Name); err != nil {
+		return false
+	}
+	return s.alive(ctx)
+}
 
 // livenessTimeout bounds the per-server health probe a reload runs before
 // deciding an unchanged server can be left alone. It is short because it is

@@ -31,7 +31,7 @@ func TestDeclareOnceThenSilence(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			asked++
 			card = req.HostChange
@@ -42,7 +42,7 @@ func TestDeclareOnceThenSilence(t *testing.T) {
 		raw, _ := json.Marshal(input)
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: name, Input: json.RawMessage(raw)}
 		return resultText(l.dispatch(context.Background(), tu, opts, nil, nil,
-			map[string]int{}, map[string]errStreak{}))
+			newFailureState()))
 	}
 
 	out := run("RequestHostChange", map[string]any{
@@ -97,7 +97,7 @@ func TestDriftAsksAgainAndSaysSo(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			cards = append(cards, req.HostChange)
 			return permission.Decision{Behavior: permission.Allow}
@@ -107,7 +107,7 @@ func TestDriftAsksAgainAndSaysSo(t *testing.T) {
 		raw, _ := json.Marshal(input)
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: name, Input: json.RawMessage(raw)}
 		return resultText(l.dispatch(context.Background(), tu, opts, nil, nil,
-			map[string]int{}, map[string]errStreak{}))
+			newFailureState()))
 	}
 
 	run("RequestHostChange", map[string]any{
@@ -143,7 +143,7 @@ func TestDeclinedDeclarationDoesNotMintAGrant(t *testing.T) {
 	opts := Options{
 		WorkingDir: proj,
 		Host:       g,
-		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeDefault)},
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			return permission.Decision{Behavior: permission.Deny}
 		}),
@@ -153,7 +153,7 @@ func TestDeclinedDeclarationDoesNotMintAGrant(t *testing.T) {
 	})
 	body := resultText(l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t", Name: "RequestHostChange", Input: json.RawMessage(raw)},
-		opts, nil, nil, map[string]int{}, map[string]errStreak{}))
+		opts, nil, nil, newFailureState()))
 
 	if !strings.Contains(body, "declined") {
 		t.Fatalf("result did not report the decline: %s", body)

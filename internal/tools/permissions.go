@@ -7,39 +7,32 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
 
-// editClassDecision is the intrinsic permission decision for file-mutating
-// tools (Write, Edit, NotebookEdit): auto-accepted under acceptEdits, blocked
-// in read-only plan mode, denied under dontAsk, otherwise ask. (bypass is
-// handled upstream by permission.Check.)
+// The intrinsic decisions below are what is left of per-tool permission once
+// zones took over. Only plan mode has anything to say: it is read-only
+// exploration, so the three categories of side effect are each refused with a
+// message naming what was blocked. Everything else runs.
+//
+// bypassPermissions never reaches here — permission.Check short-circuits it.
+// A change to this machine never reaches here either; agent.dispatch runs the
+// host gate first, and it does not consult the mode.
+
+// editClassDecision is the intrinsic decision for file-mutating tools
+// (Write, Edit, NotebookEdit).
 func editClassDecision(pctx permission.Context) permission.Decision {
-	switch permission.CurrentMode(pctx) {
-	case permission.ModeAutonomous, permission.ModeAcceptEdits:
-		return permission.Decision{Behavior: permission.Allow}
-	case permission.ModePlan:
+	if permission.CurrentMode(pctx) == permission.ModePlan {
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; file modifications are not allowed"}
-	case permission.ModeDontAsk:
-		return permission.Decision{Behavior: permission.Deny, Message: "not pre-approved (dontAsk mode)"}
-	default:
-		return permission.Decision{Behavior: permission.Ask}
 	}
+	return permission.Decision{Behavior: permission.Allow}
 }
 
 // execClassDecision is the intrinsic decision for command-executing tools
-// (Bash): acceptEdits does NOT auto-accept execution, plan blocks it, dontAsk
-// denies, otherwise ask.
+// (Bash). Running commands is the job; what a command may reach is decided by
+// the host gate before this is consulted.
 func execClassDecision(pctx permission.Context) permission.Decision {
-	switch permission.CurrentMode(pctx) {
-	case permission.ModeAutonomous:
-		// Running commands is the job. What a command may reach is decided by
-		// the host gate before this is consulted, not by asking here.
-		return permission.Decision{Behavior: permission.Allow}
-	case permission.ModePlan:
+	if permission.CurrentMode(pctx) == permission.ModePlan {
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; command execution is not allowed"}
-	case permission.ModeDontAsk:
-		return permission.Decision{Behavior: permission.Deny, Message: "not pre-approved (dontAsk mode)"}
-	default:
-		return permission.Decision{Behavior: permission.Ask}
 	}
+	return permission.Decision{Behavior: permission.Allow}
 }
 
 // allowAlways is the intrinsic decision for read-only / side-effect-free tools
@@ -50,22 +43,14 @@ func allowAlways(permission.Context) permission.Decision {
 
 // networkClassDecision is the intrinsic decision for tools that reach the
 // network or drive a real browser with a persistent profile (BrowserSearch,
-// BrowserFetch, BrowserNavigate, BrowserSnapshot). These are NOT side-effect-free,
-// so they are blocked in read-only plan mode, denied under dontAsk, and
-// otherwise ask (acceptEdits does not auto-accept — that's only for file
-// edits). Users can pre-approve with an allow rule, e.g. /allow BrowserSearch.
+// BrowserFetch, BrowserNavigate, BrowserSnapshot). Fetching things is ordinary
+// work and changes nothing on this machine, but it is not side-effect-free, so
+// read-only plan mode still refuses it.
 func networkClassDecision(pctx permission.Context) permission.Decision {
-	switch permission.CurrentMode(pctx) {
-	case permission.ModeAutonomous:
-		// Fetching things is ordinary work and changes nothing on this machine.
-		return permission.Decision{Behavior: permission.Allow}
-	case permission.ModePlan:
+	if permission.CurrentMode(pctx) == permission.ModePlan {
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; web/network access is not allowed"}
-	case permission.ModeDontAsk:
-		return permission.Decision{Behavior: permission.Deny, Message: "not pre-approved (dontAsk mode)"}
-	default:
-		return permission.Decision{Behavior: permission.Ask}
 	}
+	return permission.Decision{Behavior: permission.Allow}
 }
 
 // execGrantingDirs and execGrantingFiles are project paths whose contents run
@@ -112,33 +97,10 @@ func editPathDecision(pctx permission.Context, path string) permission.Decision 
 	return d
 }
 
-// pathRequest is the permission request for a tool acting on path. The
-// specifier stays the path as written (it names the request in prompts and
-// "always allow" rules); the forms rules are checked against add the absolute
-// path and, when a symlink is involved, the path it resolves to — so a rule
-// for ~/.ssh/** also covers ./link-to-ssh/id_rsa.
+// pathRequest is the permission request for a tool acting on path: the path
+// as written, which names the request when a frontend shows it.
 func pathRequest(path string) permission.PermissionRequest {
-	if path == "" {
-		return permission.PermissionRequest{}
-	}
-	forms := []string{path}
-	add := func(f string) {
-		for _, have := range forms {
-			if have == f {
-				return
-			}
-		}
-		forms = append(forms, f)
-	}
-	if abs, err := filepath.Abs(path); err == nil {
-		add(abs)
-		if real, err := filepath.EvalSymlinks(abs); err == nil {
-			add(real)
-		} else if dir, err := filepath.EvalSymlinks(filepath.Dir(abs)); err == nil {
-			add(filepath.Join(dir, filepath.Base(abs))) // a new file in a linked directory
-		}
-	}
-	return permission.PermissionRequest{Specifier: path, Commands: [][]string{forms}}
+	return permission.PermissionRequest{Specifier: path}
 }
 
 func firstNonEmptyPath(p, fallback string) string {

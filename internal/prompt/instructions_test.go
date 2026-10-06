@@ -52,8 +52,8 @@ func TestInstructionsWorkspaceShape(t *testing.T) {
 	}
 }
 
-// AGENTS.md stands in for a missing CLAUDE.md, and only then.
-func TestInstructionsAgentsFallback(t *testing.T) {
+// AGENTS.md is read alone, and alongside a CLAUDE.md beside it (generic first).
+func TestInstructionsAgentsAndClaude(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("KLAUDIA_CONFIG_DIR", "") // follow the pinned HOME (hermetic.sh sets it)
 	dir := t.TempDir()
@@ -63,8 +63,9 @@ func TestInstructionsAgentsFallback(t *testing.T) {
 	}
 	write(t, filepath.Join(dir, "CLAUDE.md"), "From CLAUDE.")
 	got := loadProjectInstructions(dir)
-	if !strings.Contains(got, "From CLAUDE.") || strings.Contains(got, "From AGENTS.") {
-		t.Errorf("with both, want CLAUDE.md only:\n%s", got)
+	if !strings.Contains(got, "From CLAUDE.") || !strings.Contains(got, "From AGENTS.") ||
+		strings.Index(got, "From AGENTS.") > strings.Index(got, "From CLAUDE.") {
+		t.Errorf("with both, want AGENTS.md then CLAUDE.md:\n%s", got)
 	}
 }
 

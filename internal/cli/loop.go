@@ -29,8 +29,11 @@ import (
 // sign the agent is spinning.
 const loopStallLimit = 3
 
-// loopRun bundles the already-built run state the goal loop reuses (set up once
-// in run() like the single-shot headless path).
+// loopRun bundles what the goal loop needs beyond the shared run closure. The
+// closure (built in run(), like every other frontend's) carries the model,
+// system prompt, tools and permission context, so this holds only what the loop
+// itself reasons about: where the project is, that the mode can run unattended,
+// how many iterations are allowed, and where output goes.
 type loopRun struct {
 	loop         *agent.Loop
 	cwd          string
