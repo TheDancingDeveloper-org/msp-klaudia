@@ -27,6 +27,9 @@ extras we lean on day to day:
 
 ### Install
 
+Requires **Go 1.26 or newer** (`go.mod` says `go 1.26`; older toolchains stop
+with a version error or try to download a newer one). Check with `go version`.
+
 ```bash
 go install github.com/greenthread-ai/klaudia/cmd/klaudia@main
 ```
@@ -134,7 +137,8 @@ Once the TUI starts, type `/doctor` to verify auth and environment status.
 
 ## Build
 
-Pure Go, no CGO, no system libraries:
+Pure Go, no CGO, no system libraries. Needs Go 1.26+ (the `go` line in
+`go.mod`):
 
 ```bash
 CGO_ENABLED=0 go install ./cmd/klaudia   # or: go build -o klaudia ./cmd/klaudia
@@ -1123,6 +1127,9 @@ Two complementary modes for working toward an objective:
     changed. Opt-ins: `/goal run [N] commit` commits the pre-existing changes
     to the goal branch first, as a commit of their own; `/goal run [N] refuse`
     does not start if there are any.
+  - The loop is `/goal run` in the TUI and `--loop` on the command line;
+    there is no `klaudia goal` subcommand (`klaudia goal run` is refused rather
+    than run as a prompt).
   - Headless/scriptable: `klaudia --loop --permission-mode autonomous
     [--max-iterations N] [--loop-dirty allow|commit|refuse]` runs the same loop
     without the TUI (each iteration with a fresh context). It needs a spec in

@@ -112,3 +112,22 @@ func TestNewRootCommandRegistersFlags(t *testing.T) {
 		}
 	}
 }
+
+// `klaudia goal run` used to run "goal run" as a headless prompt (#248).
+func TestGoalSubcommandShapedPromptIsAUsageError(t *testing.T) {
+	for _, args := range [][]string{{"goal"}, {"goal", "run"}, {"goal", "run", "5"}, {"Goal", "stop"}, {"goal run"}} {
+		if !looksLikeGoalSubcommand(args) {
+			t.Errorf("%q not caught", args)
+		}
+	}
+	for _, args := range [][]string{{"goal:", "fix", "the", "build"}, {"goal", "run", "the", "tests"}, {"explain", "goal", "run"}, {"run"}} {
+		if looksLikeGoalSubcommand(args) {
+			t.Errorf("%q is a real prompt but was refused", args)
+		}
+	}
+	e := newCLIEnv(t, newFakeModel(t))
+	r := e.run(nil, "goal", "run")
+	if r.Err == nil || !isUsageError(r.Err) || !strings.Contains(r.Err.Error(), "--loop") {
+		t.Fatalf("err = %v, want a usage error pointing at --loop", r.Err)
+	}
+}

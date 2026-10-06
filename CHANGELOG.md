@@ -16,6 +16,12 @@ port mirrors (see `internal/version`).
   models it serves, names the bare id to use. The README and starter config no
   longer show `model = "openai/gpt-5.5"`, which read as "prefix with the
   provider" and broke every endpoint that lists bare ids.
+- **`klaudia goal run` no longer runs as a prompt** (#248). There is no goal
+  subcommand, so it used to run "goal run" headless. `goal`, `goal run [N]`,
+  `goal stop` and `goal clear` as the whole positional prompt are now a usage
+  error naming `--loop`, and `klaudia --help` describes the loop. The README
+  states the Go 1.26 floor.
+
 ### Added
 - **A documented, versioned embedding contract** (#247). `docs/embedding.md`
   pins the stream-json protocol for drivers and orchestrators: which line types
@@ -26,7 +32,6 @@ port mirrors (see `internal/version`).
   JSON (before reading any config) so a driver can feature-detect, and
   `TestEmbeddingContract` fails when an embedded run stops matching the
   document.
-
 ### Security
 - **The goal loop can no longer discard uncommitted work that predates it.**
   Its first production run undid a one-line change of its own with

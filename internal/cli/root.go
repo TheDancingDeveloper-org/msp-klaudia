@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -964,6 +965,12 @@ func NewRootCommand() *cobra.Command {
 With no prompt it opens the interactive TUI. A positional prompt is shorthand
 for -p: it runs headless, prints the result and exits.
 
+Autonomous goal loop: write a spec with /goal in the TUI (or by hand in
+.klaudia/GOAL.md), then iterate on it with /goal run [N] in the TUI, or headless:
+  klaudia --loop --permission-mode autonomous [--max-iterations N]
+         [--loop-dirty allow|commit|refuse]
+There is no "goal" subcommand: "klaudia goal run" would be a prompt.
+
 Shell completion: klaudia completion bash|zsh|fish|powershell
 (each prints its install steps with --help).`,
 		// The first line is the reference-compatible "2.1.66-klaudia (Klaudia)";
@@ -976,6 +983,11 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 			// A positional prompt is shorthand for -p "<prompt>". Every word
 			// is the prompt, so `klaudia explain this code` needs no quotes.
 			if opts.prompt == "" && len(args) > 0 {
+				if looksLikeGoalSubcommand(args) {
+					return usageErrorf("there is no `goal` subcommand — %q would run as a prompt. "+
+						"In the TUI use /goal (write the spec) and /goal run [N]; headless, run the loop with "+
+						"klaudia --loop --permission-mode autonomous [--max-iterations N] (see klaudia --help)", strings.Join(args, " "))
+				}
 				opts.prompt = strings.Join(args, " ")
 				opts.print = true
 			}
@@ -2049,6 +2061,33 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		return exitError{ExitError}
 	}
 	return nil
+}
+
+// goalSubcommandWords are what someone reaching for a `klaudia goal …`
+// subcommand types after "goal": the TUI's /goal arguments.
+// (`klaudia goal --help` never gets here: cobra answers --help with the root
+// help, which describes the loop.)
+var goalSubcommandWords = map[string]bool{"run": true, "stop": true, "clear": true}
+
+// looksLikeGoalSubcommand reports whether a positional prompt is really an
+// attempt at a goal subcommand ("goal", "goal run 5"), which would otherwise
+// run as a headless prompt with that text (#248). A real prompt that starts
+// with the word goal ("goal: fix the build") has more to say than this.
+func looksLikeGoalSubcommand(args []string) bool {
+	words := strings.Fields(strings.Join(args, " "))
+	if len(words) == 0 || strings.ToLower(words[0]) != "goal" {
+		return false
+	}
+	switch len(words) {
+	case 1:
+		return true
+	case 2:
+		return goalSubcommandWords[strings.ToLower(words[1])]
+	case 3:
+		_, err := strconv.Atoi(words[2])
+		return strings.ToLower(words[1]) == "run" && err == nil
+	}
+	return false
 }
 
 // usageErrorf reports an invocation mistake: a bad flag combination, an
