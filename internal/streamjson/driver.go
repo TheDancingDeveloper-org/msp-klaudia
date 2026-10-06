@@ -626,9 +626,10 @@ func decodeUserContent(raw json.RawMessage) string {
 // embedder ever saw, and one that only read the result (msp-agent) reported
 // 0→0 tokens for every turn.
 //
-// session_id and duration_ms are the -p result's fields of the same names.
-// total_cost_usd is left out rather than sent as the -p path's placeholder 0:
-// Klaudia does not price a turn yet, and a zero reads as "this was free".
+// session_id, duration_ms and total_cost_usd are the -p result's fields of the
+// same names. total_cost_usd comes from api.CostUSD and is 0 for a model with
+// no price entry (every OpenAI-compatible model) — 0 means "unpriced", not
+// "free"; the usage counts are the reliable figure.
 //
 // An interrupted turn reports error_during_execution with a result that says
 // it was interrupted, rather than the bare context error.

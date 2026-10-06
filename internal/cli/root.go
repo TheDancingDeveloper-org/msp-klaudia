@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -714,6 +715,7 @@ type options struct {
 	disallowedTools []string
 	partialMessages bool   // --include-partial-messages
 	createConfig    string // --create-config global|local
+	capabilities    bool   // --capabilities: print the embedding capabilities as JSON and exit
 	trustProject    bool   // --trust-project: apply this folder's .klaudia/config.toml in full
 	// trustedProjectConfig applies ./.klaudia/config.toml in full for this run
 	// only: for a launcher that wrote the file itself.
@@ -1017,6 +1019,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.trustedProjectConfig, "trusted-project-config", false, "Apply ./.klaudia/config.toml in full for this run without adding the folder to the trust list — for a launcher that wrote that file itself")
 	f.BoolVar(&opts.trustProject, "trust-project", false, "Trust the current folder so its .klaudia/config.toml applies in full (permission mode and rules, trust, sandbox, provider endpoint and keys), and exit")
 	f.BoolVar(&opts.safeMode, "safe-mode", false, "Start without anything this project supplies: its .klaudia/config.toml, .mcp.json servers, skills, CLAUDE.md, memory and knowledge. For opening an unfamiliar repository or getting past a broken project config")
+	f.BoolVar(&opts.capabilities, "capabilities", false, "Print what this binary supports (stream-json protocol version, control requests, result fields, permission modes) as JSON and exit — for drivers that embed Klaudia (docs/embedding.md)")
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml, or $KLAUDIA_CONFIG_DIR/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
@@ -1104,6 +1107,18 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// shares it with a launch from the top. Everything else, tools included,
 	// runs in cwd.
 	root := projectRoot(cwd)
+	if opts.capabilities {
+		// Before config and credentials: a driver probes this on a host that
+		// may not be configured yet.
+		var modes []string
+		for _, m := range []permission.Mode{permission.ModeAutonomous, permission.ModeDefault, permission.ModeAcceptEdits,
+			permission.ModePlan, permission.ModeDontAsk, permission.ModeBypassPermissions} {
+			modes = append(modes, string(m))
+		}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(streamjson.GetCapabilities(modes, []string{config.ProviderAnthropic, config.ProviderOpenAI}))
+	}
 	if opts.createConfig != "" {
 		path, err := createConfig(opts.createConfig, cwd)
 		if err != nil {
