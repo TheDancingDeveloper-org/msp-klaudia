@@ -332,3 +332,50 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestSpecMode(t *testing.T) {
+	for _, spec := range []string{
+		"---\nmode: artifact\n---\n# Goal\n",
+		"# Goal\n\nMode: artifact\n\n- [ ] x\n",
+		"# Goal\n\n**Mode:** artifact\n",
+	} {
+		if got := SpecMode(spec); got != Artifact {
+			t.Errorf("SpecMode(%q) = %+v, want Artifact", spec, got)
+		}
+	}
+	for _, spec := range []string{
+		"# Goal\n\n- [ ] x\n",
+		"# Goal\n\nThe mode: artifact idea is described below.\n",
+		"# Goal\n\n```\nmode: artifact\n```\n",
+	} {
+		if got := SpecMode(spec); got != (RunMode{}) {
+			t.Errorf("SpecMode(%q) = %+v, want the code mode", spec, got)
+		}
+	}
+	if got := (RunMode{NoCommit: true}).Merge(RunMode{NoBranch: true}); got != Artifact {
+		t.Errorf("Merge = %+v", got)
+	}
+}
+
+func TestPromptsForNoCommit(t *testing.T) {
+	p := "/x/GOAL.md"
+	if IterationPromptFor(p, RunMode{}) != IterationPrompt(p) || WrapUpPromptFor(p, RunMode{}) != WrapUpPrompt(p) {
+		t.Error("the code mode's prompts changed")
+	}
+	if !contains(IterationPrompt(p), "commit your work") {
+		t.Error("the code mode no longer asks for a commit")
+	}
+	nc := RunMode{NoCommit: true}
+	for name, s := range map[string]string{
+		"iteration": IterationPromptFor(p, nc),
+		"wrap-up":   WrapUpPromptFor(p, nc),
+		"stub-fix":  StubFixPromptFor(p, []string{"Phase 2"}, nc),
+	} {
+		if contains(s, "commit your work") || contains(s, "Commit only") || contains(s, "commit only") || contains(s, "and commit it") {
+			t.Errorf("%s prompt asks for a commit under NoCommit:\n%s", name, s)
+		}
+		if !contains(s, "not commit") && !contains(s, "NOT commit") {
+			t.Errorf("%s prompt does not say not to commit:\n%s", name, s)
+		}
+	}
+}

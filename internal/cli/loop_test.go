@@ -286,3 +286,80 @@ func TestLoopDirtyFlagValidated(t *testing.T) {
 		t.Fatalf("err = %v", r.Err)
 	}
 }
+
+// An artifact goal (#246) runs on the current branch, asks for no commits, and
+// judges progress by the spec rather than by HEAD.
+func TestLoopArtifactMode(t *testing.T) {
+	m := newFakeModel(t) // every iteration ends without touching the spec
+	e := newCLIEnv(t, m)
+	e.write("PRD.md", "# Packets\n\nmode: artifact\n\n- [ ] packet\n\n## Verify\n\nls out\n")
+	gitInit(t, e)
+
+	r := e.run(nil, "--loop", "--permission-mode", "autonomous", "--max-iterations", "8")
+	if r.Err != nil {
+		t.Fatal(r.dump())
+	}
+	if got := gitBranch(e.Dir); got != "main" {
+		t.Errorf("branch = %q; an artifact goal stays on its branch", got)
+	}
+	for _, want := range []string{"artifact mode: no branch, no commits", "the spec has not changed for 3 iterations"} {
+		if !strings.Contains(r.Stderr, want) {
+			t.Errorf("stderr lacks %q:\n%s", want, r.Stderr)
+		}
+	}
+	if strings.Contains(r.Stderr, "on branch") || strings.Contains(r.Stderr, "Work is on branch") {
+		t.Errorf("an artifact run talked about a goal branch:\n%s", r.Stderr)
+	}
+	reqs := m.Requests()
+	if len(reqs) != loopStallLimit+1 {
+		t.Fatalf("model called %d times, want %d", len(reqs), loopStallLimit+1)
+	}
+	if !strings.Contains(reqs[0].Raw(), "Do NOT commit") {
+		t.Error("the iteration prompt still asks for a commit")
+	}
+	if !strings.Contains(reqs[len(reqs)-1].Raw(), "Do not commit") {
+		t.Error("the wrap-up prompt still asks for a commit")
+	}
+}
+
+// A no-commit iteration that records progress in the spec is not a stall,
+// even though HEAD never moves.
+func TestLoopNoCommitProgressIsTheSpec(t *testing.T) {
+	m := newFakeModel(t,
+		use("Bash", map[string]any{"command": "echo '- step 1' >> PRD.md"}), say("step 1 done"),
+		use("Bash", map[string]any{"command": "echo '- step 2' >> PRD.md"}), say("step 2 done"),
+		use("Bash", map[string]any{"command": "echo '- step 3' >> PRD.md"}), say("step 3 done"),
+		use("Bash", map[string]any{"command": "echo '- step 4' >> PRD.md"}), say(goal.CompleteToken),
+	)
+	e := newCLIEnv(t, m)
+	e.write("PRD.md", "# Packets\n\n- [ ] packet\n\n## Verify\n\nls out\n")
+	gitInit(t, e)
+
+	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--no-branch", "--no-commit", "--loop-dirty=allow")
+	if r.Err != nil {
+		t.Fatal(r.dump())
+	}
+	if !strings.Contains(r.Stderr, "goal complete in 4 iteration") {
+		t.Errorf("the loop stalled although the spec changed every iteration:\n%s", r.Stderr)
+	}
+	if out, _ := gitRun(e.Dir, "rev-list", "--count", "HEAD"); strings.TrimSpace(out) != "1" {
+		t.Errorf("commits = %s", out)
+	}
+}
+
+func TestLoopNoBranchFlags(t *testing.T) {
+	e := newCLIEnv(t, newFakeModel(t))
+	if r := e.run(nil, "-p", "hi", "--no-commit"); r.Err == nil || !strings.Contains(r.Err.Error(), "only apply to --loop") {
+		t.Errorf("--no-commit without --loop: err = %v", r.Err)
+	}
+	m := newFakeModel(t)
+	e = newCLIEnv(t, m)
+	dirtyRepo(t, e)
+	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--no-branch", "--loop-dirty=commit")
+	if r.Err == nil || !strings.Contains(r.Err.Error(), "--loop-dirty=allow") {
+		t.Errorf("commit with --no-branch: err = %v", r.Err)
+	}
+	if len(m.Requests()) != 0 {
+		t.Error("model called")
+	}
+}

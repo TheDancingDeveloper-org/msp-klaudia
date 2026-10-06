@@ -23,6 +23,14 @@ port mirrors (see `internal/version`).
   states the Go 1.26 floor.
 
 ### Added
+- **Goal loop without the git ceremony** (#246): `--no-branch` / `--no-commit`
+  (`/goal run [N] no-branch|no-commit|artifact`), or a `mode: artifact` line in
+  the spec, run the loop on the current branch and leave each iteration's work
+  uncommitted — for goals whose output is reports or status files rather than a
+  diff to merge. Under no-commit the prompts stop asking for commits, and stall
+  detection watches the spec instead of HEAD. Code goals keep the branch and a
+  commit per iteration by default.
+
 - **A documented, versioned embedding contract** (#247). `docs/embedding.md`
   pins the stream-json protocol for drivers and orchestrators: which line types
   and fields are stable, the control-request round-trips and `--ask-timeout`,
