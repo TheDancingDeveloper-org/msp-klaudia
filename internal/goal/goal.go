@@ -152,6 +152,13 @@ func IterationPrompt(specPath string) string {
 		"Choose the SINGLE most valuable next step toward satisfying the acceptance criteria, " +
 		"implement it, verify it (build + tests, or the spec's Verify command), and commit your work " +
 		"with a clear message.\n\n" +
+		"Uncommitted changes that were already in the working tree when the loop started are not " +
+		"yours: leave them exactly as they are, uncommitted. Commit only your own work — " +
+		"`git add <the files you changed>`, never `git add -A`, `git add .`, `git add -u` or " +
+		"`git commit -a`. To undo a change of your own, edit it back, `git checkout -- <path>` only " +
+		"files you changed, or `git revert` your own commit. Never run `git checkout --`, " +
+		"`git restore`, `git reset --hard`, `git clean` or `git stash` over files you did not " +
+		"change — that destroys someone's work.\n\n" +
 		"Before ending the turn, update " + specPath + " and commit it: tick the checklist items you " +
 		"verified, and maintain a short \"## Progress\" section recording what is done, what remains, " +
 		"and the single best next step — so the next run (or a person) can resume from the spec alone.\n\n" +

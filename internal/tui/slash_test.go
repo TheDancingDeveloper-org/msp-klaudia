@@ -1001,3 +1001,68 @@ func TestSlashCommandsWithoutTheirBackends(t *testing.T) {
 		t.Errorf("/logs stop with nothing followed:\n%s", shown(m))
 	}
 }
+
+// /goal run starts ON a dirty tree by default (#250, operator scope: no
+// clean-tree precondition), with a guard on every loop turn that refuses to
+// discard or stage the pre-existing change; "refuse" is an explicit opt-in,
+// and "commit" commits the change to the goal branch first.
+func TestGoalRunOverUncommittedWork(t *testing.T) {
+	dir := gitRepo(t)
+	m := slashModel(t)
+	m.sess.CWD = dir
+	var guards []func(string, []byte, string) string
+	m.run = func(ctx context.Context, prompt string, _ []tools.ResultImage, _ []anthropic.BetaMessageParam,
+		_ agent.Approver, _ tools.Asker, _ tools.Planner, _ agent.Emitter,
+		_ func() agent.Interjection, _ func(string, []string)) (agent.Result, error) {
+		guards = append(guards, agent.CommandGuardFrom(ctx))
+		return agent.Result{}, nil
+	}
+	write(t, dir, "PRD.md", "# Goal: build the widget\n\n## Progress\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
+	write(t, dir, "app.go", "the user's uncommitted work\n")
+
+	m.handleSlash("/goal run 2 refuse")
+	if !strings.Contains(shown(m), "Not starting the goal loop") || !strings.Contains(shown(m), "app.go") {
+		t.Fatalf("refuse did not stop /goal run:\n%s", shown(m))
+	}
+	if m.loopRemaining != 0 || m.state == stateRunning {
+		t.Fatal("the loop started despite refuse")
+	}
+	if head, _ := gitOutput(dir, "rev-parse", "--abbrev-ref", "HEAD"); strings.TrimSpace(head) != "main" {
+		t.Errorf("a refused loop moved the repository to %q", strings.TrimSpace(head))
+	}
+
+	m.handleSlash("/goal run 2")
+	awaitMsg(t, m.events)
+	if m.loopRemaining != 2 || !strings.Contains(shown(m), "leaving 1 pre-existing change(s) uncommitted") {
+		t.Fatalf("the default did not start the loop alongside the change (remaining=%d):\n%s", m.loopRemaining, shown(m))
+	}
+	if len(guards) != 1 || guards[0] == nil {
+		t.Fatalf("the loop turn ran without the command guard: %v", guards)
+	}
+	for _, cmd := range []string{"git checkout -- app.go", "git add -A", "git commit -am x"} {
+		if msg := guards[0]("Bash", []byte(`{"command":"`+cmd+`"}`), dir); msg == "" {
+			t.Errorf("the guard allowed %q over the user's app.go", cmd)
+		}
+	}
+	if got, _ := os.ReadFile(filepath.Join(dir, "app.go")); string(got) != "the user's uncommitted work\n" {
+		t.Errorf("app.go = %q", got)
+	}
+
+	// commit: back on main with the change still uncommitted, commit it to
+	// the (existing) goal branch first.
+	m.state, m.turnInFlight, m.turnCancel, m.loopRemaining = stateIdle, false, nil, 0
+	if out, err := gitOutput(dir, "checkout", "main"); err != nil {
+		t.Fatalf("checkout main: %s %v", out, err)
+	}
+	m.handleSlash("/goal run 1 commit")
+	awaitMsg(t, m.events)
+	if !strings.Contains(shown(m), "committed 1 pre-existing change(s)") {
+		t.Fatalf("commit did not commit the pre-existing change:\n%s", shown(m))
+	}
+	if out, _ := gitOutput(dir, "show", "klaudia/goal-build-the-widget:app.go"); !strings.Contains(out, "uncommitted work") {
+		t.Errorf("goal branch app.go = %q", out)
+	}
+	if out, _ := gitOutput(dir, "show", "main:app.go"); strings.Contains(out, "uncommitted work") {
+		t.Error("the pre-existing change was committed to main")
+	}
+}

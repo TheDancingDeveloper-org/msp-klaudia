@@ -85,6 +85,36 @@ before the turn began. The stack holds ten; deeper history is what git is for.
 Outside a git repository there is no object database, so nothing is undoable —
 and Klaudia says so rather than pretending.
 
+## The goal loop
+
+An autonomous loop has no one watching each command, so the same guarantee is
+enforced rather than asked for. The loop never requires a clean tree:
+iterating with uncommitted work present is normal development. When
+`/goal run` or `klaudia --loop` starts, it records which paths already have
+uncommitted changes (tracked and untracked), and what it does about them is a
+policy:
+
+| Policy | `/goal run` | `--loop-dirty` | Effect |
+|---|---|---|---|
+| allow (default) | `/goal run [N]` | `allow` | Runs alongside them and leaves them uncommitted. |
+| commit | `/goal run [N] commit` | `commit` | Commits them on the goal branch first, as their own commit. Untracked files are not committed. |
+| refuse | `/goal run [N] refuse` | `refuse` | Does not start if tracked files are dirty; names them. |
+
+For the rest of the run, `internal/gitguard` refuses any Bash call whose git
+invocation could discard one of those paths — `checkout --`/`checkout <path>`,
+`restore`, `reset --hard|--merge|--keep`, `clean -f`, `stash`, `rm -f`, a
+forced `switch`/`checkout` — or stage it into the loop's commits — `add -A`,
+`add .`, `add -u`, `add <path>`, `commit -a`, `commit <path>`. That holds in
+every permission mode, including bypass, and in sub-agents. A command whose
+paths cannot be read (an expansion, a `cd` before it, `xargs`, `sh -c` it
+cannot parse) is assumed to reach all of them. The loop's own files remain
+revertible and committable: `git checkout -- <file it wrote>` and
+`git add <file it wrote>` are fine.
+
+This exists because the first production run undid a one-line change of its own
+with `git checkout -- <14 files>`, reverting a day of uncommitted work in the
+other thirteen.
+
 ## Resume
 
 Resuming reconciles rather than reports. The working tree is re-read, ownership
