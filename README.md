@@ -337,7 +337,12 @@ git diff | ./klaudia -p "Review this change"
 ```
 
 A positional prompt is shorthand for `-p`: `./klaudia "What files are here?"`
-runs headless and exits, so it scripts the same way. (Claude Code opens its TUI
+runs headless and exits, so it scripts the same way. To open the TUI with a first
+message instead — a persistent session that starts working straight away, which
+is what an orchestrator launching Klaudia wants — use
+`./klaudia --prompt-interactive "Fix the failing test"`. The text is sent as if
+typed, so slash commands (`--prompt-interactive "/goal run 5"`) and `@file`
+references work, and the session stays open afterwards. (Claude Code opens its TUI
 with the prompt instead; see [docs/ux-spec.md](docs/ux-spec.md).)
 `--max-turns N` caps the agentic loop; `0`, the default, is unlimited.
 

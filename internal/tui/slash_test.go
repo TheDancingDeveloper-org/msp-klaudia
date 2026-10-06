@@ -1056,3 +1056,51 @@ func TestGoalRunArtifactMode(t *testing.T) {
 		t.Errorf("no-branch: branch=%q prompt=%s", m.loopBranch, sr.last())
 	}
 }
+
+// --prompt-interactive: the TUI sends Session.InitialPrompt as the first user
+// message once it has a size, exactly as if typed, and never again; the
+// session then stays open for the next message.
+func TestInitialPromptIsSentOnceAfterTheFirstResize(t *testing.T) {
+	m := slashModel(t)
+	sr := &scriptedRun{}
+	m.run = sr.run
+	m.sess.InitialPrompt = "  fix the failing test  "
+
+	_, cmd := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if cmd == nil {
+		t.Fatal("the first resize did not start the initial turn")
+	}
+	awaitMsg(t, m.events)
+	if got := sr.last(); got != "fix the failing test" {
+		t.Errorf("first prompt = %q, want the initial prompt", got)
+	}
+	if !strings.Contains(shown(m), "› fix the failing test") {
+		t.Errorf("the initial prompt was not echoed like typed input:\n%s", shown(m))
+	}
+
+	// A later resize must not send it again.
+	m.state, m.turnInFlight, m.turnCancel = stateIdle, false, nil
+	m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	sr.mu.Lock()
+	n := len(sr.prompts)
+	sr.mu.Unlock()
+	if n != 1 {
+		t.Errorf("initial prompt sent %d times, want once", n)
+	}
+}
+
+// A slash command as the initial prompt routes like a typed one, so an
+// orchestrator can open a session straight into, say, /goal run.
+func TestInitialPromptRoutesSlashCommands(t *testing.T) {
+	m := slashModel(t)
+	sr := &scriptedRun{}
+	m.run = sr.run
+	m.sess.InitialPrompt = "/status"
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if sr.last() != "" {
+		t.Errorf("/status was sent to the model: %q", sr.last())
+	}
+	if !strings.Contains(shown(m), "› /status") {
+		t.Errorf("the slash command was not run as typed:\n%s", shown(m))
+	}
+}

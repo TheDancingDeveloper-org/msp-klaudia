@@ -5,6 +5,14 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Added
+- **`--prompt-interactive "<text>"`** opens the TUI and sends the text as the
+  first message, exactly as if typed (slash commands, `@file`), and the session
+  stays open. A positional prompt still means `-p` (headless, exit after one
+  turn), which is why the Vogt Klaudia template's brief ended its session after
+  one reply. Combining it with `-p`, a positional prompt, `--loop` or an
+  embedding input format is a usage error.
+
 ### Merged from upstream (greenthread-ai/klaudia 2e644c9, 0fa00a6)
 
 Upstream's "one turn contract, ACP, sub-agent worktrees, hooks, MCP

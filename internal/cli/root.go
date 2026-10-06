@@ -834,25 +834,26 @@ func createConfig(scope, cwd string) (string, error) {
 // (08-entry.js setupCommander). Flags the reference has and Klaudia does not
 // are simply absent, not accepted and ignored.
 type options struct {
-	print            bool
-	prompt           string
-	model            string
-	effort           string // --effort low|medium|high|xhigh|max
-	fallbackModel    string
-	outputFormat     string
-	inputFormat      string
-	permissionMode   string
-	allowHostChanges bool
-	dangerouslySkip  bool
-	verbose          bool
-	maxTurns         int
-	maxBudgetUSD     float64 // --max-budget-usd: stop the run past this cumulative cost
-	resume           string  // --resume <session-id>
-	continueSession  bool    // --continue
-	newSession       bool    // --new-session
-	forkSession      bool    // --fork-session
-	fullResume       bool    // --full (replay entire transcript, not the summary)
-	sessionID        string  // --session-id <id>: the id to record under (embedders)
+	print             bool
+	prompt            string
+	promptInteractive string // --prompt-interactive: open the TUI and send this as the first message
+	model             string
+	effort            string // --effort low|medium|high|xhigh|max
+	fallbackModel     string
+	outputFormat      string
+	inputFormat       string
+	permissionMode    string
+	allowHostChanges  bool
+	dangerouslySkip   bool
+	verbose           bool
+	maxTurns          int
+	maxBudgetUSD      float64 // --max-budget-usd: stop the run past this cumulative cost
+	resume            string  // --resume <session-id>
+	continueSession   bool    // --continue
+	newSession        bool    // --new-session
+	forkSession       bool    // --fork-session
+	fullResume        bool    // --full (replay entire transcript, not the summary)
+	sessionID         string  // --session-id <id>: the id to record under (embedders)
 
 	partialMessages bool   // --include-partial-messages
 	createConfig    string // --create-config global|local
@@ -1123,6 +1124,10 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// A positional prompt is shorthand for -p "<prompt>". Every word
 			// is the prompt, so `klaudia explain this code` needs no quotes.
+			if opts.promptInteractive != "" && len(args) > 0 {
+				return usageErrorf("--prompt-interactive takes the first message itself; the positional %q would also run it headless (-p) and exit. "+
+					"Pass the text only to --prompt-interactive", strings.Join(args, " "))
+			}
 			if opts.prompt == "" && len(args) > 0 {
 				if looksLikeGoalSubcommand(args) {
 					return usageErrorf("there is no `goal` subcommand — %q would run as a prompt. "+
@@ -1150,6 +1155,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	})
 	f := cmd.Flags()
 	f.BoolVarP(&opts.print, "print", "p", false, "Non-interactive mode: print result to stdout and exit")
+	f.StringVar(&opts.promptInteractive, "prompt-interactive", "", "Open the interactive TUI and send this text as the first message, as if typed (slash commands and @file references work); the session stays open. For orchestrators that start a pre-prompted session. A positional prompt, by contrast, runs headless and exits")
 	f.StringVar(&opts.model, "model", "", "Model alias (haiku|sonnet|opus) or full model ID")
 	f.StringVar(&opts.effort, "effort", "", "Reasoning effort: low|medium|high|xhigh|max (default: config effort, else the model's own default)")
 	f.StringVar(&opts.fallbackModel, "fallback-model", "", "Model to use when the model is overloaded (retried once) or not found (for the rest of the session); overrides config fallbackModel")
@@ -1306,6 +1312,9 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// "interactive?" when the real question was "is anyone there?" is why MCP
 	// elicitation was advertised to the TUI alone.
 	attended := interactive || embedded
+	if opts.promptInteractive != "" && !interactive {
+		return usageErrorf("--prompt-interactive opens the interactive TUI; it cannot be combined with -p, --loop or --input-format stream-json/acp")
+	}
 	switch opts.inputFormat {
 	case "text", "stream-json", "acp":
 	default:
@@ -1919,6 +1928,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			NoTagline:           strings.EqualFold(strings.TrimSpace(cfg.Banner.Tagline), "off"),
 			Memory:              memStore,
 			Goal:                restoredGoal,
+			InitialPrompt:       opts.promptInteractive,
 			SaveGoal:            func(g string) error { return session.WriteGoal(goalPath, g) },
 			MCP:                 mcpController{mgr: mcpMgr, ctx: ctx},
 			OnMCPReload:         mcpReloads.register,

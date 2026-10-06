@@ -131,3 +131,25 @@ func TestGoalSubcommandShapedPromptIsAUsageError(t *testing.T) {
 		t.Fatalf("err = %v, want a usage error pointing at --loop", r.Err)
 	}
 }
+
+// --prompt-interactive opens the TUI; every combination that would run
+// headless instead is refused before anything starts.
+func TestPromptInteractiveRejectsHeadlessCombinations(t *testing.T) {
+	for _, args := range [][]string{
+		{"--prompt-interactive", "hi", "-p"},
+		{"--prompt-interactive", "hi", "also", "positional"},
+		{"--prompt-interactive", "hi", "--loop", "--dangerously-skip-permissions"},
+		{"--prompt-interactive", "hi", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"},
+		{"--prompt-interactive", "hi", "--input-format", "acp"},
+	} {
+		m := newFakeModel(t)
+		e := newCLIEnv(t, m)
+		r := e.run(nil, args...)
+		if r.Err == nil || !isUsageError(r.Err) || !strings.Contains(r.Err.Error(), "--prompt-interactive") {
+			t.Errorf("%v: err = %v, want a usage error naming --prompt-interactive", args, r.Err)
+		}
+		if len(m.Requests()) != 0 {
+			t.Errorf("%v: the model was called", args)
+		}
+	}
+}
