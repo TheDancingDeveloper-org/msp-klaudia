@@ -545,6 +545,8 @@ type Model struct {
 	// pendingOSC holds a clipboard escape sequence to emit on the next frame.
 	// Writing it through View keeps it ordered with respect to the renderer.
 	pendingOSC string
+	// termReply swallows terminal query replies that arrive as keys (termreply.go).
+	termReply termReplyFilter
 	// pendingNotify holds attention escapes (bell/OSC 9/OSC 777) to emit on the
 	// next frame, queued when Klaudia needs the user (a turn finished, a prompt
 	// is waiting). Emitted through View for the same ordering reason as
@@ -928,7 +930,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		return m.onKey(msg)
+		return m.onKeys(msg)
 
 	case tea.FocusMsg:
 		m.focused, m.focusKnown = true, true
