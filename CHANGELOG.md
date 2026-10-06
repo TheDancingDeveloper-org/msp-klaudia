@@ -26,6 +26,12 @@ port mirrors (see `internal/version`).
   JSON (before reading any config) so a driver can feature-detect, and
   `TestEmbeddingContract` fails when an embedded run stops matching the
   document.
+- **Light themes** (#249): `catppuccin-latte`, `gruvbox-light`,
+  `tokyo-night-day`, `solarized-light` and `rose-pine-dawn` join `light` (now
+  named GitHub Light, alias `github`), each held to WCAG contrast floors on its
+  own background by a test. With no theme configured, a terminal whose
+  `COLORFGBG` reports a light background starts in `light` instead of the dark
+  default.
 
 ### Security
 - **The goal loop can no longer discard uncommitted work that predates it.**

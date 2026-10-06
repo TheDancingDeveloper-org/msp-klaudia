@@ -622,7 +622,8 @@ provider = "anthropic"
 # fallbackModel = "gpt-5.5-mini"
 
 # TUI theme (Markdown + chrome). /theme switches it for a session.
-# theme = "nord" # dracula | gruvbox | tokyo-night | nord | catppuccin
+# theme = "nord" # dark: dracula | gruvbox | tokyo-night | nord | catppuccin
+#                # light: light | catppuccin-latte | gruvbox-light | tokyo-night-day | solarized-light | rose-pine-dawn
 
 # Session retention: old transcripts under ~/.klaudia/sessions are pruned once
 # at startup. The active session is never touched. Both caps are independent —
