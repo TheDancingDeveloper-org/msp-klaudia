@@ -105,7 +105,11 @@ fill in your endpoint:
 ```toml
 # ~/.klaudia/config.toml  (comments are supported)
 provider = "openai"
-model = "openai/gpt-5.5"
+# The model id is sent to the endpoint exactly as written: use the id the
+# endpoint lists (GET <baseURL>/models, or /model in the TUI). Do not prefix it
+# with the provider name — "openai/gpt-5.5" is a different id from "gpt-5.5",
+# and only hosts whose own ids carry a prefix (OpenRouter) want one.
+model = "gpt-5.5"
 baseURL = "https://api.example.com/v1"
 
 # apiKeyEnv is the NAME of the environment variable that holds your key —
@@ -600,7 +604,9 @@ Klaudia defaults to the Anthropic Messages API. A project or user
 ```toml
 # "anthropic" (default) | "openai"
 provider = "openai"
-model = "openai/gpt-5.5"
+# Sent exactly as written — the id the endpoint lists, with no provider prefix
+# unless the endpoint's own ids have one (OpenRouter's "openai/gpt-5").
+model = "gpt-5.5"
 
 # OpenAI-compatible endpoint.
 baseURL = "https://api.example.com/v1"

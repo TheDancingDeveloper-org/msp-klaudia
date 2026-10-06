@@ -30,7 +30,8 @@ const (
 type Config struct {
 	// Provider selects the backend: "anthropic" (default) or "openai".
 	Provider string `toml:"provider,omitempty"`
-	// Model is the default model (e.g. "openai/gpt-5.5"); --model overrides it.
+	// Model is the default model (e.g. "sonnet", or "gpt-5.5" on an OpenAI-compatible
+	// endpoint, which receives it exactly as written); --model overrides it.
 	Model string `toml:"model,omitempty"`
 	// FallbackModel is tried when the model is overloaded (once, for that
 	// request) or not found (for the rest of the session); --fallback-model

@@ -5,6 +5,18 @@ port mirrors (see `internal/version`).
 
 ## Unreleased
 
+### Fixed
+- **A provider's 400 is quoted, not guessed at** (#245). An OpenAI-compatible
+  host that sends `{"error":"unsupported model: …"}` (error as a string), a
+  top-level `message`/`detail`, or plain text used to get "the model rejected
+  the request shape; check the input", which pointed at the request when the
+  model id was wrong. Those shapes are now parsed, and any other body is quoted
+  (one line, truncated). When a `<prefix>/<name>` model id is refused, the error
+  explains that ids are sent exactly as written and, if the endpoint listed the
+  models it serves, names the bare id to use. The README and starter config no
+  longer show `model = "openai/gpt-5.5"`, which read as "prefix with the
+  provider" and broke every endpoint that lists bare ids.
+
 ### Security
 - **Plan mode is no longer bypassed by allow rules.** `permission.Check`
   consulted allow rules before a tool's intrinsic decision, which is where plan

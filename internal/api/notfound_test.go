@@ -104,7 +104,7 @@ func TestFriendlyError400ModelNotFoundNeedsTheCode(t *testing.T) {
 	}
 }
 
-func TestAnnotateNotFoundLeavesOtherErrorsAlone(t *testing.T) {
+func TestAnnotateNotFoundLeavesNon4xxAlone(t *testing.T) {
 	orig := &OpenAIError{StatusCode: 500, Body: "boom"}
 	if got := annotateNotFound(orig, "m", "e"); got != error(orig) {
 		t.Errorf("a 500 should pass through unwrapped, got %T", got)

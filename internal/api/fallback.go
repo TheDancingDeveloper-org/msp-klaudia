@@ -184,7 +184,7 @@ func IsModelNotFound(err error) bool {
 	if errType, _ := anthropicPayload(err); errType == "not_found_error" {
 		return true
 	}
-	for _, s := range []string{"model_not_found", "not found", "not_found", "does not exist", "invalid model", "unknown model"} {
+	for _, s := range []string{"model_not_found", "not found", "not_found", "does not exist", "invalid model", "unknown model", "unsupported model"} {
 		if strings.Contains(detail, s) {
 			return true
 		}
