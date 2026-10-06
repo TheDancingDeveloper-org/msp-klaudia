@@ -197,6 +197,9 @@ func TestPromptsReferenceSpecPath(t *testing.T) {
 	if !contains(it, p) || !contains(it, CompleteToken) {
 		t.Error("iteration prompt should reference the spec path and completion token")
 	}
+	if !contains(it, "git reset --hard") || !contains(it, "only files you changed") {
+		t.Error("iteration prompt should forbid discarding pre-existing changes (#250)")
+	}
 	w := WrapUpPrompt(p)
 	if !contains(w, p) || !contains(w, "Do NOT make code changes") {
 		t.Error("wrap-up prompt should reference the spec path and forbid new work")

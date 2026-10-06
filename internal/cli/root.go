@@ -21,6 +21,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/browser"
 	"github.com/greenthread-ai/klaudia/internal/config"
 	"github.com/greenthread-ai/klaudia/internal/doctor"
+	"github.com/greenthread-ai/klaudia/internal/gitguard"
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/lsp"
@@ -718,9 +719,10 @@ type options struct {
 	// trustedProjectConfig applies ./.klaudia/config.toml in full for this run
 	// only: for a launcher that wrote the file itself.
 	trustedProjectConfig bool
-	safeMode             bool // --safe-mode: load nothing the project supplies
-	loop                 bool // --loop: autonomous goal-spec iteration
-	maxIterations        int  // --max-iterations: outer-loop cap for --loop
+	safeMode             bool   // --safe-mode: load nothing the project supplies
+	loop                 bool   // --loop: autonomous goal-spec iteration
+	maxIterations        int    // --max-iterations: outer-loop cap for --loop
+	loopDirty            string // --loop-dirty: refuse|commit|allow over pre-existing changes
 
 	systemPrompt       string   // --system-prompt: replace the default system prompt
 	appendSystemPrompt string   // --append-system-prompt: append to the system prompt
@@ -1018,7 +1020,8 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.trustProject, "trust-project", false, "Trust the current folder so its .klaudia/config.toml applies in full (permission mode and rules, trust, sandbox, provider endpoint and keys), and exit")
 	f.BoolVar(&opts.safeMode, "safe-mode", false, "Start without anything this project supplies: its .klaudia/config.toml, .mcp.json servers, skills, CLAUDE.md, memory and knowledge. For opening an unfamiliar repository or getting past a broken project config")
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml, or $KLAUDIA_CONFIG_DIR/config.toml) or local (./.klaudia/config.toml)")
-	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --dangerously-skip-permissions.")
+	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --permission-mode autonomous or --dangerously-skip-permissions.")
+	f.StringVar(&opts.loopDirty, "loop-dirty", "refuse", "What --loop does when tracked files already have uncommitted changes: refuse (default), commit (commit them to the goal branch first), or allow (leave them; the loop may not discard them)")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
 	f.StringVar(&opts.systemPrompt, "system-prompt", "", "Replace the default system prompt entirely with this text")
 	f.StringVar(&opts.appendSystemPrompt, "append-system-prompt", "", "Append this text to the system prompt (after --system-prompt when both are given)")
@@ -1134,6 +1137,9 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		}
 		if format != FormatText {
 			return usageErrorf("--loop only supports --output-format text")
+		}
+		if _, err := gitguard.ParsePolicy(opts.loopDirty); err != nil {
+			return usageErrorf("--loop-dirty: %v", err)
 		}
 	}
 	if opts.print && format == FormatStreamJSON && !opts.verbose {
@@ -1915,6 +1921,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			maxTurns:     opts.maxTurns,
 			maxBudgetUSD: opts.maxBudgetUSD,
 			iterations:   opts.maxIterations,
+			dirty:        gitguard.Policy(opts.loopDirty),
 			permCtx:      permCtx,
 			hostGate:     hostGate,
 			approver:     approver,

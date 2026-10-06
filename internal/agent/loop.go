@@ -98,6 +98,13 @@ type Options struct {
 	// taken when the event arrives can race the write it was meant to precede
 	// and capture the new contents.
 	BeforeEdit func(tool string, paths []string)
+	// CommandGuard, when set, is consulted for every tool call before the host
+	// gate and the permission rules, in every permission mode including
+	// bypassPermissions: a non-empty return refuses the call with that text.
+	// The goal loop uses it to keep the model from discarding uncommitted work
+	// that predates the run (gitguard). It is inherited by sub-agents run on
+	// this Run's context (see WithCommandGuard).
+	CommandGuard func(tool string, input []byte, cwd string) string
 	// Interject is polled between turns and after each tool batch. It returns
 	// anything the user has typed since the last poll, and whether they asked
 	// Klaudia to stop once the current step finishes. Nil means nothing can
@@ -266,6 +273,11 @@ func New(provider api.Provider, registry *tools.Registry) *Loop {
 
 // Run executes the loop until the model stops calling tools or MaxTurns is hit.
 func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, error) {
+	if opts.CommandGuard == nil {
+		opts.CommandGuard = CommandGuardFrom(ctx)
+	} else {
+		ctx = WithCommandGuard(ctx, opts.CommandGuard)
+	}
 	maxTokens := opts.MaxTokens
 	if maxTokens <= 0 {
 		// Model-aware default: the flat 8192 was low enough that an ordinary
@@ -1247,6 +1259,16 @@ func (l *Loop) prepareCall(ctx context.Context, tu anthropic.BetaToolUseBlock, o
 			msg += fmt.Sprintf(" — %s accepts: %s.", tu.Name, fields)
 		}
 		return nil, errResult(msg)
+	}
+
+	// The command guard is a data-safety check, not a permission: no mode and
+	// no rule waives it. It is tagged like a host refusal (a decision, not a
+	// malfunction) so repeated refusals do not latch the tool.
+	if opts.CommandGuard != nil {
+		if msg := opts.CommandGuard(tu.Name, raw, opts.WorkingDir); msg != "" {
+			b := recordFailure(tu, key, rawStr, msg, true, emit, failures, errStreaks)
+			return nil, &b
+		}
 	}
 
 	// The host gate runs BEFORE the allow/deny rules, not after. An allow rule

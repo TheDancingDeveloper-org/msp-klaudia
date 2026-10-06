@@ -85,6 +85,31 @@ before the turn began. The stack holds ten; deeper history is what git is for.
 Outside a git repository there is no object database, so nothing is undoable —
 and Klaudia says so rather than pretending.
 
+## The goal loop
+
+An autonomous loop has no one watching each command, so the same guarantee is
+enforced rather than asked for. When `/goal run` or `klaudia --loop` starts,
+it records which paths already have uncommitted changes (tracked and
+untracked). Tracked changes stop it from starting unless told what to do:
+
+| Policy | `/goal run` | `--loop-dirty` | Effect |
+|---|---|---|---|
+| refuse (default) | `/goal run [N]` | `refuse` | Does not start; names the files. |
+| commit | `/goal run [N] commit` | `commit` | Commits them on the goal branch first, as their own commit. Untracked files are not committed. |
+| allow | `/goal run [N] allow` | `allow` | Leaves them uncommitted. |
+
+For the rest of the run, `internal/gitguard` refuses any Bash call whose git
+invocation could discard one of those paths — `checkout --`/`checkout <path>`,
+`restore`, `reset --hard|--merge|--keep`, `clean -f`, `stash`, `rm -f`, a
+forced `switch`/`checkout` — in every permission mode, including bypass, and in
+sub-agents. A command whose paths cannot be read (an expansion, a `cd` before
+it, `xargs`, `sh -c` it cannot parse) is assumed to reach all of them. The
+loop's own files remain revertible: `git checkout -- <file it wrote>` is fine.
+
+This exists because the first production run undid a one-line change of its own
+with `git checkout -- <14 files>`, reverting a day of uncommitted work in the
+other thirteen.
+
 ## Resume
 
 Resuming reconciles rather than reports. The working tree is re-read, ownership

@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
+	"github.com/greenthread-ai/klaudia/internal/gitguard"
 	"github.com/greenthread-ai/klaudia/internal/goal"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
@@ -38,6 +39,7 @@ type loopRun struct {
 	maxTurns     int
 	maxBudgetUSD float64
 	iterations   int
+	dirty        gitguard.Policy // what to do about pre-existing uncommitted changes
 	permCtx      permission.Context
 	hostGate     *agent.HostGate
 	approver     agent.Approver
@@ -99,6 +101,15 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	iters := goal.Iterations(p.iterations)
 	errOut := cmd.ErrOrStderr()
 
+	// Pre-existing uncommitted work is checked before anything moves: the
+	// first production run reverted 14 such files to HEAD while undoing a
+	// one-line change of its own (#250). The spec is the loop's own file.
+	baseline, err := gitguard.Begin(p.cwd, p.dirty, "re-run with --loop-dirty=commit (commit it to the goal branch first) "+
+		"or --loop-dirty=allow (leave it uncommitted; the loop is barred from discarding it).", specPath)
+	if err != nil {
+		return fmt.Errorf("--loop: %w", err)
+	}
+
 	branch := goal.BranchName(specText)
 	base := gitBranch(p.cwd) // merge target (the branch we start from)
 	if base == branch {
@@ -111,6 +122,14 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 		onBranch = true
 		fmt.Fprintf(errOut, "↳ on branch %s\n", branch)
 	}
+	baseline, note, err := baseline.Settle(p.dirty, onBranch, specPath)
+	if err != nil {
+		return fmt.Errorf("--loop-dirty=%s: %w", p.dirty, err)
+	}
+	if note != "" {
+		fmt.Fprintf(errOut, "↳ %s\n", note)
+	}
+
 	mergeHint := func() {
 		if onBranch {
 			fmt.Fprintln(errOut, goal.MergeHint(branch, base))
@@ -140,6 +159,7 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			OnSummary:     p.onSummary,
 			Diagnostics:   p.diagnostics,
 			Hooks:         p.hooks,
+			CommandGuard:  baseline.Guard(),
 		}, emit)
 	}
 
