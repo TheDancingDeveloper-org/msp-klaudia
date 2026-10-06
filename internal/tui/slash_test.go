@@ -1066,3 +1066,37 @@ func TestGoalRunOverUncommittedWork(t *testing.T) {
 		t.Error("the pre-existing change was committed to main")
 	}
 }
+
+// /goal run no-branch no-commit (or a spec's mode: artifact) stays on the
+// current branch and asks the model not to commit (#246).
+func TestGoalRunArtifactMode(t *testing.T) {
+	dir := gitRepo(t)
+	m := slashModel(t)
+	m.sess.CWD = dir
+	sr := &scriptedRun{}
+	m.run = sr.run
+	write(t, dir, "PRD.md", "# Goal: packets\n\nmode: artifact\n\n## Progress\n\n- [ ] packet\n\n## Verify\n\nls out\n")
+
+	m.handleSlash("/goal run 2")
+	awaitMsg(t, m.events)
+	if m.loopBranch != "" || strings.Contains(shown(m), "on branch") {
+		t.Errorf("an artifact goal moved onto a branch (%q):\n%s", m.loopBranch, shown(m))
+	}
+	if head, _ := gitOutput(dir, "rev-parse", "--abbrev-ref", "HEAD"); strings.TrimSpace(head) != "main" {
+		t.Errorf("repository is on %q", strings.TrimSpace(head))
+	}
+	if !strings.Contains(shown(m), "artifact mode") || !strings.Contains(sr.last(), "Do NOT commit") {
+		t.Errorf("artifact mode not applied:\n%s\nprompt: %s", shown(m), sr.last())
+	}
+	if p := m.continueIteration(); !strings.Contains(p, "Do NOT commit") {
+		t.Errorf("a later iteration lost the mode: %s", p)
+	}
+
+	m.state, m.turnInFlight, m.turnCancel, m.loopRemaining = stateIdle, false, nil, 0
+	write(t, dir, "PRD.md", "# Goal: code\n\n## Progress\n\n- [ ] x\n\n## Verify\n\nmake\n")
+	m.handleSlash("/goal run 1 no-branch")
+	awaitMsg(t, m.events)
+	if m.loopBranch != "" || !strings.Contains(sr.last(), "commit your work") {
+		t.Errorf("no-branch: branch=%q prompt=%s", m.loopBranch, sr.last())
+	}
+}

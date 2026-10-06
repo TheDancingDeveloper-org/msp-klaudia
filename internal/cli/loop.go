@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,7 +25,8 @@ import (
 )
 
 // loopStallLimit stops the loop after this many consecutive iterations make no
-// new git commit — a sign the agent is spinning without making progress.
+// progress — no new git commit, or under --no-commit no change to the spec — a
+// sign the agent is spinning.
 const loopStallLimit = 3
 
 // loopRun bundles the already-built run state the goal loop reuses (set up once
@@ -40,6 +44,7 @@ type loopRun struct {
 	maxBudgetUSD float64
 	iterations   int
 	dirty        gitguard.Policy // what to do about pre-existing uncommitted changes
+	runMode      goal.RunMode    // --no-branch / --no-commit; the spec can add to it
 	permCtx      permission.Context
 	hostGate     *agent.HostGate
 	approver     agent.Approver
@@ -101,6 +106,17 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	iters := goal.Iterations(p.iterations)
 	errOut := cmd.ErrOrStderr()
 
+	// The git model: a branch and a commit per iteration for code goals; the
+	// flags, or a `mode: artifact` line in the spec, drop either (#246).
+	runMode := goal.SpecMode(specText).Merge(p.runMode)
+	if runMode.NoBranch && p.dirty == gitguard.Commit {
+		return errors.New("--loop-dirty=commit commits pre-existing changes to the goal branch, and this run has none " +
+			"(--no-branch, or the spec's mode: artifact); use the default --loop-dirty=allow, or commit them yourself")
+	}
+	if s := runMode.String(); s != "" {
+		fmt.Fprintf(errOut, "↳ %s\n", s)
+	}
+
 	// Pre-existing uncommitted work is recorded before anything moves, so the
 	// guard can keep the loop off it for the whole run: the first production
 	// run reverted 14 such files to HEAD while undoing a one-line change of its
@@ -117,7 +133,9 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 		base = "" // resuming on the goal branch already; base unknown
 	}
 	onBranch := false
-	if out, gerr := gitCheckoutBranch(p.cwd, branch); gerr != nil {
+	if runMode.NoBranch {
+		// Stay where we are: no branch to merge, so no merge hint either.
+	} else if out, gerr := gitCheckoutBranch(p.cwd, branch); gerr != nil {
 		fmt.Fprintf(errOut, "warning: not branching (%s)\n", strings.TrimSpace(out))
 	} else {
 		onBranch = true
@@ -164,12 +182,20 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 		}, emit)
 	}
 
-	lastCommit := gitCommit(p.cwd)
+	// Stall detection watches HEAD for a code goal. A no-commit run makes no
+	// commits by design, so it watches the spec instead: every iteration is
+	// told to record its step in the spec's Progress section. "" (no repo,
+	// unreadable spec) never stalls.
+	progress, stallWhat := func() string { return gitCommit(p.cwd) }, "no new commits"
+	if runMode.NoCommit {
+		progress, stallWhat = func() string { return fileDigest(specPath) }, "the spec has not changed"
+	}
+	lastProgress := progress()
 	stalls := 0
 	for i := 1; i <= iters; i++ {
 		fmt.Fprintf(errOut, "↻ iteration %d/%d\n", i, iters)
 		res, err := retryTransient(ctx, errOut, fmt.Sprintf("iteration %d", i), func() (agent.Result, error) {
-			return runTurn(goal.IterationPrompt(specPath))
+			return runTurn(goal.IterationPromptFor(specPath, runMode))
 		})
 		if err != nil {
 			return err
@@ -179,11 +205,10 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			mergeHint()
 			return nil
 		}
-		// Stall detection: a non-repo (commit == "") never stalls.
-		if c := gitCommit(p.cwd); c == "" || c != lastCommit {
-			stalls, lastCommit = 0, c
+		if c := progress(); c == "" || c != lastProgress {
+			stalls, lastProgress = 0, c
 		} else if stalls++; stalls >= loopStallLimit {
-			fmt.Fprintf(errOut, "⊘ no new commits for %d iterations — stopping (goal not complete).\n", stalls)
+			fmt.Fprintf(errOut, "⊘ %s for %d iterations — stopping (goal not complete).\n", stallWhat, stalls)
 			break
 		}
 	}
@@ -191,12 +216,22 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	// Stopped without completing (cap or stall): one wrap-up turn records an
 	// end-of-run summary in the spec so the next run (or a person) can resume.
 	fmt.Fprintf(errOut, "summarising progress to %s…\n", specPath)
-	if _, err := runTurn(goal.WrapUpPrompt(specPath)); err != nil {
+	if _, err := runTurn(goal.WrapUpPromptFor(specPath, runMode)); err != nil {
 		return err
 	}
 	fmt.Fprintf(errOut, "stopped; goal not yet complete. Progress recorded in %s — re-run to resume.\n", specPath)
 	mergeHint()
 	return nil
+}
+
+// fileDigest returns a hash of path's contents, or "" when it cannot be read.
+func fileDigest(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // gitRun runs a git command in dir and returns its combined output.
