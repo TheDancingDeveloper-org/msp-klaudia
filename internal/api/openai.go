@@ -413,20 +413,55 @@ type OpenAIErrorPayload struct {
 
 // Payload parses the response body for that envelope. Returns nil when the
 // body is empty or doesn't match (some providers ship plain-text errors).
+//
+// Besides the OpenAI shape it accepts the variants OpenAI-compatible hosts
+// actually send: "error" as a bare string ({"error":"unsupported model: x"},
+// seen from api.theclawbay.com — #245), and a top-level "message" or "detail"
+// (FastAPI-style servers). Each becomes Message, so FriendlyError can quote it
+// instead of guessing.
 func (e *OpenAIError) Payload() *OpenAIErrorPayload {
 	if e == nil || e.Body == "" {
 		return nil
 	}
 	var wrap struct {
-		Error OpenAIErrorPayload `json:"error"`
+		Error   json.RawMessage `json:"error"`
+		Message json.RawMessage `json:"message"`
+		Detail  json.RawMessage `json:"detail"`
 	}
 	if err := json.Unmarshal([]byte(e.Body), &wrap); err != nil {
 		return nil
 	}
-	if wrap.Error.Message == "" && wrap.Error.Type == "" && len(wrap.Error.Code) == 0 {
+	var p OpenAIErrorPayload
+	if len(wrap.Error) > 0 && json.Unmarshal(wrap.Error, &p) == nil &&
+		(p.Message != "" || p.Type != "" || len(p.Code) > 0) {
+		return &p
+	}
+	for _, raw := range []json.RawMessage{wrap.Error, wrap.Message, wrap.Detail} {
+		var str string
+		if len(raw) > 0 && json.Unmarshal(raw, &str) == nil && strings.TrimSpace(str) != "" {
+			return &OpenAIErrorPayload{Message: strings.TrimSpace(str)}
+		}
+	}
+	return nil
+}
+
+// SupportedModels returns the model list some hosts attach to an unknown-model
+// error ({"supportedModels":[...]} or {"supported_models":[...]}), or nil.
+func (e *OpenAIError) SupportedModels() []string {
+	if e == nil || e.Body == "" {
 		return nil
 	}
-	return &wrap.Error
+	var b struct {
+		Camel []string `json:"supportedModels"`
+		Snake []string `json:"supported_models"`
+	}
+	if json.Unmarshal([]byte(e.Body), &b) != nil {
+		return nil
+	}
+	if len(b.Camel) > 0 {
+		return b.Camel
+	}
+	return b.Snake
 }
 
 // doWithRetry issues the request, retrying transient failures (connection

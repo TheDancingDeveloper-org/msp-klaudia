@@ -592,7 +592,9 @@ provider = "anthropic"
 # variable named in apiKeyEnv. The model here replaces the one above.
 #
 #   provider = "openai"
-#   model = "openai/gpt-5.5"
+#   # The id the endpoint lists (GET <baseURL>/models), sent exactly as
+#   # written — no "openai/" prefix unless the endpoint's own ids have one.
+#   model = "gpt-5.5"
 #   baseURL = "https://api.example.com/v1"
 #
 #   # apiKeyEnv is the NAME of the environment variable that holds your key:
@@ -615,7 +617,7 @@ provider = "anthropic"
 
 # Model to fall back to when the model is overloaded (retried once) or not
 # found (used for the rest of the session). --fallback-model overrides it.
-# fallbackModel = "openai/gpt-5.5-mini"
+# fallbackModel = "gpt-5.5-mini"
 
 # TUI theme (Markdown + chrome). /theme switches it for a session.
 # theme = "nord" # dracula | gruvbox | tokyo-night | nord | catppuccin

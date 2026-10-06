@@ -115,9 +115,15 @@ func FriendlyError(err error) string {
 					return "Conversation outgrew the model's context window — the provider returned: " + detail +
 						" Set `contextWindow` in .klaudia/config.toml to match this model so autocompaction triggers earlier, and run /compact to summarise the current session."
 				}
-				return fmt.Sprintf("Bad request (400): %s", detail)
+				return withHint(fmt.Sprintf("Bad request (400): %s", detail), modelIDHint(err))
 			}
-			return "Bad request (400) — the model rejected the request shape; check the input."
+			// No envelope we can read: quote what the provider sent rather
+			// than guess. The guess ("rejected the request shape") sent a user
+			// chasing the request when the model id was wrong (#245).
+			if body := rawBody(err); body != "" {
+				return withHint("Bad request (400): the provider returned: "+body, modelIDHint(err))
+			}
+			return "Bad request (400) — the model rejected the request shape; check the input." + modelIDHint(err)
 		case 401, 403:
 			// OpenAI-compatible providers send specific messages here ("Incorrect
 			// API key provided", "You don't have access to …"); surface them and
@@ -421,7 +427,63 @@ func modelNotFoundMessage(err error) string {
 	if detail := notFoundDetail(err); detail != "" {
 		out += " The provider said: " + detail
 	}
-	return out
+	return out + modelIDHint(err)
+}
+
+// withHint appends hint to msg, closing msg's sentence first when it does not
+// end in punctuation (provider messages often don't).
+func withHint(msg, hint string) string {
+	if hint == "" {
+		return msg
+	}
+	if !strings.HasSuffix(msg, ".") && !strings.HasSuffix(msg, "!") && !strings.HasSuffix(msg, "?") && !strings.HasSuffix(msg, "…") {
+		msg += "."
+	}
+	return msg + hint
+}
+
+// maxBodyQuote caps how much of a raw response body an error message quotes.
+const maxBodyQuote = 400
+
+// rawBody is an OpenAI-compatible error's response body on one line, cut to
+// maxBodyQuote runes, or "" when there is none.
+func rawBody(err error) string {
+	var oai *OpenAIError
+	if !errors.As(err, &oai) {
+		return ""
+	}
+	b := strings.Join(strings.Fields(oai.Body), " ")
+	if r := []rune(b); len(r) > maxBodyQuote {
+		b = string(r[:maxBodyQuote]) + "…"
+	}
+	return b
+}
+
+// modelIDHint explains the provider-prefix trap when an OpenAI-compatible
+// endpoint rejected a model id of the form "<prefix>/<name>": the id is sent
+// exactly as written, and "openai/grok-4.7" is not "grok-4.7" (#245). Ids are
+// not rewritten automatically because some hosts (OpenRouter) really do name
+// models "openai/gpt-5". When the endpoint listed what it serves and the bare
+// name is on that list, the hint says so outright. "" when it does not apply.
+func modelIDHint(err error) string {
+	var oai *OpenAIError
+	if !errors.As(err, &oai) {
+		return ""
+	}
+	model, _ := requestContext(err)
+	i := strings.LastIndex(model, "/")
+	if i <= 0 || i == len(model)-1 {
+		return ""
+	}
+	bare := model[i+1:]
+	for _, m := range oai.SupportedModels() {
+		if m == bare {
+			return fmt.Sprintf(" The endpoint serves %q: model ids are sent exactly as written, so set model = %q (drop the %q prefix).",
+				bare, bare, model[:i+1])
+		}
+	}
+	return fmt.Sprintf(" Note: model ids are sent to the endpoint exactly as written, prefix included — if it lists %q "+
+		"rather than %q (see /model, or GET <baseURL>/models), set model = %q.", bare, model, bare)
 }
 
 // anthropicNotFoundModel reads the model id out of Anthropic's 404 body,
@@ -451,14 +513,14 @@ func (e *requestError) Error() string { return e.err.Error() }
 func (e *requestError) Unwrap() error { return e.err }
 
 // annotateNotFound wraps err with the request's model and endpoint when it is
-// a 404 or a model-not-found rejection — the errors whose message needs them.
-// Every other error is returned unchanged.
+// a 4xx — a 404, a model-not-found, or a 400 whose message may need to explain
+// the model id (modelIDHint). Every other error is returned unchanged.
 func annotateNotFound(err error, model, endpoint string) error {
 	if err == nil {
 		return nil
 	}
 	status, ok := apiStatus(err)
-	if !ok || (status != 404 && !IsModelNotFound(err)) {
+	if !ok || status < 400 || status >= 500 {
 		return err
 	}
 	return &requestError{model: model, endpoint: endpoint, err: err}
