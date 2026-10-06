@@ -16,6 +16,14 @@ port mirrors (see `internal/version`).
   models it serves, names the bare id to use. The README and starter config no
   longer show `model = "openai/gpt-5.5"`, which read as "prefix with the
   provider" and broke every endpoint that lists bare ids.
+### Added
+- **Goal loop without the git ceremony** (#246): `--no-branch` / `--no-commit`
+  (`/goal run [N] no-branch|no-commit|artifact`), or a `mode: artifact` line in
+  the spec, run the loop on the current branch and leave each iteration's work
+  uncommitted — for goals whose output is reports or status files rather than a
+  diff to merge. Under no-commit the prompts stop asking for commits, and stall
+  detection watches the spec instead of HEAD. Code goals keep the branch and a
+  commit per iteration by default.
 
 ### Security
 - **The goal loop can no longer discard uncommitted work that predates it.**

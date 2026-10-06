@@ -1119,8 +1119,18 @@ Two complementary modes for working toward an objective:
     changed. Opt-ins: `/goal run [N] commit` commits the pre-existing changes
     to the goal branch first, as a commit of their own; `/goal run [N] refuse`
     does not start if there are any.
+  - **Goals whose output is not a diff.** For an analysis backlog whose
+    product is reports, packets or status files (often gitignored), the
+    branch and the commit per iteration are noise. `/goal run [N] no-branch`
+    stays on the current branch; `no-commit` leaves each iteration's work
+    uncommitted for you to review; `artifact` (or a line `mode: artifact` in
+    the spec) is both. In no-commit mode progress is the spec itself: the loop
+    stops as stalled when its Progress section stops changing, not when HEAD
+    does. Headless: `--no-branch`, `--no-commit`. (`commit` for pre-existing
+    changes needs a goal branch, so it cannot be combined with `no-branch`.)
   - Headless/scriptable: `klaudia --loop --permission-mode autonomous
-    [--max-iterations N] [--loop-dirty allow|commit|refuse]` runs the same loop
+    [--max-iterations N] [--loop-dirty allow|commit|refuse] [--no-branch]
+    [--no-commit]` runs the same loop
     without the TUI (each iteration with a fresh context). It needs a spec in
     the cwd and a mode that does not ask (`autonomous`, or
     `--dangerously-skip-permissions`), and also stops if it stalls (no new

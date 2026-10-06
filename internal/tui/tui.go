@@ -490,6 +490,8 @@ type Model struct {
 	// loopGuard refuses tool calls that would discard uncommitted work that
 	// predates the loop (gitguard); applied to loop turns only.
 	loopGuard func(tool string, input []byte, cwd string) string
+	// loopMode is the run's git model (no-branch / no-commit, #246).
+	loopMode goal.RunMode
 	// quitArmed is set by a Ctrl+C press that had nothing left to cancel (see
 	// onCtrlC). While armed the status bar says so, and an immediately repeated
 	// Ctrl+C quits; any other key disarms it. This is what stops a reflexive
@@ -1684,7 +1686,7 @@ var commandList = []cmdInfo{
 	{"/restart", "<job>", "Restart a background job in place, keeping its name and log", completeJobArg},
 	{"/stopjob", "<job|all>", "Stop a background job and its whole process group", completeStopJobArg},
 	{"/trust", "[upgrade|observe|off|revoke <id|all>]", "Show what Klaudia may change on this machine, and what it already may", completeTrustArg},
-	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N] [commit|refuse]: iterate to the goal alongside any uncommitted changes, which it may not discard (commit: commit them to the goal branch first; refuse: do not start if there are any). stop: halt. clear: drop the standing reminder. text: standing reminder", nil},
+	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N] [commit|refuse] [no-branch] [no-commit|artifact]: iterate to the goal alongside any uncommitted changes, which it may not discard (commit: commit them to the goal branch first; refuse: do not start if there are any; no-branch/no-commit skip the goal branch and per-iteration commits). stop: halt. clear: drop the standing reminder. text: standing reminder", nil},
 	{"/memory", "[add|recent|stale|tag|promote|supersede]", "Show / audit / curate memory; no args views the index", nil},
 	{"/mcp", "", "List MCP servers; reconnect or disconnect them", nil},
 	{"/stats", "", "Show session stats (turns, tokens)", nil},
@@ -1970,15 +1972,29 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 
 	n := goal.DefaultIterations
 	policy := gitguard.Allow
+	var flags goal.RunMode
 	for _, a := range args {
 		if p, err := gitguard.ParsePolicy(a); err == nil && a != "" {
 			policy = p
 			continue
 		}
+		switch a {
+		case "no-branch":
+			flags.NoBranch = true
+			continue
+		case "no-commit":
+			flags.NoCommit = true
+			continue
+		case "artifact":
+			flags = flags.Merge(goal.Artifact)
+			continue
+		}
 		v, err := strconv.Atoi(a)
 		if err != nil || v <= 0 {
-			m.appendLine(errStyle.Render("usage: /goal run [N] [allow|commit|refuse]  (N = max iterations, a positive integer; " +
-				"allow (default) runs alongside uncommitted changes, commit commits them first, refuse stops if there are any)"))
+			m.appendLine(errStyle.Render("usage: /goal run [N] [allow|commit|refuse] [no-branch] [no-commit|artifact]  " +
+				"(N = max iterations, a positive integer; allow (default) runs alongside uncommitted changes, " +
+				"commit commits them first, refuse stops if there are any; no-branch/no-commit drop the goal " +
+				"branch / per-iteration commits)"))
 			return m, nil
 		}
 		n = v
@@ -1987,6 +2003,14 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 		n = goal.MaxIterations
 		m.appendLine(toolStyle.Render(fmt.Sprintf("  capped at %d iterations.", goal.MaxIterations)))
 	}
+
+	mode := goal.SpecMode(specText).Merge(flags)
+	if mode.NoBranch && policy == gitguard.Commit {
+		m.appendLine(errStyle.Render("Not starting the goal loop: commit puts pre-existing changes on the goal branch, " +
+			"and this run has none (no-branch, or the spec's mode: artifact). Drop commit to run alongside them, or commit them yourself."))
+		return m, nil
+	}
+	m.loopMode = mode
 
 	// Uncommitted work that predates the loop is recorded before anything
 	// moves (#250), so the guard can keep the loop from discarding it. The
@@ -2006,7 +2030,10 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 	// Reuse the branch if it already exists (resume prior work) rather than
 	// resetting it, so a second /goal run continues from earlier commits.
 	m.loopBranch, m.loopBaseBranch = "", ""
-	if cwd != "" {
+	if s := mode.String(); s != "" {
+		m.appendLine(toolStyle.Render("  ↳ " + s))
+	}
+	if cwd != "" && !mode.NoBranch {
 		branch := goal.BranchName(specText)
 		// Capture the branch we're starting from (the merge target) before we
 		// switch, unless we're already sitting on the goal branch (a resume).
@@ -2057,10 +2084,10 @@ func (m *Model) prepareFirstLoopTurn(specPath string, n int) string {
 		m.loopStubFixing = true
 		m.appendLine(toolStyle.Render(fmt.Sprintf("  ⚠ Progress tracker missing stubs for: %s — repairing first.", strings.Join(missing, ", "))))
 		m.appendLine(toolStyle.Render(fmt.Sprintf("  ↻ iteration 1/%d (stub fix)", n)))
-		return goal.StubFixPrompt(specPath, missing)
+		return goal.StubFixPromptFor(specPath, missing, m.loopMode)
 	}
 	m.appendLine(toolStyle.Render(fmt.Sprintf("  ↻ iteration 1/%d", n)))
-	return goal.IterationPrompt(specPath)
+	return goal.IterationPromptFor(specPath, m.loopMode)
 }
 
 // loopIsStall reports whether a finished iteration looks like an undetected
@@ -2164,11 +2191,11 @@ func (m *Model) continueIteration() string {
 	if m.loopRemaining > 0 {
 		next := m.loopTotal - m.loopRemaining + 1
 		m.appendLine(toolStyle.Render(fmt.Sprintf("  ↻ iteration %d/%d", next, m.loopTotal)))
-		return goal.IterationPrompt(m.loopSpecPath)
+		return goal.IterationPromptFor(m.loopSpecPath, m.loopMode)
 	}
 	m.loopWrapUp = true
 	m.appendLine(toolStyle.Render(fmt.Sprintf("  stopped after %d iteration(s); summarising progress to the spec…", m.loopTotal)))
-	return goal.WrapUpPrompt(m.loopSpecPath)
+	return goal.WrapUpPromptFor(m.loopSpecPath, m.loopMode)
 }
 
 // formatStats renders the /stats line. When the context limit is known, the

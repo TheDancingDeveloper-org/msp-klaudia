@@ -23,6 +23,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/doctor"
 	"github.com/greenthread-ai/klaudia/internal/gitguard"
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
+	"github.com/greenthread-ai/klaudia/internal/goal"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/lsp"
 	"github.com/greenthread-ai/klaudia/internal/mcp"
@@ -723,6 +724,8 @@ type options struct {
 	loop                 bool   // --loop: autonomous goal-spec iteration
 	maxIterations        int    // --max-iterations: outer-loop cap for --loop
 	loopDirty            string // --loop-dirty: refuse|commit|allow over pre-existing changes
+	loopNoBranch         bool   // --no-branch: run --loop on the current branch
+	loopNoCommit         bool   // --no-commit: --loop leaves its work uncommitted
 
 	systemPrompt       string   // --system-prompt: replace the default system prompt
 	appendSystemPrompt string   // --append-system-prompt: append to the system prompt
@@ -1022,6 +1025,8 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml, or $KLAUDIA_CONFIG_DIR/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --permission-mode autonomous or --dangerously-skip-permissions.")
 	f.StringVar(&opts.loopDirty, "loop-dirty", "allow", "What --loop does about uncommitted changes already in the tree: allow (default: run alongside them, leave them uncommitted, never discard or stage them), commit (commit them to the goal branch first, as their own commit), or refuse (do not start)")
+	f.BoolVar(&opts.loopNoBranch, "no-branch", false, "--loop: run on the current branch instead of a klaudia/goal-<slug> branch")
+	f.BoolVar(&opts.loopNoCommit, "no-commit", false, "--loop: leave each iteration's work uncommitted (for goals whose output is an artifact, not a diff); progress is tracked in the spec. A spec line `mode: artifact` sets this and --no-branch")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
 	f.StringVar(&opts.systemPrompt, "system-prompt", "", "Replace the default system prompt entirely with this text")
 	f.StringVar(&opts.appendSystemPrompt, "append-system-prompt", "", "Append this text to the system prompt (after --system-prompt when both are given)")
@@ -1141,6 +1146,8 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		if _, err := gitguard.ParsePolicy(opts.loopDirty); err != nil {
 			return usageErrorf("--loop-dirty: %v", err)
 		}
+	} else if opts.loopNoBranch || opts.loopNoCommit {
+		return usageErrorf("--no-branch and --no-commit only apply to --loop")
 	}
 	if opts.print && format == FormatStreamJSON && !opts.verbose {
 		return usageErrorf("--output-format stream-json requires --verbose")
@@ -1922,6 +1929,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			maxBudgetUSD: opts.maxBudgetUSD,
 			iterations:   opts.maxIterations,
 			dirty:        gitguard.Policy(opts.loopDirty),
+			runMode:      goal.RunMode{NoBranch: opts.loopNoBranch, NoCommit: opts.loopNoCommit},
 			permCtx:      permCtx,
 			hostGate:     hostGate,
 			approver:     approver,
