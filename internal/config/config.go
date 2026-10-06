@@ -24,12 +24,20 @@ import (
 const (
 	ProviderAnthropic = "anthropic" // default: native Anthropic Messages API
 	ProviderOpenAI    = "openai"    // OpenAI-compatible Chat Completions endpoint
+	ProviderBedrock   = "bedrock"   // Claude on Amazon Bedrock (SigV4, AWS default credential chain)
 )
 
 // Config is the .klaudia/config.toml schema.
 type Config struct {
-	// Provider selects the backend: "anthropic" (default) or "openai".
+	// Provider selects the backend: "anthropic" (default), "openai" or "bedrock".
 	Provider string `toml:"provider,omitempty"`
+	// Region is the AWS region for provider = "bedrock" (else AWS_REGION /
+	// AWS_DEFAULT_REGION). Credentials always come from the AWS default chain.
+	Region string `toml:"region,omitempty"`
+	// BedrockBetas lists the anthropic_beta flags forwarded to Bedrock; every
+	// other beta the agent would send is dropped (Bedrock rejects flags it does
+	// not serve). Empty: none.
+	BedrockBetas []string `toml:"bedrockBetas,omitempty"`
 	// Model is the default model (e.g. "openai/gpt-5.5"); --model overrides it.
 	Model string `toml:"model,omitempty"`
 	// FallbackModel is tried when the model is overloaded (once, for that
@@ -490,6 +498,12 @@ func merge(dst *Config, src Config) {
 	}
 	if src.BaseURL != "" {
 		dst.BaseURL = src.BaseURL
+	}
+	if src.Region != "" {
+		dst.Region = src.Region
+	}
+	if len(src.BedrockBetas) > 0 {
+		dst.BedrockBetas = src.BedrockBetas
 	}
 	if src.APIKey != "" {
 		dst.APIKey = src.APIKey

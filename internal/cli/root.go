@@ -172,6 +172,9 @@ func buildDoctorInput(cfg config.Config, model anthropic.Model, cwd, root string
 		if cfg.ResolveAPIKey() != "" {
 			in.AuthOK, in.AuthKind = true, "api-key"
 		}
+	} else if cfg.Provider == config.ProviderBedrock {
+		// Credentials come from the AWS default chain at request time.
+		in.AuthOK, in.AuthKind = true, "aws"
 	} else if cred, err := api.ResolveCredential(); err == nil {
 		in.AuthOK = true
 		if cred.IsOAuth() {
@@ -293,7 +296,8 @@ func modelLister(p api.Provider) func(context.Context) ([]api.ModelInfo, error) 
 
 // buildProvider selects and constructs the model provider from config. It
 // returns the provider and the provider's default model. Anthropic is the
-// default; "openai" uses an OpenAI-compatible Chat Completions endpoint.
+// default; "openai" uses an OpenAI-compatible Chat Completions endpoint;
+// "bedrock" is Claude on Amazon Bedrock (region + model/inference profile).
 func buildProvider(cfg config.Config) (api.Provider, string, error) {
 	switch cfg.Provider {
 	case config.ProviderOpenAI:
@@ -312,6 +316,15 @@ func buildProvider(cfg config.Config) (api.Provider, string, error) {
 			return nil, "", fmt.Errorf("provider \"openai\" needs apiKey or apiKeyEnv (or extraHeadersEnv for a header-authenticated endpoint) in ~/.klaudia/config.toml or ./.klaudia/config.toml; if using apiKeyEnv, export that variable before running")
 		}
 		return api.NewOpenAIProvider(cfg.BaseURL, key, cfg.Temperature, extraHeaders), cfg.Model, nil
+	case config.ProviderBedrock:
+		if strings.TrimSpace(cfg.Model) == "" {
+			return nil, "", fmt.Errorf("provider \"bedrock\" requires model: the Bedrock model id or inference-profile id (e.g. an AU cross-region profile) in config.toml or --model")
+		}
+		client, err := api.NewBedrock(context.Background(), cfg.Region, cfg.BedrockBetas)
+		if err != nil {
+			return nil, "", err
+		}
+		return client, cfg.Model, nil
 	default:
 		cred, err := api.ResolveCredential()
 		if err != nil {

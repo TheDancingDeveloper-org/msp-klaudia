@@ -368,6 +368,11 @@ func IsTransient(err error) bool {
 		}
 		return false
 	}
+	// Bedrock reports throttling and capacity inside the response stream as an
+	// exception, not an HTTP status.
+	if IsBedrockTransient(err) {
+		return true
+	}
 	if IsContextOverflow(err) {
 		return false
 	}

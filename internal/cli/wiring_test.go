@@ -248,6 +248,28 @@ func TestBuildProviderOpenAI(t *testing.T) {
 	}
 }
 
+// provider = "bedrock" needs a model id (Bedrock has no Claude default) and a
+// region; with both it builds the Bedrock client, credentials resolved later.
+func TestBuildProviderBedrock(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+	t.Setenv("AWS_CONFIG_FILE", "/nonexistent/klaudia-test")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent/klaudia-test")
+	if _, _, err := buildProvider(config.Config{Provider: config.ProviderBedrock, Region: "ap-southeast-2"}); err == nil ||
+		!strings.Contains(err.Error(), "requires model") {
+		t.Errorf("no model: err = %v", err)
+	}
+	if _, _, err := buildProvider(config.Config{Provider: config.ProviderBedrock, Model: "m"}); err == nil ||
+		!strings.Contains(err.Error(), "region") {
+		t.Errorf("no region: err = %v", err)
+	}
+	p, model, err := buildProvider(config.Config{Provider: config.ProviderBedrock, Region: "ap-southeast-2",
+		Model: "au.anthropic.claude-sonnet-4-5-20250929-v1:0"})
+	if err != nil || p == nil || model != "au.anthropic.claude-sonnet-4-5-20250929-v1:0" {
+		t.Fatalf("buildProvider = %v, %q, %v", p, model, err)
+	}
+}
+
 // With no MCP servers, /mcp shows none and reconnecting an unknown one fails
 // by name.
 func TestMCPControllerWithNoServers(t *testing.T) {
