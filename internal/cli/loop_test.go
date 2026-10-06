@@ -160,7 +160,7 @@ func dirtyRepo(t *testing.T, e *cliEnv) {
 	e.write("PRD.md", "# Dirty goal\n\n- [ ] task\n\n## Verify\n\nmake test\n")
 	e.write("user.txt", "committed\n")
 	gitInit(t, e)
-	e.write("user.txt", "the user's uncommitted afternoon\n")
+	e.write("user.txt", userEdit)
 	e.write("notes/scratch.txt", "untracked notes\n")
 }
 
@@ -173,31 +173,14 @@ func readFile(t *testing.T, e *cliEnv, rel string) string {
 	return string(b)
 }
 
-// By default the loop does not start over uncommitted tracked changes (#250).
-func TestLoopRefusesDirtyTree(t *testing.T) {
-	m := newFakeModel(t)
-	e := newCLIEnv(t, m)
-	dirtyRepo(t, e)
+const userEdit = "the user's uncommitted afternoon\n"
 
-	r := e.run(nil, "--loop", "--dangerously-skip-permissions")
-	if r.Err == nil || !strings.Contains(r.Err.Error(), "user.txt") || !strings.Contains(r.Err.Error(), "--loop-dirty=commit") {
-		t.Fatalf("err = %v, want a refusal naming user.txt and the way past it", r.Err)
-	}
-	if len(m.Requests()) != 0 {
-		t.Error("model called on a dirty tree")
-	}
-	if got := gitBranch(e.Dir); got != "main" {
-		t.Errorf("branch = %q; a refused loop must not move off main", got)
-	}
-	if got := readFile(t, e, "user.txt"); !strings.Contains(got, "afternoon") {
-		t.Errorf("user.txt = %q", got)
-	}
-}
-
-// The #250 regression: whatever the model runs, an unrelated uncommitted
-// change present when the loop started survives the loop. The model here does
-// exactly what the production run did — a broad `git checkout --` to undo its
-// own edit — and then a `git clean`, in the mode with no permission checks.
+// The #250 regression, under the operator's scope: the loop starts ON a dirty
+// tree — no flag, no clean-tree precondition — and whatever the model runs,
+// the unrelated uncommitted change is still there afterwards, byte for byte,
+// and still uncommitted. The model here does what the production run did (a
+// broad `git checkout --` to undo its own edit), then every other way of
+// losing or sweeping up the user's work, in the mode with no permission checks.
 func TestLoopKeepsPreexistingChanges(t *testing.T) {
 	m := newFakeModel(t,
 		use("Bash", map[string]any{"command": "echo mine > own.txt && git add own.txt && git commit -qm own && echo oops >> own.txt"}),
@@ -205,34 +188,60 @@ func TestLoopKeepsPreexistingChanges(t *testing.T) {
 		use("Bash", map[string]any{"command": "git reset --hard"}),
 		use("Bash", map[string]any{"command": "git clean -fd"}),
 		use("Bash", map[string]any{"command": "git stash -u"}),
+		use("Bash", map[string]any{"command": "git add -A && git commit -qm everything"}),
+		use("Bash", map[string]any{"command": "git commit -qam everything"}),
 		use("Bash", map[string]any{"command": "git checkout -- own.txt"}), // its own file only: allowed
 		say(goal.CompleteToken),
 	)
 	e := newCLIEnv(t, m)
 	dirtyRepo(t, e)
 
-	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--loop-dirty", "allow")
+	r := e.run(nil, "--loop", "--dangerously-skip-permissions")
 	if r.Err != nil {
 		t.Fatal(r.dump())
 	}
-	if got := readFile(t, e, "user.txt"); !strings.Contains(got, "afternoon") {
-		t.Errorf("user.txt = %q: the pre-existing change was discarded", got)
+	if got := readFile(t, e, "user.txt"); got != userEdit {
+		t.Errorf("user.txt = %q, want the pre-existing change %q unmodified", got, userEdit)
 	}
-	if got := readFile(t, e, "notes/scratch.txt"); !strings.Contains(got, "untracked notes") {
-		t.Errorf("notes/scratch.txt = %q: the untracked file was removed", got)
+	if out, _ := gitRun(e.Dir, "show", "HEAD:user.txt"); out != "committed\n" {
+		t.Errorf("HEAD:user.txt = %q: the pre-existing change was swept into a commit", out)
+	}
+	if out, _ := gitRun(e.Dir, "status", "--porcelain", "--", "user.txt"); !strings.HasPrefix(out, " M") {
+		t.Errorf("user.txt status = %q, want it still an unstaged modification", out)
+	}
+	if got := readFile(t, e, "notes/scratch.txt"); got != "untracked notes\n" {
+		t.Errorf("notes/scratch.txt = %q: the untracked file was removed or changed", got)
 	}
 	if got := readFile(t, e, "own.txt"); got != "mine\n" {
 		t.Errorf("own.txt = %q: the loop's revert of its own file did not run", got)
 	}
 	if !strings.Contains(r.Stderr, "leaving 1 pre-existing change(s) uncommitted") {
-		t.Errorf("stderr lacks the allow notice:\n%s", r.Stderr)
+		t.Errorf("stderr lacks the coexist notice:\n%s", r.Stderr)
 	}
-	refused := 0
-	for _, req := range m.Requests() {
-		refused = strings.Count(req.Raw(), "existed before this run began")
+	reqs := m.Requests()
+	if refused := strings.Count(reqs[len(reqs)-1].Raw(), "existed before this run began"); refused != 6 {
+		t.Errorf("%d commands refused, want 6", refused)
 	}
-	if refused != 4 {
-		t.Errorf("%d discarding commands refused, want 4", refused)
+}
+
+// Refusing a dirty tree is an explicit opt-in, never the default.
+func TestLoopRefuseIsOptIn(t *testing.T) {
+	m := newFakeModel(t)
+	e := newCLIEnv(t, m)
+	dirtyRepo(t, e)
+
+	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--loop-dirty=refuse")
+	if r.Err == nil || !strings.Contains(r.Err.Error(), "user.txt") {
+		t.Fatalf("err = %v, want a refusal naming user.txt", r.Err)
+	}
+	if len(m.Requests()) != 0 {
+		t.Error("model called after an opt-in refusal")
+	}
+	if got := gitBranch(e.Dir); got != "main" {
+		t.Errorf("branch = %q; a refused loop must not move off main", got)
+	}
+	if got := readFile(t, e, "user.txt"); got != userEdit {
+		t.Errorf("user.txt = %q", got)
 	}
 }
 
@@ -273,7 +282,7 @@ func TestLoopCommitsPreexistingChanges(t *testing.T) {
 func TestLoopDirtyFlagValidated(t *testing.T) {
 	e := newCLIEnv(t, newFakeModel(t))
 	r := e.run(nil, "--loop", "--dangerously-skip-permissions", "--loop-dirty", "yolo")
-	if r.Err == nil || !strings.Contains(r.Err.Error(), "refuse|commit|allow") {
+	if r.Err == nil || !strings.Contains(r.Err.Error(), "allow|commit|refuse") {
 		t.Fatalf("err = %v", r.Err)
 	}
 }

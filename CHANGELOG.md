@@ -21,13 +21,15 @@ port mirrors (see `internal/version`).
 - **The goal loop can no longer discard uncommitted work that predates it.**
   Its first production run undid a one-line change of its own with
   `git checkout -- <14 files>`, reverting every one of them to HEAD and
-  destroying uncommitted work it did not make (#250). `/goal run` and
-  `klaudia --loop` now refuse to start over uncommitted tracked changes unless
-  told to `commit` them to the goal branch first or `allow` them
-  (`/goal run [N] commit|allow`, `--loop-dirty refuse|commit|allow`), and for
-  the whole run a guard refuses any git checkout/restore/reset --hard/clean/
-  stash/rm -f that could reach a path that was dirty when the loop began, in
-  every permission mode and in sub-agents.
+  destroying uncommitted work it did not make (#250). The loop still runs on a
+  dirty tree — no clean tree is required — but it now records what was
+  uncommitted when it started, and for the whole run a guard refuses any git
+  checkout/restore/reset --hard/clean/stash/rm -f that could reach those paths,
+  and any add -A/./-u, commit -a or add of them that would sweep them into the
+  loop's commits, in every permission mode and in sub-agents. They are left
+  exactly as they were, uncommitted. `--loop-dirty commit|refuse` (`/goal run
+  [N] commit|refuse`) opt into committing them to the goal branch first, or
+  not starting.
 - **Plan mode is no longer bypassed by allow rules.** `permission.Check`
   consulted allow rules before a tool's intrinsic decision, which is where plan
   mode's read-only refusal lives, so with `Bash(git:*)` or `Edit` allowed, plan

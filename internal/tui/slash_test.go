@@ -1002,9 +1002,10 @@ func TestSlashCommandsWithoutTheirBackends(t *testing.T) {
 	}
 }
 
-// /goal run does not start over uncommitted tracked changes unless told what
-// to do with them (#250); "allow" starts it with a guard on every loop turn
-// that refuses to discard them, and "commit" commits them to the goal branch.
+// /goal run starts ON a dirty tree by default (#250, operator scope: no
+// clean-tree precondition), with a guard on every loop turn that refuses to
+// discard or stage the pre-existing change; "refuse" is an explicit opt-in,
+// and "commit" commits the change to the goal branch first.
 func TestGoalRunOverUncommittedWork(t *testing.T) {
 	dir := gitRepo(t)
 	m := slashModel(t)
@@ -1019,29 +1020,31 @@ func TestGoalRunOverUncommittedWork(t *testing.T) {
 	write(t, dir, "PRD.md", "# Goal: build the widget\n\n## Progress\n\n- [ ] widget\n\n## Verify\n\nmake test\n")
 	write(t, dir, "app.go", "the user's uncommitted work\n")
 
-	m.handleSlash("/goal run 2")
+	m.handleSlash("/goal run 2 refuse")
 	if !strings.Contains(shown(m), "Not starting the goal loop") || !strings.Contains(shown(m), "app.go") {
-		t.Fatalf("a dirty tree did not stop /goal run:\n%s", shown(m))
+		t.Fatalf("refuse did not stop /goal run:\n%s", shown(m))
 	}
 	if m.loopRemaining != 0 || m.state == stateRunning {
-		t.Fatal("the loop started over uncommitted work")
+		t.Fatal("the loop started despite refuse")
 	}
 	if head, _ := gitOutput(dir, "rev-parse", "--abbrev-ref", "HEAD"); strings.TrimSpace(head) != "main" {
 		t.Errorf("a refused loop moved the repository to %q", strings.TrimSpace(head))
 	}
 
-	m.handleSlash("/goal run 2 allow")
+	m.handleSlash("/goal run 2")
 	awaitMsg(t, m.events)
 	if m.loopRemaining != 2 || !strings.Contains(shown(m), "leaving 1 pre-existing change(s) uncommitted") {
-		t.Fatalf("allow did not start the loop (remaining=%d):\n%s", m.loopRemaining, shown(m))
+		t.Fatalf("the default did not start the loop alongside the change (remaining=%d):\n%s", m.loopRemaining, shown(m))
 	}
 	if len(guards) != 1 || guards[0] == nil {
 		t.Fatalf("the loop turn ran without the command guard: %v", guards)
 	}
-	if msg := guards[0]("Bash", []byte(`{"command":"git checkout -- app.go"}`), dir); msg == "" {
-		t.Error("the guard allowed discarding the user's app.go")
+	for _, cmd := range []string{"git checkout -- app.go", "git add -A", "git commit -am x"} {
+		if msg := guards[0]("Bash", []byte(`{"command":"`+cmd+`"}`), dir); msg == "" {
+			t.Errorf("the guard allowed %q over the user's app.go", cmd)
+		}
 	}
-	if got, _ := os.ReadFile(filepath.Join(dir, "app.go")); !strings.Contains(string(got), "uncommitted work") {
+	if got, _ := os.ReadFile(filepath.Join(dir, "app.go")); string(got) != "the user's uncommitted work\n" {
 		t.Errorf("app.go = %q", got)
 	}
 

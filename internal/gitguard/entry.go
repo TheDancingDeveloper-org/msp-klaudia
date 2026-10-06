@@ -12,32 +12,32 @@ import (
 type Policy string
 
 const (
-	// Refuse stops before doing anything. The default: the run cannot tell its
-	// own changes from the user's once it starts, so it does not start.
-	Refuse Policy = "refuse"
-	// Commit records the pre-existing changes as a commit of their own on the
-	// run's branch first, so they are preserved and separable from its work.
-	Commit Policy = "commit"
-	// Allow runs over them, leaving them uncommitted; the guard bars the run
-	// from discarding them.
+	// Allow is the default: the run coexists with the pre-existing changes and
+	// leaves them uncommitted, and the guard bars it from discarding or
+	// staging them. Iterating with uncommitted work present must just work.
 	Allow Policy = "allow"
+	// Commit (opt-in) records the pre-existing changes as a commit of their
+	// own on the run's branch first, so they are preserved and separable.
+	Commit Policy = "commit"
+	// Refuse (opt-in) stops before doing anything when there are any.
+	Refuse Policy = "refuse"
 )
 
 // Policies lists the accepted values, for help text.
-const Policies = "refuse|commit|allow"
+const Policies = "allow|commit|refuse"
 
-// ParsePolicy reads a policy name; "" is Refuse.
+// ParsePolicy reads a policy name; "" is Allow.
 func ParsePolicy(s string) (Policy, error) {
 	switch p := Policy(strings.ToLower(strings.TrimSpace(s))); p {
 	case "":
-		return Refuse, nil
+		return Allow, nil
 	case Refuse, Commit, Allow:
 		return p, nil
 	}
 	return "", fmt.Errorf("unknown dirty-tree policy %q (want %s)", s, Policies)
 }
 
-// RefuseError explains why a Refuse run will not start; how says how to choose
+// RefuseError explains why a run under the opt-in Refuse policy will not start; how says how to choose
 // another policy in the caller's frontend (a flag, or a /goal run argument).
 // It is nil when there are no pre-existing tracked changes — untracked files
 // alone do not stop a run, since the guard keeps `git clean` off them.
@@ -53,8 +53,8 @@ func (b *Baseline) RefuseError(how string) error {
 		list = list[:show]
 	}
 	return fmt.Errorf("the working tree already has uncommitted changes to %d tracked file(s): %s%s. "+
-		"The goal loop will not start over work it did not make, because it cannot tell that work from its own "+
-		"once it begins. Commit or stash it yourself, or %s",
+		"--loop-dirty=refuse (or /goal run … refuse) was asked to stop in that case. "+
+		"Drop it to run alongside them (the default: they are left uncommitted and the loop may not discard them), or %s",
 		len(b.Tracked), strings.Join(list, ", "), more, how)
 }
 
@@ -99,7 +99,7 @@ func Begin(cwd string, policy Policy, how string, own ...string) (*Baseline, err
 		return nil, fmt.Errorf("reading the working tree: %w", err)
 	}
 	b = b.Without(own...)
-	if policy == "" || policy == Refuse {
+	if policy == Refuse {
 		if rerr := b.RefuseError(how); rerr != nil {
 			return nil, rerr
 		}

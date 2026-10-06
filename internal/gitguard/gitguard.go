@@ -139,9 +139,12 @@ func (b *Baseline) CheckCommand(cmd, cwd string) string {
 	if b.Empty() {
 		return ""
 	}
-	hits, what := b.scan(cmd, cwd, 0)
+	hits, what, stage := b.scan(cmd, cwd, 0)
 	if len(hits) == 0 {
 		return ""
+	}
+	if stage {
+		return stageRefusal(what, hits)
 	}
 	return refusal(what, hits)
 }
@@ -151,21 +154,21 @@ const maxDepth = 4
 
 // scan returns the protected paths cmd could discard and the git invocation
 // that would do it.
-func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string) {
+func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
 	a, err := bashparser.Parse(cmd)
 	if err != nil || depth > maxDepth {
 		// Unreadable: refuse only if it plausibly runs a discarding git command.
 		if mentionsDiscard(cmd) {
-			return b.all(), "an unparsable command that mentions a discarding git subcommand"
+			return b.all(), "an unparsable command that mentions a discarding git subcommand", false
 		}
-		return nil, ""
+		return nil, "", false
 	}
 	// After a cd the reader no longer knows where relative paths point.
 	moved := false
 	for _, c := range a.Commands {
 		if payload, ok := bashparser.ShellPayload(c.Name, c.Args); ok {
-			if hits, what := b.scan(payload, cwd, depth+1); len(hits) > 0 {
-				return hits, what
+			if hits, what, stage := b.scan(payload, cwd, depth+1); len(hits) > 0 {
+				return hits, what, stage
 			}
 			continue
 		}
@@ -202,10 +205,10 @@ func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string) {
 			hits = b.pick(d, b.resolve(d.paths, dir), len(d.paths) == 0)
 		}
 		if len(hits) > 0 {
-			return hits, "git " + strings.Join(append([]string{args[0]}, d.flags...), " ")
+			return hits, "git " + strings.Join(append([]string{args[0]}, d.flags...), " "), d.stage
 		}
 	}
-	return nil, ""
+	return nil, "", false
 }
 
 // discardSpec describes what a git subcommand invocation can throw away.
@@ -213,6 +216,7 @@ type discardSpec struct {
 	paths     []string // pathspecs, as written
 	all       bool     // reaches the whole tree whatever the pathspecs say
 	tracked   bool     // can discard changes to tracked files
+	stage     bool     // stages or commits them rather than discarding them
 	untracked bool     // can remove untracked files
 	flags     []string // for the message
 }
@@ -310,6 +314,31 @@ func discard(sub string, args []string) *discardSpec {
 			return &discardSpec{all: true, tracked: true, flags: []string{"--discard-changes"}}
 		}
 		return nil
+	// Staging is not destruction, but sweeping pre-existing changes into the
+	// run's commit takes them out of the user's hands and mixes them with the
+	// run's work; the run commits only what it changed.
+	case "add":
+		if has("-n", "--dry-run") || shortHas('n') {
+			return nil
+		}
+		if has("-A", "--all") || shortHas('A') {
+			return &discardSpec{all: true, tracked: true, untracked: true, stage: true, flags: []string{"-A"}}
+		}
+		if has("-u", "--update") || shortHas('u') {
+			return &discardSpec{paths: paths, tracked: true, stage: true, flags: []string{"-u"}}
+		}
+		if len(paths) == 0 {
+			return nil
+		}
+		return &discardSpec{paths: paths, tracked: true, untracked: true, stage: true}
+	case "commit":
+		if has("-a", "--all") || shortHas('a') {
+			return &discardSpec{all: true, tracked: true, stage: true, flags: []string{"-a"}}
+		}
+		if len(paths) == 0 {
+			return nil // commits what is staged; the add that staged it was checked
+		}
+		return &discardSpec{paths: paths, tracked: true, stage: true}
 	}
 	return nil
 }
@@ -319,7 +348,8 @@ func discard(sub string, args []string) *discardSpec {
 func splitArgs(args []string) (flags, positional []string, dashdash bool) {
 	valued := map[string]bool{"-s": true, "--source": true, "-m": true, "--message": true,
 		"-b": true, "-B": true, "--orphan": true, "-e": true, "--exclude": true,
-		"--pathspec-from-file": true, "--conflict": true}
+		"--pathspec-from-file": true, "--conflict": true, "-F": true, "--file": true, "-C": true,
+		"-c": true, "--author": true, "--date": true, "--fixup": true, "--squash": true, "--chmod": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -438,12 +468,28 @@ func mentionsDiscard(cmd string) bool {
 	if !strings.Contains(cmd, "git") {
 		return false
 	}
-	for _, w := range []string{"checkout", "restore", "reset", "clean", "stash", " rm ", "switch"} {
+	for _, w := range []string{"checkout", "restore", "reset", "clean", "stash", " rm ", "switch", " add ", "commit"} {
 		if strings.Contains(cmd, w) {
 			return true
 		}
 	}
 	return false
+}
+
+func stageRefusal(what string, hits []string) string {
+	list, more := shortList(hits)
+	return fmt.Sprintf("Refused: %s would stage or commit uncommitted changes that existed before this run began "+
+		"and are the user's, not yours: %s%s. They stay uncommitted. Commit only your own work: "+
+		"`git add <the files you changed>` (not -A, ., -u or commit -a), leaving out the files in that list.",
+		what, strings.Join(list, ", "), more)
+}
+
+func shortList(hits []string) ([]string, string) {
+	const show = 8
+	if len(hits) > show {
+		return hits[:show], fmt.Sprintf(" (and %d more)", len(hits)-show)
+	}
+	return hits, ""
 }
 
 func refusal(what string, hits []string) string {

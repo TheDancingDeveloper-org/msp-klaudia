@@ -1021,7 +1021,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.safeMode, "safe-mode", false, "Start without anything this project supplies: its .klaudia/config.toml, .mcp.json servers, skills, CLAUDE.md, memory and knowledge. For opening an unfamiliar repository or getting past a broken project config")
 	f.StringVar(&opts.createConfig, "create-config", "", "Create a starter TOML config and exit: global (~/.klaudia/config.toml, or $KLAUDIA_CONFIG_DIR/config.toml) or local (./.klaudia/config.toml)")
 	f.BoolVar(&opts.loop, "loop", false, "Autonomous loop: iterate against the goal spec (PRD.md or .klaudia/GOAL.md) until complete or --max-iterations. Requires --permission-mode autonomous or --dangerously-skip-permissions.")
-	f.StringVar(&opts.loopDirty, "loop-dirty", "refuse", "What --loop does when tracked files already have uncommitted changes: refuse (default), commit (commit them to the goal branch first), or allow (leave them; the loop may not discard them)")
+	f.StringVar(&opts.loopDirty, "loop-dirty", "allow", "What --loop does about uncommitted changes already in the tree: allow (default: run alongside them, leave them uncommitted, never discard or stage them), commit (commit them to the goal branch first, as their own commit), or refuse (do not start)")
 	f.IntVar(&opts.maxIterations, "max-iterations", 0, "Max iterations for --loop (0 = default 10, hard cap 50)")
 	f.StringVar(&opts.systemPrompt, "system-prompt", "", "Replace the default system prompt entirely with this text")
 	f.StringVar(&opts.appendSystemPrompt, "append-system-prompt", "", "Append this text to the system prompt (after --system-prompt when both are given)")

@@ -101,11 +101,12 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	iters := goal.Iterations(p.iterations)
 	errOut := cmd.ErrOrStderr()
 
-	// Pre-existing uncommitted work is checked before anything moves: the
-	// first production run reverted 14 such files to HEAD while undoing a
-	// one-line change of its own (#250). The spec is the loop's own file.
-	baseline, err := gitguard.Begin(p.cwd, p.dirty, "re-run with --loop-dirty=commit (commit it to the goal branch first) "+
-		"or --loop-dirty=allow (leave it uncommitted; the loop is barred from discarding it).", specPath)
+	// Pre-existing uncommitted work is recorded before anything moves, so the
+	// guard can keep the loop off it for the whole run: the first production
+	// run reverted 14 such files to HEAD while undoing a one-line change of its
+	// own (#250). The loop runs alongside it by default; it never requires a
+	// clean tree. The spec is the loop's own file.
+	baseline, err := gitguard.Begin(p.cwd, p.dirty, "use --loop-dirty=commit to commit them to the goal branch first.", specPath)
 	if err != nil {
 		return fmt.Errorf("--loop: %w", err)
 	}

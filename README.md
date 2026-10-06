@@ -1108,17 +1108,19 @@ Two complementary modes for working toward an objective:
     two checks — a mechanical count of remaining `- [ ]` items, and a one-shot
     verification turn that re-reads the spec from disk and cross-references it
     against git/build/tests — and only honours completion if both agree.
-  - **Your uncommitted work is not the loop's to discard.** If tracked files
-    already have uncommitted changes, `/goal run` refuses to start — once it
-    begins it cannot tell your changes from its own. `/goal run [N] commit`
-    commits them to the goal branch first, as a commit of their own;
-    `/goal run [N] allow` leaves them uncommitted. Either way, for the whole run
-    the loop is refused any `git checkout --`, `git restore`,
-    `git reset --hard`, `git clean -f`, `git stash`, `git rm -f` or forced
-    switch that could reach a file that was dirty (or untracked) when it
-    started, in every permission mode. Untracked files alone do not stop it.
+  - **Your uncommitted work is not the loop's to discard.** The loop runs
+    alongside whatever is already uncommitted — no clean tree needed — and
+    leaves it exactly as it was, uncommitted. For the whole run it is refused
+    any `git checkout --`, `git restore`, `git reset --hard`, `git clean -f`,
+    `git stash`, `git rm -f` or forced switch that could reach a file that was
+    dirty (or untracked) when it started, and any `git add -A`/`.`/`-u`,
+    `git commit -a` or `git add <that file>` that would sweep it into the
+    loop's own commits — in every permission mode. It commits only what it
+    changed. Opt-ins: `/goal run [N] commit` commits the pre-existing changes
+    to the goal branch first, as a commit of their own; `/goal run [N] refuse`
+    does not start if there are any.
   - Headless/scriptable: `klaudia --loop --permission-mode autonomous
-    [--max-iterations N] [--loop-dirty refuse|commit|allow]` runs the same loop
+    [--max-iterations N] [--loop-dirty allow|commit|refuse]` runs the same loop
     without the TUI (each iteration with a fresh context). It needs a spec in
     the cwd and a mode that does not ask (`autonomous`, or
     `--dangerously-skip-permissions`), and also stops if it stalls (no new

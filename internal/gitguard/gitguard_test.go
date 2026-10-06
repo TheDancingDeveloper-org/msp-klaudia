@@ -109,11 +109,20 @@ func TestCheckCommand(t *testing.T) {
 		"bash -lc \"cd /r && git reset --hard\"",
 		"sudo git checkout -- README.md",
 		"git status; git checkout -- src/a.py",
+		// Staging the user's changes into the run's commit (#250, operator scope).
+		"git add -A && git commit -m wip",
+		"git add .",
+		"git add -u",
+		"git add src/a.py",
+		"git add scratch/notes.txt",
+		"git commit -am wip",
+		"git commit -a -m wip",
+		"git commit -m wip src/a.py",
 	}
 	for _, c := range refuse {
 		if msg := b.CheckCommand(c, "/r"); msg == "" {
 			t.Errorf("CheckCommand(%q) allowed it; want a refusal", c)
-		} else if !strings.Contains(msg, "pre-existing") && !strings.Contains(msg, "before this run") {
+		} else if !strings.Contains(msg, "before this run") {
 			t.Errorf("CheckCommand(%q) = %q; want it to explain the pre-existing changes", c, msg)
 		}
 	}
@@ -121,7 +130,10 @@ func TestCheckCommand(t *testing.T) {
 		"git status --short",
 		"git diff",
 		"git log --oneline",
-		"git add -A && git commit -m wip",
+		"git add src/b.py docs/new.md && git commit -m 'own work'",
+		"git commit -m wip",
+		"git commit --amend --no-edit",
+		"git add -n .",
 		"git checkout -- src/b.py",       // only its own file
 		"git checkout -- docs/other.md",  // only its own file
 		"git restore --staged src/a.py",  // unstages only

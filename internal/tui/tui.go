@@ -1684,7 +1684,7 @@ var commandList = []cmdInfo{
 	{"/restart", "<job>", "Restart a background job in place, keeping its name and log", completeJobArg},
 	{"/stopjob", "<job|all>", "Stop a background job and its whole process group", completeStopJobArg},
 	{"/trust", "[upgrade|observe|off|revoke <id|all>]", "Show what Klaudia may change on this machine, and what it already may", completeTrustArg},
-	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N] [commit|allow]: iterate to the goal (refuses over uncommitted changes unless told to commit or allow them). stop: halt. clear: drop the standing reminder. text: standing reminder", nil},
+	{"/goal", "[run N|stop|clear|text]", "No arg: goal-setting (draft/load a spec). run [N] [commit|refuse]: iterate to the goal alongside any uncommitted changes, which it may not discard (commit: commit them to the goal branch first; refuse: do not start if there are any). stop: halt. clear: drop the standing reminder. text: standing reminder", nil},
 	{"/memory", "[add|recent|stale|tag|promote|supersede]", "Show / audit / curate memory; no args views the index", nil},
 	{"/mcp", "", "List MCP servers; reconnect or disconnect them", nil},
 	{"/stats", "", "Show session stats (turns, tokens)", nil},
@@ -1969,7 +1969,7 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	n := goal.DefaultIterations
-	policy := gitguard.Refuse
+	policy := gitguard.Allow
 	for _, a := range args {
 		if p, err := gitguard.ParsePolicy(a); err == nil && a != "" {
 			policy = p
@@ -1977,8 +1977,8 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 		}
 		v, err := strconv.Atoi(a)
 		if err != nil || v <= 0 {
-			m.appendLine(errStyle.Render("usage: /goal run [N] [commit|allow]  (N = max iterations, a positive integer; " +
-				"commit|allow = what to do with uncommitted changes already in the tree)"))
+			m.appendLine(errStyle.Render("usage: /goal run [N] [allow|commit|refuse]  (N = max iterations, a positive integer; " +
+				"allow (default) runs alongside uncommitted changes, commit commits them first, refuse stops if there are any)"))
 			return m, nil
 		}
 		n = v
@@ -1988,13 +1988,13 @@ func (m *Model) startGoalLoop(args []string) (tea.Model, tea.Cmd) {
 		m.appendLine(toolStyle.Render(fmt.Sprintf("  capped at %d iterations.", goal.MaxIterations)))
 	}
 
-	// Uncommitted work that predates the loop is checked before anything
-	// moves (#250): the loop cannot tell it from its own once it starts.
+	// Uncommitted work that predates the loop is recorded before anything
+	// moves (#250), so the guard can keep the loop from discarding it. The
+	// loop runs alongside it by default; no clean tree is required.
 	m.loopGuard = nil
 	var baseline *gitguard.Baseline
 	if cwd != "" {
-		b, err := gitguard.Begin(cwd, policy, "start it with /goal run [N] commit (commit it to the goal branch first) "+
-			"or /goal run [N] allow (leave it uncommitted; the loop is barred from discarding it).", specPath)
+		b, err := gitguard.Begin(cwd, policy, "use /goal run [N] commit to commit them to the goal branch first.", specPath)
 		if err != nil {
 			m.appendLine(errStyle.Render("Not starting the goal loop: " + err.Error()))
 			return m, nil
