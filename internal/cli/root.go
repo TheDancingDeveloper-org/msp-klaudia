@@ -417,7 +417,7 @@ func modelLister(p api.Provider) func(context.Context) ([]api.ModelInfo, error) 
 // buildProvider selects and constructs the model provider from config. It
 // returns the provider and the provider's default model. Anthropic is the
 // default; "openai" uses an OpenAI-compatible Chat Completions endpoint.
-func buildProvider(cfg config.Config) (api.Provider, string, error) {
+func buildProvider(cfg config.Config, sessionID string) (api.Provider, string, error) {
 	switch cfg.Provider {
 	case config.ProviderOpenAI:
 		if cfg.BaseURL == "" {
@@ -434,7 +434,9 @@ func buildProvider(cfg config.Config) (api.Provider, string, error) {
 			}
 			return nil, "", fmt.Errorf("provider \"openai\" needs apiKey or apiKeyEnv (or extraHeadersEnv for a header-authenticated endpoint) in ~/.klaudia/config.toml or ./.klaudia/config.toml; if using apiKeyEnv, export that variable before running")
 		}
-		return api.NewOpenAIProvider(cfg.BaseURL, key, cfg.Temperature, extraHeaders), cfg.Model, nil
+		p := api.NewOpenAIProvider(cfg.BaseURL, key, cfg.Temperature, extraHeaders)
+		p.SetSessionID(sessionID)
+		return p, cfg.Model, nil
 	default:
 		cred, err := api.ResolveCredential()
 		if err != nil {
@@ -1455,7 +1457,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		fmt.Fprintf(cmd.ErrOrStderr(), "session retention: pruned %d old session(s)\n", len(removed))
 	}
 
-	provider, providerModel, err := buildProvider(cfg)
+	provider, providerModel, err := buildProvider(cfg, sessionID)
 	if err != nil {
 		return err
 	}

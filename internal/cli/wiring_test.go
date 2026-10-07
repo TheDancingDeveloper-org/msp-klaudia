@@ -241,8 +241,8 @@ func TestModelListerOnlyForListingProviders(t *testing.T) {
 // authenticated endpoint needs no key.
 func TestBuildProviderOpenAI(t *testing.T) {
 	t.Setenv("UNIT_HDR", "v")
-	p, model, err := buildProvider(config.Config{Provider: config.ProviderOpenAI, BaseURL: "http://127.0.0.1:1/v1",
-		Model: "gpt-unit", ExtraHeadersEnv: map[string]string{"X-Auth": "UNIT_HDR"}})
+		p, model, err := buildProvider(config.Config{Provider: config.ProviderOpenAI, BaseURL: "http://127.0.0.1:1/v1",
+			Model: "gpt-unit", ExtraHeadersEnv: map[string]string{"X-Auth": "UNIT_HDR"}}, "")
 	if err != nil || p == nil || model != "gpt-unit" {
 		t.Fatalf("buildProvider = %v, %q, %v", p, model, err)
 	}

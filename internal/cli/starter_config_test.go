@@ -49,7 +49,7 @@ func loadStarter(t *testing.T, path, cwd string) config.Config {
 // session starts, and fails the test on the first one that would stop it.
 func validateStarter(t *testing.T, cfg config.Config) api.Provider {
 	t.Helper()
-	provider, _, err := buildProvider(cfg)
+	provider, _, err := buildProvider(cfg, "")
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
