@@ -163,14 +163,14 @@ func (p *OpenAIProvider) consumeStream(body io.Reader, model string, sink Stream
 		sink.raw(synthEvent(map[string]any{"type": "message_stop"}))
 	}
 
-		msg, err := assembleMessage(model, text.String(), tools, finish, inTok, outTok)
-		if inTok != 0 || outTok != 0 {
-			logModelCall(modelCall{
-				session: p.sessionID, model: model,
-				inTokens: int(inTok), outTokens: int(outTok),
-			})
-		}
-		return msg, delivered, err
+	msg, err := assembleMessage(model, text.String(), tools, finish, inTok, outTok)
+	if inTok != 0 || outTok != 0 {
+		logModelCall(modelCall{
+			session: p.sessionID, model: model,
+			inTokens: int(inTok), outTokens: int(outTok),
+		})
+	}
+	return msg, delivered, err
 }
 
 // synthEvent builds a BetaRawMessageStreamEventUnion from a payload map by

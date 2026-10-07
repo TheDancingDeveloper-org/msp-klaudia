@@ -198,11 +198,11 @@ func (p *OpenAIProvider) streamAttempt(ctx context.Context, body []byte, model s
 		return anthropic.BetaMessage{}, false, false, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode >= 400 {
-			b, _ := readAll(resp.Body, 4096)
-			dumpFailedRequest(resp.StatusCode, body)
-			return anthropic.BetaMessage{}, false, false, &OpenAIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(b)}
-		}
+	if resp.StatusCode >= 400 {
+		b, _ := readAll(resp.Body, 4096)
+		dumpFailedRequest(resp.StatusCode, body)
+		return anthropic.BetaMessage{}, false, false, &OpenAIError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(b)}
+	}
 
 	var tripped atomic.Bool
 	var timer *time.Timer

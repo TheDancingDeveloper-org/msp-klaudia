@@ -53,16 +53,16 @@ func TestHelpMentionsCompletion(t *testing.T) {
 // at a config that is already right; the fix is exporting the named variable.
 func TestMissingKeyErrorNamesTheVariable(t *testing.T) {
 	t.Setenv("KLAUDIA_TEST_UNSET_KEY", "")
-		_, _, err := buildProvider(config.Config{
-			Provider:  config.ProviderOpenAI,
-			BaseURL:   "http://127.0.0.1:9/v1",
-			APIKeyEnv: "KLAUDIA_TEST_UNSET_KEY",
-		}, "")
+	_, _, err := buildProvider(config.Config{
+		Provider:  config.ProviderOpenAI,
+		BaseURL:   "http://127.0.0.1:9/v1",
+		APIKeyEnv: "KLAUDIA_TEST_UNSET_KEY",
+	}, "")
 	if err == nil || !strings.Contains(err.Error(), "$KLAUDIA_TEST_UNSET_KEY") {
 		t.Fatalf("err = %v, want it to name $KLAUDIA_TEST_UNSET_KEY", err)
 	}
 
-		_, _, err = buildProvider(config.Config{Provider: config.ProviderOpenAI, BaseURL: "http://127.0.0.1:9/v1"}, "")
+	_, _, err = buildProvider(config.Config{Provider: config.ProviderOpenAI, BaseURL: "http://127.0.0.1:9/v1"}, "")
 	if err == nil || !strings.Contains(err.Error(), "needs apiKey or apiKeyEnv") {
 		t.Fatalf("err = %v, want the generic missing-key message", err)
 	}
