@@ -164,6 +164,12 @@ func (p *OpenAIProvider) consumeStream(body io.Reader, model string, sink Stream
 	}
 
 	msg, err := assembleMessage(model, text.String(), tools, finish, inTok, outTok)
+	if inTok != 0 || outTok != 0 {
+		logModelCall(modelCall{
+			session: p.sessionID, model: model,
+			inTokens: int(inTok), outTokens: int(outTok),
+		})
+	}
 	return msg, delivered, err
 }
 
