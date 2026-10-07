@@ -147,3 +147,50 @@ func TestOpaque400OnlyMatchesTheBarePhrase(t *testing.T) {
 		t.Fatalf("attempts = %d, want 1 — a specific message is not opaque", got)
 	}
 }
+
+// The bare phrase wrapped in an error envelope says no more than it does
+// unwrapped, so it is opaque too; an envelope naming a cause is not.
+func TestOpaque400InsideAnEnvelope(t *testing.T) {
+	noWait(t)
+	t.Setenv("KLAUDIA_MAX_RETRIES", "0")
+	for _, tc := range []struct {
+		body string
+		want int32
+	}{
+		{`{"error":{"message":"Invalid request.","type":"invalid_request_error"}}`, 1 + opaque400Retries},
+		{`{"error":{"message":"tools[3].function.parameters is not valid JSON Schema"}}`, 1},
+	} {
+		srv, n := scriptServer(t, []struct {
+			status int
+			body   string
+		}{{400, tc.body}})
+		p := NewOpenAIProvider(srv.URL+"/v1", "k", nil, nil)
+		resp, err := doOnce(t, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if got := n.Load(); got != tc.want {
+			t.Errorf("%s: attempts = %d, want %d", tc.body, got, tc.want)
+		}
+	}
+}
+
+// SetModelLog redirects model-call lines (the TUI uses it to keep them off the
+// terminal it renders on) and its restore puts the previous sink back.
+func TestSetModelLogRedirectsAndRestores(t *testing.T) {
+	var a, b strings.Builder
+	restoreA := SetModelLog(&a)
+	defer restoreA()
+	logModelCall(modelCall{model: "m1", attempt: 1, max: 1})
+	restoreB := SetModelLog(&b)
+	logModelCall(modelCall{model: "m2", attempt: 1, max: 1})
+	restoreB()
+	logModelCall(modelCall{model: "m3", attempt: 1, max: 1})
+	if !strings.Contains(a.String(), `"m1"`) || !strings.Contains(a.String(), `"m3"`) || strings.Contains(a.String(), `"m2"`) {
+		t.Fatalf("a = %q, want m1 and m3 only", a.String())
+	}
+	if !strings.Contains(b.String(), `"m2"`) || strings.Contains(b.String(), `"m1"`) {
+		t.Fatalf("b = %q, want m2 only", b.String())
+	}
+}

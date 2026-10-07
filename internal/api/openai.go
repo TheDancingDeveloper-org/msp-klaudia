@@ -490,7 +490,7 @@ const opaque400Retries = 2
 
 // doWithRetry issues the request, retrying transient failures (connection
 // errors and 429/5xx) with exponential backoff that honors Retry-After. An
-// opaque 400 (empty body, or a bare "invalid request" with no error envelope)
+// opaque 400 (empty body, or the bare phrase "invalid request", enveloped or not)
 // gets up to opaque400Retries extra attempts; a 400 carrying a real message is
 // returned at once. The request body is re-created from bodyBytes each attempt.
 func (p *OpenAIProvider) doWithRetry(req *http.Request, bodyBytes []byte) (*http.Response, error) {
@@ -611,8 +611,8 @@ func retryStatus(resp *http.Response, attempt, max int, opaqueLeft *int) (bool, 
 }
 
 // errorDetail reports the actionable part of an error body: the parsed error
-// envelope's message, or the raw text when it says more than the bare phrase
-// "invalid request". An empty result means nothing actionable — the opaque
+// envelope's message, or else the raw text, unless all it says is the bare
+// phrase "invalid request". An empty result means nothing actionable — the opaque
 // case. Only the first 512 bytes are consumed, and the body is reassembled so
 // the caller can still read the whole response.
 func errorDetail(resp *http.Response) string {
@@ -623,9 +623,10 @@ func errorDetail(resp *http.Response) string {
 		return ""
 	}
 	if p := (&OpenAIError{StatusCode: resp.StatusCode, Body: text}).Payload(); p != nil && strings.TrimSpace(p.Message) != "" {
-		return truncate(p.Message, 200)
+		text = strings.TrimSpace(p.Message)
 	}
-	if strings.EqualFold(text, "invalid request") {
+	// The bare phrase says nothing whether or not it arrives in an envelope.
+	if strings.EqualFold(strings.TrimRight(text, "."), "invalid request") {
 		return ""
 	}
 	return truncate(text, 200)

@@ -4,6 +4,8 @@ import (
 	"io"
 	"log"
 	"os"
+
+	"github.com/greenthread-ai/klaudia/internal/api"
 )
 
 // quietStandardLogger stops the standard logger writing over the frame.
@@ -15,6 +17,9 @@ import (
 // defaults its browser logger to log.Printf (handled at source in
 // internal/browser, but it is not the only library that could).
 //
+// The provider's model-call lines (internal/api, written to stderr for Loki in
+// non-interactive runs) are redirected the same way, for the same reason.
+//
 // Set KLAUDIA_LOG to a file path to keep the output; otherwise it is discarded
 // for the lifetime of the program. The returned func restores the previous
 // destination, so a caller that runs the TUI and then prints diagnostics still
@@ -23,7 +28,9 @@ func quietStandardLogger() func() {
 	prevWriter := log.Writer()
 	prevFlags := log.Flags()
 	prevPrefix := log.Prefix()
+	var restoreModelLog func()
 	restore := func() {
+		restoreModelLog()
 		log.SetOutput(prevWriter)
 		log.SetFlags(prevFlags)
 		log.SetPrefix(prevPrefix)
@@ -32,6 +39,7 @@ func quietStandardLogger() func() {
 	if path := os.Getenv("KLAUDIA_LOG"); path != "" {
 		if f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 			log.SetOutput(f)
+			restoreModelLog = api.SetModelLog(f)
 			return func() {
 				restore()
 				f.Close()
@@ -40,5 +48,6 @@ func quietStandardLogger() func() {
 	}
 
 	log.SetOutput(io.Discard)
+	restoreModelLog = api.SetModelLog(io.Discard)
 	return restore
 }

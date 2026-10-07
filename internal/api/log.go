@@ -2,21 +2,36 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"sync"
 	"time"
 )
 
-// modelLog is where model-call lines go. stderr, not the standard logger: the
-// TUI discards log.Default so a library's log.Printf cannot corrupt the frame
-// (tui.quietStandardLogger), which would also swallow these. Docker captures a
-// container's stderr, and Node B's promtail scrapes every container's log
-// stream, so a line written here is in Loki with no extra shipper. Tests
-// replace it.
+// modelLog is where model-call lines go. stderr, not the standard logger, so a
+// non-interactive run (print, stream-json, ACP — stdout carries the protocol)
+// lands in Docker's capture of the container's stderr and from there in Loki.
+// The TUI is different: stderr is the same terminal it renders inline on, so it
+// redirects these lines with SetModelLog for its lifetime (tui.quietStandardLogger),
+// to $KLAUDIA_LOG when set and nowhere otherwise.
 var (
 	modelLogMu sync.Mutex
-	modelLog   = os.Stderr
+	modelLog   io.Writer = os.Stderr
 )
+
+// SetModelLog sends model-call lines to w and returns a func restoring the
+// previous destination.
+func SetModelLog(w io.Writer) (restore func()) {
+	modelLogMu.Lock()
+	prev := modelLog
+	modelLog = w
+	modelLogMu.Unlock()
+	return func() {
+		modelLogMu.Lock()
+		modelLog = prev
+		modelLogMu.Unlock()
+	}
+}
 
 // modelCall is one attempt at a model request, logged as a single JSON line.
 // It records status and shape only: never the API key, an auth header, the

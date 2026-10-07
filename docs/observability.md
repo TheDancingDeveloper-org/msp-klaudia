@@ -1,7 +1,7 @@
 # Model-call logs
 
-`internal/api` writes one JSON object per line to **stderr** for every attempt
-at a model call:
+`internal/api` writes one JSON object per line for every attempt at a model
+call — to **stderr**, except under the TUI (below):
 
 ```
 {"event":"model_call","provider":"openai","host":"api.theclawbay.com","model":"grok","attempt":1,"max":6,"status":400,"status_class":"4xx","request_id":"req_…","latency":812,"retry":true,"error":"opaque 400","session":"…"}
@@ -13,20 +13,30 @@ stream reports usage.
 The fields are status and shape only. A line never carries the API key, any
 auth header, prompt content, or tool arguments.
 
-stderr rather than the standard logger is deliberate. The TUI discards
-`log.Default` so a library's `log.Printf` cannot land in the middle of a
-repaint (`tui.quietStandardLogger`), and that would swallow these lines too.
-Docker captures a container's stderr regardless.
+stderr rather than the standard logger is deliberate: a non-interactive run
+(`-p`, stream-json, ACP) keeps stdout for its protocol, and Docker captures a
+container's stderr regardless.
+
+**The TUI is the exception.** It renders inline on the same terminal stderr
+writes to, so an uncoordinated line would tear the frame. While the TUI runs,
+model-call lines follow the standard logger (`tui.quietStandardLogger`): they
+go to the file named by `KLAUDIA_LOG` when it is set, and are discarded
+otherwise.
 
 ## Where the lines end up
 
-vogt-prod and vogt-dev run on Node B, and Node B's promtail already scrapes
-every container's log stream through its docker service-discovery job. A line
-written to stderr is therefore in the estate Loki (grafanaloki, host port
-3101) under the existing `docker/<service>` job, labelled `container`,
-`stack`, `service`, `job=docker/<service>` and `host=node-b` — the same stream
-as the rest of the vogt container's logs. No shipper, promtail change, or
-deploy step is needed; this is Klaudia-side only.
+For a non-interactive Klaudia whose stderr is the container's own (a process
+Docker started directly), Node B's promtail picks the lines up through its
+docker service-discovery job: estate Loki (grafanaloki, host port 3101), job
+`docker/<service>`, labelled `container`, `stack`, `service` and
+`host=node-b`.
+
+A Vogt session is **not** that case. Vogt runs Klaudia's TUI on a pseudo-terminal
+the engine owns, so its stderr is the session terminal, never the container's
+log stream, and nothing reaches Loki on its own. To keep the lines for a Vogt
+session, set `KLAUDIA_LOG` to a file (the session's environment or the template
+can carry it); getting that file into Loki is a promtail target on the
+estate side, not something Klaudia does.
 
 Stable keys worth filtering on: `session`, `provider`, `model`, `status`,
 `status_class`, `attempt`, `latency`. `status_class` is low-cardinality;
