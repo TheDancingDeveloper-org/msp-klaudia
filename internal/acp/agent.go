@@ -579,6 +579,9 @@ func (a *Agent) prompt(ctx context.Context, raw json.RawMessage) (any, error) {
 	res, runErr := a.opts.Run(turnCtx, agent.Turn{
 		Prompt:  text,
 		History: history,
+		// Background sub-agents report back to the editor thread that
+		// launched them, not to whichever thread runs the next turn.
+		Conversation: s.id,
 		Emit: func(ev agent.Event) {
 			if ev.Type == "assistant" && ev.Text != "" {
 				streamed.Store(true)

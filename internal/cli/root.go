@@ -1906,6 +1906,12 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			Hooks:         hookRunner,
 		}
 		turn.Apply(&opts)
+		// Every frontend collects its finished background sub-agents, scoped to
+		// the turn's conversation. This used to be set by the TUI alone, so over
+		// -p, stream-json and ACP a background Agent launch was never delivered
+		// (#276). Set here, a frontend cannot leave it out by accident.
+		bg, conversation := wiring.spawner.Background(), opts.Conversation
+		opts.CollectBackground = func() string { return bg.PendingReportFor(conversation) }
 		return opts
 	}
 
@@ -2033,8 +2039,6 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			})
 			// The swappable recorder, so /resume can repoint the transcript.
 			o.Recorder = rec
-			// Deliver finished background sub-agents into the next turn.
-			o.CollectBackground = wiring.spawner.Background().PendingReport
 			return loop.Run(ctx, o, turn.Emit)
 		}
 		return tui.Run(ctx, tui.RunFunc(runFn), initialMessages, sess)
@@ -2180,6 +2184,28 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	headlessOpts.PartialMessages = partial
 	headlessOpts.DeferredTools = deferredTools
 	res, err := loop.Run(ctx, headlessOpts, emit)
+	// Background sub-agents the turn launched are owed a later turn, and a -p
+	// run has no other: wait for them and deliver their results before the
+	// result line, within the run's caps.
+	res, err = drainBackground(ctx, wiring.spawner.Background(), res, err, drainLimits{
+		maxTurns:     opts.maxTurns,
+		maxBudgetUSD: opts.maxBudgetUSD,
+		wait:         headlessBackgroundWait,
+	}, func(ctx context.Context, history []anthropic.BetaMessageParam, maxTurns int, maxBudgetUSD float64) (agent.Result, error) {
+		o := headlessOpts
+		o.Prompt, o.PromptImages, o.InitialMessages = "", nil, history
+		o.MaxTurns, o.MaxBudgetUSD = maxTurns, maxBudgetUSD
+		return loop.Run(ctx, o, emit)
+	}, func(msg string) {
+		// Not through emit: over stream-json that is a no-op (the envelope
+		// recorder carries the conversation), and this must not be lost too.
+		ev := agent.Event{Type: "warning", Content: msg}
+		if format == FormatStreamJSON {
+			_ = r.Event(ev)
+			return
+		}
+		warnOn(cmd.ErrOrStderr(), format, ev)
+	})
 
 	out := ResultMessage{
 		Type:          "result",

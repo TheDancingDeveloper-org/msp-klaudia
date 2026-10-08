@@ -118,8 +118,13 @@ type Options struct {
 	// since the last poll (empty when none), which the loop appends as a user
 	// message so their results reach the model on the next request. This is what
 	// delivers a background Agent-tool launch back to the parent. Nil means the
-	// caller has no background sub-agents to collect (headless single-shot).
+	// caller has no background sub-agents to collect.
 	CollectBackground func() string
+	// Conversation identifies which conversation this run belongs to, for a
+	// frontend with more than one; see Turn.Conversation. It is passed to tools
+	// (tools.Context.Conversation) so a background sub-agent's result is
+	// delivered to the conversation that launched it.
+	Conversation string
 	// InitialMessages seeds the conversation when resuming a session. The new
 	// Prompt (if any) is appended after them.
 	InitialMessages []anthropic.BetaMessageParam
@@ -1235,14 +1240,15 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		}
 	}
 	results, err := tool.Execute(ctx, tools.Context{
-		WorkingDir:  opts.WorkingDir,
-		Ask:         opts.Asker,
-		Plan:        opts.Planner,
-		Reveal:      reveal,
-		HostChange:  hostChangeFor(opts),
-		Progress:    progress,
-		ReadText:    opts.ReadText,
-		Diagnostics: opts.Diagnostics,
+		WorkingDir:   opts.WorkingDir,
+		Ask:          opts.Asker,
+		Plan:         opts.Planner,
+		Reveal:       reveal,
+		HostChange:   hostChangeFor(opts),
+		Progress:     progress,
+		ReadText:     opts.ReadText,
+		Diagnostics:  opts.Diagnostics,
+		Conversation: opts.Conversation,
 	}, raw)
 	if err != nil {
 		return errResult(fmt.Sprintf("Tool execution error: %v", err))

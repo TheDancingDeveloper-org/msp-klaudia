@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +45,10 @@ type BackgroundAgent struct {
 	Result     string    // final text, once succeeded
 	Err        string    // error text, once failed
 	Isolated   bool      // ran in its own git worktree (a writer) vs shared tree
+	// Conversation is the Turn.Conversation of the turn that launched it: the
+	// one conversation its result is delivered to. "" for a frontend with only
+	// one conversation (TUI, stream-json, -p).
+	Conversation string
 }
 
 // Elapsed is how long the agent has run: to completion if finished, else so far.
@@ -99,20 +102,22 @@ func (r *BackgroundRegistry) now() time.Time {
 }
 
 // register adds a running agent and returns its assigned id. cancel is stored so
-// the entry can be stopped later; it may be nil.
-func (r *BackgroundRegistry) register(subagentType, label string, isolated bool, cancel func()) string {
+// the entry can be stopped later; it may be nil. conversation is the launching
+// turn's Turn.Conversation, which scopes delivery (see TakeFinishedFor).
+func (r *BackgroundRegistry) register(conversation, subagentType, label string, isolated bool, cancel func()) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
 	id := fmt.Sprintf("agent-%d", r.seq)
 	r.byID[id] = &backgroundEntry{
 		agent: BackgroundAgent{
-			ID:        id,
-			Type:      subagentType,
-			Label:     label,
-			Status:    BackgroundRunning,
-			StartedAt: r.now(),
-			Isolated:  isolated,
+			ID:           id,
+			Type:         subagentType,
+			Label:        label,
+			Status:       BackgroundRunning,
+			StartedAt:    r.now(),
+			Isolated:     isolated,
+			Conversation: conversation,
 		},
 		cancel: cancel,
 	}
@@ -186,20 +191,26 @@ func (r *BackgroundRegistry) Cancel(id string) bool {
 	return true
 }
 
-// TakeFinished returns the finished agents not yet collected, marking them
-// collected so each result is delivered to the parent exactly once. The loop
-// polls this between turns; the /agents view uses List instead so it keeps
-// showing finished agents.
-func (r *BackgroundRegistry) TakeFinished() []BackgroundAgent {
+// TakeFinished returns the finished agents not yet collected for the default
+// conversation (""). See TakeFinishedFor.
+func (r *BackgroundRegistry) TakeFinished() []BackgroundAgent { return r.TakeFinishedFor("") }
+
+// TakeFinishedFor returns the finished agents launched from conversation that
+// have not been collected yet, marking them collected so each result is
+// delivered to the parent exactly once. The loop polls this between turns; the
+// /agents view uses List instead so it keeps showing finished agents.
+//
+// Scoped by conversation because the registry is per process and an ACP
+// server runs several conversations in one: an agent launched from one editor
+// thread must not report into another.
+func (r *BackgroundRegistry) TakeFinishedFor(conversation string) []BackgroundAgent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []BackgroundAgent
 	// Deliver in the order they were launched, for a stable report.
-	ids := append([]string(nil), r.order...)
-	sort.SliceStable(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	for _, id := range r.order {
 		e := r.byID[id]
-		if e.agent.Done() && !r.collected[id] {
+		if e.agent.Conversation == conversation && e.agent.Done() && !r.collected[id] {
 			r.collected[id] = true
 			out = append(out, e.agent)
 		}
@@ -207,12 +218,37 @@ func (r *BackgroundRegistry) TakeFinished() []BackgroundAgent {
 	return out
 }
 
-// PendingReport formats the newly-finished background agents as a user message
-// for the parent loop, or "" when none are pending. Wiring this to
-// Options.CollectBackground is what turns "launched in the background" into
-// "delivered when ready".
-func (r *BackgroundRegistry) PendingReport() string {
-	finished := r.TakeFinished()
+// Undelivered returns the agents launched from conversation whose result has
+// not reached the parent yet: the ones still running and the ones that have
+// finished but not been collected. A headless run uses it to decide whether it
+// can exit (see cli's drainBackground).
+func (r *BackgroundRegistry) Undelivered(conversation string) (running, ready []BackgroundAgent) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range r.order {
+		e := r.byID[id]
+		if e.agent.Conversation != conversation || r.collected[id] {
+			continue
+		}
+		if e.agent.Done() {
+			ready = append(ready, e.agent)
+		} else {
+			running = append(running, e.agent)
+		}
+	}
+	return running, ready
+}
+
+// PendingReport formats the newly-finished background agents of the default
+// conversation (""). See PendingReportFor.
+func (r *BackgroundRegistry) PendingReport() string { return r.PendingReportFor("") }
+
+// PendingReportFor formats the newly-finished background agents launched from
+// conversation as a user message for the parent loop, or "" when none are
+// pending. Wiring this to Options.CollectBackground is what turns "launched in
+// the background" into "delivered when ready".
+func (r *BackgroundRegistry) PendingReportFor(conversation string) string {
+	finished := r.TakeFinishedFor(conversation)
 	if len(finished) == 0 {
 		return ""
 	}

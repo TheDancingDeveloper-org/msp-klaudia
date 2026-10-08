@@ -242,6 +242,20 @@ status, and can skip them without losing any conversation content.
 stream deltas) for token-by-token rendering. It applies only to `-p
 --output-format stream-json`, not to the stdin-driven session.
 
+## Background sub-agents
+
+An `Agent` call with `background: true` returns a handle right away. The
+sub-agent's result goes back to the model as a `user` message at the start of
+a later turn. In the stdin-driven session, that is the next turn the driver
+starts. Klaudia does not start a turn on its own when an agent finishes.
+
+A `-p` run has only one turn. So before it writes `result`, it waits for
+outstanding background agents and runs a follow-up turn with their results.
+That follow-up counts toward `--max-turns` and `--max-budget-usd`, the wait is
+capped at 10 minutes, and `result` covers every turn. If the run stops
+waiting, it writes a `warning` line naming each agent whose result was
+dropped, and stops those agents.
+
 ## Session lifecycle
 
 Embedded runs are stateless unless told otherwise: no auto-resume. To make a

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // Turn is one scripted assistant response: optional text followed by zero or
@@ -33,6 +34,11 @@ type Turn struct {
 	// an Anthropic error body of type ErrType instead of a stream.
 	Status  int
 	ErrType string
+
+	// Delay, when non-zero, holds the response back this long, for a test
+	// that needs one caller (a background sub-agent, say) to be slower than
+	// another.
+	Delay time.Duration
 }
 
 // ToolCall is a tool_use block the scripted model emits.
@@ -62,6 +68,16 @@ type Request struct {
 	raw []byte
 }
 
+// FirstMessage is the first message of the conversation, verbatim. For a
+// sub-agent's request that is the prompt its parent gave it, which is what
+// Route matches on.
+func (r Request) FirstMessage() string {
+	if len(r.Messages) == 0 {
+		return ""
+	}
+	return string(r.Messages[0])
+}
+
 // Raw is the request body verbatim, for substring assertions.
 func (r Request) Raw() string { return string(r.raw) }
 
@@ -83,7 +99,15 @@ type Server struct {
 
 	mu       sync.Mutex
 	script   []Turn
+	routes   []*route
 	requests []Request
+}
+
+// route is a separate script for the requests whose first message contains
+// match: one conversation's turns, kept apart from the others'.
+type route struct {
+	match  string
+	script []Turn
 }
 
 // New starts a server with the given script. It is closed when the test ends.
@@ -104,6 +128,19 @@ func (s *Server) Script(turns ...Turn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.script = append(s.script, turns...)
+}
+
+// Route answers the requests whose first message contains match from their
+// own script, ahead of the main one. A sub-agent's first message is the prompt
+// its parent wrote, so a marker in that prompt routes the child's requests here
+// — which is what makes a run with concurrent sub-agents deterministic: they
+// and the parent call the API in no fixed order, and one shared script would
+// hand each whichever turn came next. A route whose script runs out answers
+// "done.". The first matching route wins.
+func (s *Server) Route(match string, turns ...Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routes = append(s.routes, &route{match: match, script: turns})
 }
 
 // Requests returns every /v1/messages call received so far.
@@ -132,10 +169,25 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.requests = append(s.requests, req)
 	seq := len(s.requests)
 	turn := Say("done.")
-	if len(s.script) > 0 {
-		turn, s.script = s.script[0], s.script[1:]
+	script := &s.script
+	for _, rt := range s.routes {
+		if strings.Contains(req.FirstMessage(), rt.match) {
+			script = &rt.script
+			break
+		}
+	}
+	if len(*script) > 0 {
+		turn, *script = (*script)[0], (*script)[1:]
 	}
 	s.mu.Unlock()
+
+	if turn.Delay > 0 {
+		select {
+		case <-time.After(turn.Delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 
 	if turn.Status != 0 {
 		errType := turn.ErrType

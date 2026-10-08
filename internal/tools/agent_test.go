@@ -15,6 +15,7 @@ type fakeSpawner struct {
 	gotProgress        func(string) // captured so a test can assert it was forwarded
 	bgType, bgPrompt   string       // captured by SpawnBackground
 	bgLabel            string
+	bgConversation     string // captured by SpawnBackground
 	bgID               string // returned by SpawnBackground ("" defaults to "agent-1")
 }
 
@@ -26,8 +27,8 @@ func (f *fakeSpawner) Spawn(_ context.Context, subagentType, prompt string, prog
 	return f.result, f.err
 }
 
-func (f *fakeSpawner) SpawnBackground(subagentType, prompt, label string, _ func(string)) (string, error) {
-	f.bgType, f.bgPrompt, f.bgLabel = subagentType, prompt, label
+func (f *fakeSpawner) SpawnBackground(conversation, subagentType, prompt, label string, _ func(string)) (string, error) {
+	f.bgConversation, f.bgType, f.bgPrompt, f.bgLabel = conversation, subagentType, prompt, label
 	if f.bgID == "" {
 		return "agent-1", nil
 	}
@@ -81,12 +82,17 @@ func TestAgentBackgroundReturnsHandleWithoutBlocking(t *testing.T) {
 		Prompt: "investigate the flake", SubagentType: "general-purpose",
 		Description: "chase the flake", Background: true,
 	})
-	res, err := a.Execute(context.Background(), Context{}, raw)
+	res, err := a.Execute(context.Background(), Context{Conversation: "thread-7"}, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if sp.bgType != "general-purpose" || sp.bgPrompt != "investigate the flake" || sp.bgLabel != "chase the flake" {
 		t.Errorf("SpawnBackground got type=%q prompt=%q label=%q", sp.bgType, sp.bgPrompt, sp.bgLabel)
+	}
+	// The launching conversation goes with it, so the result is delivered
+	// back there and not to another ACP thread (#276).
+	if sp.bgConversation != "thread-7" {
+		t.Errorf("SpawnBackground got conversation %q, want thread-7", sp.bgConversation)
 	}
 	if sp.gotType != "" {
 		t.Error("background launch should not call the synchronous Spawn")
