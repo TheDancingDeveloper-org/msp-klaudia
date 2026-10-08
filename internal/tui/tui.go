@@ -224,6 +224,10 @@ type (
 	permissionMsg struct {
 		req   agent.ApprovalRequest
 		reply chan permission.Decision
+		// ctx is the asker's context. A queued ask whose child was cancelled
+		// before it reached the screen has nothing waiting on reply, so it is
+		// dropped rather than shown.
+		ctx context.Context
 	}
 )
 
@@ -243,10 +247,22 @@ type compactDoneMsg struct {
 	summary string
 	err     error
 }
+
+// queuedAsk is one prompt waiting its turn: either a permission ask or a
+// question. Both used to have their own field, so a question arriving while a
+// permission was on screen replaced it and stranded the permission's reply
+// channel. One queue means whichever is showing finishes before the next is
+// drawn, and a queued ask whose context is already cancelled is never drawn.
+type queuedAsk struct {
+	permission *permissionMsg
+	ask        *askMsg
+}
+
 type askMsg struct {
 	question string
 	options  []tools.AskOption
 	reply    chan string
+	ctx      context.Context
 }
 type planMsg struct {
 	plan  string
@@ -391,11 +407,18 @@ type Model struct {
 	history    []anthropic.BetaMessageParam
 	pending    chan permission.Decision
 	pendingReq agent.ApprovalRequest
-	// askQueue holds permission asks that arrived while one was already on
-	// screen. A second child asking at the same time used to overwrite
-	// pending, and the first child's goroutine then blocked forever on a
-	// reply nobody could send. Answered in order, one prompt at a time.
-	askQueue []permissionMsg
+	// askQueue holds asks that arrived while one was already on screen. A
+	// second child asking at the same time used to overwrite the one on
+	// screen, and the first child's goroutine then blocked forever on a
+	// reply nobody could send. Permission asks and questions share one
+	// queue so neither can hide the other. Answered in order.
+	askQueue []queuedAsk
+	// stateBeforeAsk is the state to return to once the last ask is
+	// answered. A background child can ask while the TUI is idle, and
+	// answering must not pretend a turn is running. It starts at running
+	// because an ask almost always interrupts a turn, and a caller that
+	// sets the awaiting state directly has not recorded one.
+	stateBeforeAsk uiState
 	// knownModels is the model list the provider last reported to /model,
 	// kept so /model <id> can warn about an id the endpoint does not list and
 	// Tab can complete it, without a second lookup. Nil until the list has been
@@ -811,7 +834,7 @@ func (m *Model) answerAsk(answer string) {
 		m.askReply = nil
 	}
 	m.appendLine(toolStyle.Render("  → " + answer))
-	m.setState(stateRunning)
+	m.showNextAsk()
 }
 
 // beginOtherAnswer switches from the numbered list to free-text entry, seeding
@@ -967,32 +990,30 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onBangResult(msg)
 
 	case permissionMsg:
-		if m.pending != nil {
-			// One prompt at a time: queue this ask until the one on screen
-			// is answered, so its reply channel is not abandoned.
-			m.askQueue = append(m.askQueue, msg)
+		// One prompt at a time. A cancelled ask is still queued when one is
+		// already on screen: the child may be alive when the ask arrives and
+		// gone by the time it would be shown, and showNextAsk drops it then.
+		// Dropped immediately, it never gets the chance to be skipped in
+		// favour of the ask behind it.
+		if m.pending != nil || m.askReply != nil {
+			m.askQueue = append(m.askQueue, queuedAsk{permission: &msg})
+			return m, m.waitForEvent()
+		}
+		if msg.ctx != nil && msg.ctx.Err() != nil {
 			return m, m.waitForEvent()
 		}
 		m.showPermission(msg)
 		return m, m.waitForEvent()
 
 	case askMsg:
-		m.closeChoiceForPrompt()
-		m.setState(stateAwaitingAnswer)
-		m.askReply = msg.reply
-		m.askOptions = msg.options
-		m.askQuestion = msg.question
-		m.notifyAttention("Klaudia has a question")
-		m.appendLine(askStyle.Render("? " + msg.question))
-		for i, o := range msg.options {
-			line := fmt.Sprintf("  %d) %s", i+1, o.Label)
-			if o.Description != "" {
-				line += " — " + o.Description
-			}
-			m.appendLine(toolStyle.Render(line))
+		if m.pending != nil || m.askReply != nil {
+			m.askQueue = append(m.askQueue, queuedAsk{ask: &msg})
+			return m, m.waitForEvent()
 		}
-		// Always last, always present: see otherAnswerLabel.
-		m.appendLine(hintStyle.Render(fmt.Sprintf("  %d) %s", len(msg.options)+1, otherAnswerLabel)))
+		if msg.ctx != nil && msg.ctx.Err() != nil {
+			return m, m.waitForEvent()
+		}
+		m.showAsk(msg)
 		return m, m.waitForEvent()
 
 	case planMsg:
@@ -3219,6 +3240,7 @@ func (m *Model) showPermission(msg permissionMsg) {
 	// A picker opened mid-turn would otherwise sit behind the prompt, with
 	// its keys answering the wrong question.
 	m.closeChoiceForPrompt()
+	m.rememberAskState()
 	m.setState(stateAwaitingPermission)
 	m.pending = msg.reply
 	m.pendingReq = msg.req
@@ -3231,12 +3253,79 @@ func (m *Model) showPermission(msg permissionMsg) {
 		}
 		return
 	}
-	m.appendLine(askStyle.Render("Permission required: " + m.permissionSummary(msg.req)))
+	summary := m.permissionSummary(msg.req)
+	if msg.req.Agent != "" {
+		summary = msg.req.Agent + " — " + summary
+	}
+	m.appendLine(askStyle.Render("Permission required: " + summary))
 	if detail := permissionDetail(msg.req); detail != "" {
 		m.appendLine(toolStyle.Render("  " + detail))
 	}
 	// The actionable prompt lives only in the persistent bottom view (see
 	// bottomView/stateAwaitingPermission) — don't duplicate it in scrollback.
+}
+
+// showAsk puts one question on screen. Same rule as showPermission: the
+// caller has checked the screen is clear.
+func (m *Model) showAsk(msg askMsg) {
+	m.closeChoiceForPrompt()
+	m.rememberAskState()
+	m.setState(stateAwaitingAnswer)
+	m.askReply = msg.reply
+	m.askOptions = msg.options
+	m.askQuestion = msg.question
+	m.notifyAttention("Klaudia has a question")
+	q := msg.question
+	if msg.question != "" {
+		q = msg.question
+	}
+	m.appendLine(askStyle.Render("? " + q))
+	for i, o := range msg.options {
+		line := fmt.Sprintf("  %d) %s", i+1, o.Label)
+		if o.Description != "" {
+			line += " — " + o.Description
+		}
+		m.appendLine(toolStyle.Render(line))
+	}
+	// Always last, always present: see otherAnswerLabel.
+	m.appendLine(hintStyle.Render(fmt.Sprintf("  %d) %s", len(msg.options)+1, otherAnswerLabel)))
+}
+
+// rememberAskState records the state to return to, but only for the first
+// ask of a run of them. A queued ask must not record stateAwaitingPermission
+// as the state to restore. Idle is not a state an ask interrupts — a child
+// asks during a turn — so an ask that arrives while idle returns to running.
+func (m *Model) rememberAskState() {
+	if m.state != stateAwaitingPermission && m.state != stateAwaitingAnswer && m.state != stateIdle {
+		m.stateBeforeAsk = m.state
+	}
+}
+
+// showNextAsk draws the next queued ask whose caller is still waiting, and
+// returns to the state from before the asks when the queue runs out. A
+// queued ask whose context is done belongs to a child that was cancelled
+// while it waited, so showing it would ask the user a question nobody is
+// listening for the answer to.
+func (m *Model) showNextAsk() {
+	for len(m.askQueue) > 0 {
+		next := m.askQueue[0]
+		m.askQueue = m.askQueue[1:]
+		switch {
+		case next.permission != nil:
+			if next.permission.ctx != nil && next.permission.ctx.Err() != nil {
+				continue
+			}
+			m.showPermission(*next.permission)
+			return
+		case next.ask != nil:
+			if next.ask.ctx != nil && next.ask.ctx.Err() != nil {
+				continue
+			}
+			m.showAsk(*next.ask)
+			return
+		}
+	}
+	m.setState(m.stateBeforeAsk)
 }
 
 // answer resolves the pending permission ask.
@@ -3258,12 +3347,7 @@ func (m *Model) answer(d permission.Decision) {
 	}
 	m.redirect = false
 	m.appendLine(toolStyle.Render("  → " + verb))
-	m.setState(stateRunning)
-	if len(m.askQueue) > 0 {
-		next := m.askQueue[0]
-		m.askQueue = m.askQueue[1:]
-		m.showPermission(next)
-	}
+	m.showNextAsk()
 }
 
 // hostReportCount is the session's host-gate report count, or 0 when no gate is

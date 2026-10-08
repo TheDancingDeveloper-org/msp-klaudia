@@ -74,6 +74,78 @@ func TestQueuedPermissionAskIsNotDropped(t *testing.T) {
 	if m.pending != nil || len(m.askQueue) != 0 {
 		t.Fatalf("pending = %v, queued = %d; want both clear", m.pending, len(m.askQueue))
 	}
+	if m.state != stateRunning {
+		t.Errorf("state after the last answer = %v, want running", m.state)
+	}
+}
+
+// A question arriving while a permission is on screen used to replace it, and
+// the permission's reply channel was then never written. Both have to survive,
+// in the order they arrived.
+func TestQuestionDoesNotOverwriteAPendingPermission(t *testing.T) {
+	m := newTestModel()
+	perm := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	q := make(chan string, 1)
+	m.Update(askMsg{question: "which file?", reply: q})
+
+	if m.pending != perm {
+		t.Fatal("the question replaced the permission on screen")
+	}
+	if m.askReply != nil {
+		t.Fatal("the question was shown while a permission was pending")
+	}
+	if len(m.askQueue) != 1 || m.askQueue[0].ask == nil {
+		t.Fatalf("queue = %+v, want the question queued", m.askQueue)
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	if m.askReply != q {
+		t.Fatal("answering the permission did not show the queued question")
+	}
+	m.answerAsk("the first one")
+	select {
+	case got := <-q:
+		if got != "the first one" {
+			t.Errorf("answer = %q", got)
+		}
+	default:
+		t.Fatal("the queued question was never answered")
+	}
+}
+
+// A queued ask whose caller was cancelled while it waited belongs to a child
+// that is gone. Showing it asks the user something nobody reads the answer to.
+func TestCancelledQueuedAskIsSkipped(t *testing.T) {
+	m := newTestModel()
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dead := make(chan permission.Decision, 1)
+	m.Update(permissionMsg{req: agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm dead"}, reply: dead, ctx: ctx})
+
+	live := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm live"})
+	if len(m.askQueue) != 2 {
+		t.Fatalf("queued = %d, want both behind the one on screen", len(m.askQueue))
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-first
+	if m.pending != live {
+		t.Fatal("the cancelled ask was shown instead of skipped")
+	}
+	if len(m.askQueue) != 0 {
+		t.Fatalf("queue = %d after skipping, want empty", len(m.askQueue))
+	}
+}
+
+func TestPermissionPromptNamesTheAskingAgent(t *testing.T) {
+	m := newTestModel()
+	askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a", Agent: "agent-3 (Explore): search the tree"})
+	got := m.transcript.String()
+	if !strings.Contains(got, "agent-3 (Explore): search the tree") {
+		t.Fatalf("prompt did not name the asking agent:\n%s", got)
+	}
 }
 
 func TestPermissionPromptDescribesTheAction(t *testing.T) {

@@ -84,7 +84,7 @@ func (a BackgroundAgent) Done() bool { return a.Status != BackgroundRunning }
 type BackgroundRegistry struct {
 	mu        sync.Mutex
 	seq       int
-	events    []Event
+	events    map[string][]Event // keyed by conversation: one process runs several
 	byID      map[string]*backgroundEntry
 	order     []string
 	delivered map[string]bool // ids whose result has been delivered to the parent
@@ -140,17 +140,28 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 		cancel: cancel,
 	}
 	r.order = append(r.order, id)
-	r.events = append(r.events, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Text: label})
+	r.recordEvent(conversation, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Text: label})
 	return id
 }
 
-// TakeEvents returns the sub-agent lifecycle events recorded since the last
-// call, in order.
-func (r *BackgroundRegistry) TakeEvents() []Event {
+// recordEvent appends a lifecycle event to one conversation's queue. The
+// caller holds r.mu. Events are per conversation because the registry is per
+// process and an ACP server runs several conversations in one: session A's
+// child must not surface in session B's stream.
+func (r *BackgroundRegistry) recordEvent(conversation string, ev Event) {
+	if r.events == nil {
+		r.events = map[string][]Event{}
+	}
+	r.events[conversation] = append(r.events[conversation], ev)
+}
+
+// TakeEvents returns the lifecycle events recorded for conversation since the
+// last call, in order, and no other conversation's.
+func (r *BackgroundRegistry) TakeEvents(conversation string) []Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := r.events
-	r.events = nil
+	out := r.events[conversation]
+	delete(r.events, conversation)
 	return out
 }
 
@@ -191,7 +202,7 @@ func (r *BackgroundRegistry) finish(id, result string, usage *tools.ChildUsage, 
 		e.agent.Status = BackgroundSucceeded
 		e.agent.Result = result
 	}
-	r.events = append(r.events, Event{Type: "subagent_finished", ToolUseID: id, ToolName: e.agent.Type, Text: status})
+	r.recordEvent(e.agent.Conversation, Event{Type: "subagent_finished", ToolUseID: id, ToolName: e.agent.Type, Text: status})
 }
 
 // Get returns a snapshot of one agent.

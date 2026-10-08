@@ -1959,7 +1959,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			return pendingReport
 		}
 		opts.CollectChildUsage = func() []*tools.ChildUsage { return pendingUsage }
-		opts.SubagentEvents = bg.TakeEvents
+		opts.SubagentEvents = func() []agent.Event { return bg.TakeEvents(conversation) }
 		return opts
 	}
 

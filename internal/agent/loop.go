@@ -1129,6 +1129,19 @@ func (l *Loop) foldChildren(opts Options, res *Result) {
 		return
 	}
 	for _, u := range children {
+		cost := u.CostUSD
+		if cost == 0 {
+			// A usage recorded with tokens but no cost — the background
+			// delivery path carries the raw counts — is priced here, the same
+			// way the child's own result was. A child whose model has no known
+			// price contributes nothing, which is what its own result did too.
+			cost, _ = api.CostUSD(u.Model, api.Usage{
+				InputTokens:              u.InputTokens,
+				OutputTokens:             u.OutputTokens,
+				CacheReadInputTokens:     u.CacheReadInputTokens,
+				CacheCreationInputTokens: u.CacheCreationInputTokens,
+			})
+		}
 		res.Children = append(res.Children, ChildUsage{
 			Model:                    u.Model,
 			InputTokens:              u.InputTokens,
@@ -1136,7 +1149,7 @@ func (l *Loop) foldChildren(opts Options, res *Result) {
 			CacheReadInputTokens:     u.CacheReadInputTokens,
 			CacheCreationInputTokens: u.CacheCreationInputTokens,
 			APIDuration:              u.APIDuration,
-			CostUSD:                  u.CostUSD,
+			CostUSD:                  cost,
 			NumTurns:                 u.NumTurns,
 		})
 	}

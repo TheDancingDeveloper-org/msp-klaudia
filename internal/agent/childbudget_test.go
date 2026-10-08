@@ -130,3 +130,41 @@ func TestSpentBudgetRefusesTheLaunch(t *testing.T) {
 		t.Errorf("the refused child made %d requests", child.calls)
 	}
 }
+
+// A background child's spend is not on the Agent tool result — it arrives
+// later, through CollectChildUsage, when the result is delivered. It still
+// has to reach the parent's CostUSD, because that is the figure the budget
+// check reads. Two deliveries in one drain must both count: the fold keys
+// them by position, and noteChild keeps the first per key.
+func TestBackgroundChildCostReachesParentCost(t *testing.T) {
+	parent := &scriptedProvider{turns: []anthropic.BetaMessage{
+		{StopReason: "end_turn", Content: []anthropic.BetaContentBlockUnion{{Type: "text", Text: "done"}}},
+	}}
+	one, _ := api.CostUSD("claude-sonnet-5", api.Usage{OutputTokens: 1_000_000})
+	delivered := []*tools.ChildUsage{
+		{Model: "claude-sonnet-5", OutputTokens: 1_000_000},
+		{Model: "claude-sonnet-5", OutputTokens: 1_000_000},
+	}
+	res, err := New(parent, tools.NewRegistry()).Run(context.Background(), Options{
+		Prompt: "go",
+		Model:  "claude-sonnet-5",
+		// The fold runs when a background result is delivered, at the same
+		// point the report reaches the model. Without a report there is
+		// nothing to fold.
+		CollectBackground: func() string { return "agent-1 finished" },
+		CollectChildUsage: func() []*tools.ChildUsage {
+			out := delivered
+			delivered = nil
+			return out
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.CostUSD != 2*one {
+		t.Errorf("CostUSD = %v, want %v — both delivered children counted", res.CostUSD, 2*one)
+	}
+	if len(res.Children) != 2 {
+		t.Errorf("children = %d, want both deliveries", len(res.Children))
+	}
+}

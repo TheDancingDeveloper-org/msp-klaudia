@@ -467,7 +467,7 @@ func TestSubagentEventsUseTheDocumentedTextField(t *testing.T) {
 	id := r.register("", "Explore", "search the tree", false, "", true, nil)
 	r.finish(id, "done", nil, fmt.Errorf("boom"))
 
-	evs := r.TakeEvents()
+	evs := r.TakeEvents("")
 	if len(evs) != 2 {
 		t.Fatalf("events = %d, want 2", len(evs))
 	}
@@ -495,8 +495,30 @@ func TestSubagentEventsUseTheDocumentedTextField(t *testing.T) {
 			t.Errorf("event %d carries content, which the contract does not name: %s", i, b)
 		}
 	}
-	if again := r.TakeEvents(); len(again) != 0 {
+	if again := r.TakeEvents(""); len(again) != 0 {
 		t.Errorf("TakeEvents did not drain: %+v", again)
+	}
+}
+
+// Two conversations share one registry, because an ACP server runs several
+// sessions in one process. Each must see only its own children's events, and
+// draining one must leave the other intact.
+func TestSubagentEventsAreScopedToTheConversation(t *testing.T) {
+	r := NewBackgroundRegistry()
+	a := r.register("conv-a", "Explore", "a's search", false, "", true, nil)
+	b := r.register("conv-b", "Explore", "b's search", false, "", true, nil)
+	r.finish(a, "done", nil, nil)
+
+	gotA := r.TakeEvents("conv-a")
+	if len(gotA) != 2 || gotA[0].ToolUseID != a || gotA[1].ToolUseID != a {
+		t.Errorf("conv-a events = %+v, want its own start and finish", gotA)
+	}
+	gotB := r.TakeEvents("conv-b")
+	if len(gotB) != 1 || gotB[0].ToolUseID != b || gotB[0].Type != "subagent_started" {
+		t.Errorf("conv-b events = %+v, want only its own start", gotB)
+	}
+	if leaked := r.TakeEvents(""); len(leaked) != 0 {
+		t.Errorf("the default conversation saw another session's events: %+v", leaked)
 	}
 }
 

@@ -355,6 +355,17 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	if spec.Approver != nil {
 		approver = spec.Approver
 	}
+	if approver != nil {
+		// The prompt shows the parent's own ask and a child's identically,
+		// which with several children running is a question the user cannot
+		// attribute. Name the child on the request before it reaches the UI.
+		inner := approver
+		who := t.Name
+		approver = ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
+			req.Agent = who
+			return inner.Approve(ctx, req)
+		})
+	}
 	var budget float64
 	if spec.Budget != nil {
 		if *spec.Budget <= 0 {
@@ -559,6 +570,11 @@ func (s *Spawner) childRepo(spec ChildSpec) (repo, sub string, prov repoProvenan
 		if top == "" {
 			return dir, "", repoProvenance{Repo: dir}, nil
 		}
+		// sub stays empty. A requested nested directory is resolved to its
+		// repository toplevel and the child runs at the checkout root: the
+		// request names which repository to cut from, not a subdirectory to
+		// work inside. Computing sub here made the child write into the
+		// subdirectory and its edit never reached the repository root.
 		repo, prov = top, repoOf(top)
 		return repo, sub, prov, nil
 	}
