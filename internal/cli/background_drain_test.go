@@ -152,3 +152,25 @@ func TestDrainBackgroundNoAgentsIsANoOp(t *testing.T) {
 		t.Errorf("got %+v, %v", res, err)
 	}
 }
+
+// A wait of zero warns and returns at once, even though a child is still
+// running: --background-wait 0 means the caller chose not to wait.
+func TestDrainBackgroundZeroWaitExits(t *testing.T) {
+	reg := launch(t, childProvider{release: make(chan struct{})})
+	var warned []string
+	start := time.Now()
+	res, err := drainBackground(context.Background(), reg, agent.Result{Text: "answer"}, nil,
+		drainLimits{wait: 0}, noFollowUp(t), func(m string) { warned = append(warned, m) })
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if res.Text != "answer" {
+		t.Errorf("result text = %q, want the first turn's", res.Text)
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "without waiting") {
+		t.Errorf("warnings = %q, want one saying it did not wait", warned)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Error("a zero wait blocked")
+	}
+}

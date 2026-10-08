@@ -44,7 +44,8 @@ unconfigured host:
     "protocol": 1,
     "input": ["user", "control_request", "control_response"],
     "control_requests": ["interrupt", "set_permission_mode", "set_model", "initialize"],
-    "output": ["system/init", "assistant", "user", "usage", "tool_progress", "compaction",
+    "output": ["system/init", "assistant", "user", "usage", "tool_progress", "subagent_started",
+               "subagent_finished", "compaction",
                "warning", "notice", "control_request", "control_response", "result"],
     "control_asks": ["can_use_tool", "ask_user", "exit_plan"],
     "result_fields": ["type", "subtype", "is_error", "result", "session_id", "duration_ms",
@@ -233,6 +234,8 @@ status, and can skip them without losing any conversation content.
 
 - `usage`: a per-model-call token delta (`input_delta`, `output_delta`, `turn_delta`). The `result` line's `usage` is the per-turn total.
 - `tool_progress`: a status line from a long-running tool (`tool_name`, `tool_use_id`, `text`).
+- `subagent_started`: a child was launched (`tool_use_id` is the child's id, `tool_name` its type, `text` its label).
+- `subagent_finished`: a child stopped (`tool_use_id` its id, `text` its status — `succeeded` or `failed`).
 - `compaction`: the history was summarised (`content`).
 - `warning`, `notice`: something worth showing a person (`content`).
 

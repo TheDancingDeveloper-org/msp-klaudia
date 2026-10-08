@@ -23,7 +23,8 @@ type Spawner interface {
 	// progress, when non-nil, is called with short display lines as the child
 	// works, so the frontend can show what it is doing instead of a bare spinner.
 	// With an error, the string may still carry the child's partial work.
-	Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(line string)) (string, error)
+	// usage is what the child spent, nil when it never reached a request.
+	Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(line string)) (text string, usage *ChildUsage, err error)
 	// SpawnBackground launches a sub-agent that runs independently of this turn
 	// and returns its handle id immediately; the result is delivered on a later
 	// turn. label is the task description, for the status view; conversation
@@ -153,17 +154,32 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		}
 		return []Result{{Content: msg}}, nil
 	}
-	result, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
+	result, usage, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
 	if err != nil {
 		msg := fmt.Sprintf("Sub-agent failed: %v", err)
 		if result != "" {
 			msg += "\n\n" + result
 		}
-		return []Result{{Content: msg, IsError: true}}, nil
+		return []Result{{Content: msg, IsError: true, Child: usage}}, nil
 	}
 	// Framed, so the sub-agent's report reads as a report: text it quotes from
 	// files or web pages it read is not the user speaking.
-	return []Result{{Content: subagentResultHeader + result}}, nil
+	return []Result{{Content: subagentResultHeader + result, Child: usage}}, nil
+}
+
+// ConcurrencySafeFor reports that a background launch may run beside its
+// neighbours and a foreground one may not. A background launch returns the
+// moment the child is registered, so it shares nothing with the call next to
+// it; a foreground launch blocks this turn and its result is what the next
+// call may depend on.
+func (a *Agent) ConcurrencySafeFor(input json.RawMessage) bool {
+	var in struct {
+		Background bool `json:"background"`
+	}
+	if err := json.Unmarshal(input, &in); err != nil {
+		return false
+	}
+	return in.Background
 }
 
 // subagentResultHeader introduces a sub-agent's result.
@@ -199,6 +215,9 @@ type ParentContext interface {
 	// ParentWorkingDir is the session's working directory: the default repo a
 	// child is cut from, and the root a requested working_dir is judged against.
 	ParentWorkingDir() string
+	// ParentConversation is the launching turn's Turn.Conversation, so a child's
+	// registry entry is delivered back to the same conversation.
+	ParentConversation() string
 }
 
 // parentSpec is the launching turn's state, forwarded verbatim. The spawner
@@ -217,6 +236,7 @@ func (c parentSpecOf) ParentBeforeEdit() func(string, []string) { return c.Befor
 func (c parentSpecOf) ParentExtraDirs() []string                { return c.ExtraDirs }
 func (c parentSpecOf) ParentBudget() *float64                   { return c.Budget }
 func (c parentSpecOf) ParentWorkingDir() string                 { return c.WorkingDir }
+func (c parentSpecOf) ParentConversation() string               { return c.Conversation }
 
 // requestedDirSpec is a ParentContext that also carries the Agent tool's
 // working_dir input. The spawner reads it with RequestedWorkingDir.

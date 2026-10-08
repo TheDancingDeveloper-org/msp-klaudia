@@ -37,6 +37,148 @@ func askPermission(m *Model, req agent.ApprovalRequest) chan permission.Decision
 	return reply
 }
 
+func TestQueuedPermissionAskIsNotDropped(t *testing.T) {
+	m := newTestModel()
+	// The asks arrive during a turn.
+	m.setState(stateRunning)
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	second := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm b"})
+
+	if m.pending != first {
+		t.Fatal("the second ask replaced the one on screen")
+	}
+	if len(m.askQueue) != 1 {
+		t.Fatalf("queued = %d, want 1", len(m.askQueue))
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	select {
+	case d := <-first:
+		if d.Behavior != permission.Allow {
+			t.Errorf("first answer = %v", d.Behavior)
+		}
+	default:
+		t.Fatal("the first ask was never answered")
+	}
+	if m.pending != second {
+		t.Fatal("answering did not bring the queued ask on screen")
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Deny})
+	select {
+	case d := <-second:
+		if d.Behavior != permission.Deny {
+			t.Errorf("second answer = %v", d.Behavior)
+		}
+	default:
+		t.Fatal("the queued ask was never answered")
+	}
+	if m.pending != nil || len(m.askQueue) != 0 {
+		t.Fatalf("pending = %v, queued = %d; want both clear", m.pending, len(m.askQueue))
+	}
+	if m.state != stateRunning {
+		t.Errorf("state after the last answer = %v, want running", m.state)
+	}
+}
+
+// An ask during a turn records running and returns there. A later ask that
+// arrives while the TUI is idle — a background child asking after the turn
+// ended — must record idle and return to it. Otherwise the status line says
+// running with no turn, and Enter only queues a follow-up.
+func TestAnsweringAnAskWhileIdleReturnsToIdle(t *testing.T) {
+	m := newTestModel()
+	m.setState(stateRunning)
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-first
+	if m.state != stateRunning {
+		t.Fatalf("state after the in-turn ask = %v, want running", m.state)
+	}
+
+	m.setState(stateIdle)
+	second := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm b"})
+	if m.stateBeforeAsk != stateIdle {
+		t.Fatalf("the idle ask recorded %v, want idle", m.stateBeforeAsk)
+	}
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-second
+	if m.state != stateIdle {
+		t.Fatalf("state after the idle ask = %v, want idle: the TUI says running with no turn", m.state)
+	}
+	if m.stateBeforeAsk != stateIdle {
+		t.Errorf("stateBeforeAsk = %v after the queue drained, want it reset", m.stateBeforeAsk)
+	}
+}
+
+// A question arriving while a permission is on screen used to replace it, and
+// the permission's reply channel was then never written. Both have to survive,
+// in the order they arrived.
+func TestQuestionDoesNotOverwriteAPendingPermission(t *testing.T) {
+	m := newTestModel()
+	perm := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	q := make(chan string, 1)
+	m.Update(askMsg{question: "which file?", reply: q})
+
+	if m.pending != perm {
+		t.Fatal("the question replaced the permission on screen")
+	}
+	if m.askReply != nil {
+		t.Fatal("the question was shown while a permission was pending")
+	}
+	if len(m.askQueue) != 1 || m.askQueue[0].ask == nil {
+		t.Fatalf("queue = %+v, want the question queued", m.askQueue)
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	if m.askReply != q {
+		t.Fatal("answering the permission did not show the queued question")
+	}
+	m.answerAsk("the first one")
+	select {
+	case got := <-q:
+		if got != "the first one" {
+			t.Errorf("answer = %q", got)
+		}
+	default:
+		t.Fatal("the queued question was never answered")
+	}
+}
+
+// A queued ask whose caller was cancelled while it waited belongs to a child
+// that is gone. Showing it asks the user something nobody reads the answer to.
+func TestCancelledQueuedAskIsSkipped(t *testing.T) {
+	m := newTestModel()
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dead := make(chan permission.Decision, 1)
+	m.Update(permissionMsg{req: agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm dead"}, reply: dead, ctx: ctx})
+
+	live := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm live"})
+	if len(m.askQueue) != 2 {
+		t.Fatalf("queued = %d, want both behind the one on screen", len(m.askQueue))
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-first
+	if m.pending != live {
+		t.Fatal("the cancelled ask was shown instead of skipped")
+	}
+	if len(m.askQueue) != 0 {
+		t.Fatalf("queue = %d after skipping, want empty", len(m.askQueue))
+	}
+}
+
+func TestPermissionPromptNamesTheAskingAgent(t *testing.T) {
+	m := newTestModel()
+	askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a", Agent: "agent-3 (Explore): search the tree"})
+	got := m.transcript.String()
+	if !strings.Contains(got, "agent-3 (Explore): search the tree") {
+		t.Fatalf("prompt did not name the asking agent:\n%s", got)
+	}
+}
+
 func TestPermissionPromptDescribesTheAction(t *testing.T) {
 	cases := []struct {
 		name string
@@ -104,6 +246,7 @@ func TestPermissionAnswers(t *testing.T) {
 		Input: rawJSON(t, map[string]string{"command": "go vet ./..."})}
 
 	m := slashModel(t)
+	m.setState(stateRunning)
 	reply := askPermission(m, req)
 	m.onKey(runeKey("y"))
 	if d := <-reply; d.Behavior != permission.Allow {

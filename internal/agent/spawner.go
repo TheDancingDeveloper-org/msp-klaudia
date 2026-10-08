@@ -53,6 +53,10 @@ type ChildSpec struct {
 	// child should be cut from, instead of the session's. "" means the
 	// session's. It is validated against WorkingDir and ExtraDirs.
 	RequestedDir string
+	// Conversation is the launching turn's Turn.Conversation, so the child's
+	// registry entry is delivered back to the same conversation. "" for a
+	// frontend with only one.
+	Conversation string
 }
 
 // childSpecFrom reads the launching turn's state off a tools.ParentContext.
@@ -82,6 +86,7 @@ func childSpecFrom(spec any) ChildSpec {
 		ExtraDirs:    pc.ParentExtraDirs(),
 		Budget:       pc.ParentBudget(),
 		WorkingDir:   pc.ParentWorkingDir(),
+		Conversation: pc.ParentConversation(),
 		RequestedDir: requested,
 	}
 }
@@ -241,36 +246,52 @@ const defaultSubagentMaxTurns = 50
 //
 // progress, when non-nil, receives a short line per child tool call. Passing
 // nil (as headless callers do) restores the previous silent behaviour.
-func (s *Spawner) Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(string)) (string, error) {
+func (s *Spawner) Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(string)) (string, *tools.ChildUsage, error) {
 	return s.spawn(ctx, childSpecFrom(spec), subagentType, prompt, progress)
 }
 
 // spawn is Spawn with the spec already converted. The exported signature takes
 // an any because tools.Spawner cannot name ChildSpec (agent imports tools).
-func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, prompt string, progress func(string)) (string, error) {
+func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, prompt string, progress func(string)) (string, *tools.ChildUsage, error) {
 	types := s.types
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
 	t, ok := subagent.Find(types, subagentType)
 	if !ok {
-		return "", fmt.Errorf("unknown subagent_type %q", subagentType)
+		return "", nil, fmt.Errorf("unknown subagent_type %q", subagentType)
 	}
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
-	repo, prov, err := s.childRepo(spec)
+	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	dir := repo
+	dir := filepath.Join(repo, sub)
 	var tree *worktree.Tree
-	if s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir) {
-		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
+	// The checkout is cut from the toplevel, not the subdirectory the session
+	// sits in: adoption applies the child's patch to t.Root, and an edit the
+	// child made above the session's subdirectory only lands when that root is
+	// the repository.
+	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	reg := s.Background()
+	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	var childErr error
+	defer func() {
+		// A foreground child is delivered by the tool result, not by the
+		// background poll, so it is marked collected the moment it ends.
+		reg.finish(id, "", nil, childErr)
+		reg.collected(id)
+	}()
+	if isolate {
+		if wt, err := worktree.New(ctx, repo, subagentType); err != nil {
 			reportf(progress, "  (sharing the working tree: %v)", err)
 		} else {
-			tree, dir = wt, wt.Dir
+			tree, dir = wt, filepath.Join(wt.Dir, sub)
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
 	}
@@ -284,18 +305,19 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	if progress != nil {
 		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
 	}
-	text, err := s.runChild(ctx, spec, t, prompt, dir, emit)
+	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
+	childErr = err
 	if tree == nil {
-		return prov.note(text), err
+		return prov.note(text), usage, err
 	}
 	if err != nil {
 		// Whatever the child wrote stays where it is: applying half a change to
 		// the user's tree is the one outcome isolation exists to prevent.
-		return tree.Rewrite(text), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
+		return tree.Rewrite(text), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
-	return prov.note(s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress)), nil
+	return prov.note(s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress)), usage, nil
 }
 
 // progressEmitter adapts a per-line progress callback into a child Emitter.
@@ -312,9 +334,11 @@ func progressEmitter(progress func(string)) Emitter {
 }
 
 // runChild runs one sub-agent loop to completion in workingDir and returns its
-// final text, applying the shared turn/context bounds. It is the single body
-// both the synchronous Spawn and the background goroutine drive.
-func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir string, emit Emitter) (string, error) {
+// final text plus what it spent, applying the shared turn/context bounds. It
+// is the single body both the synchronous Spawn and the background goroutine
+// drive. id and label name the child on a permission ask, so two children of
+// the same type are distinguishable. usage is nil when the run never started.
+func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
 	model := subagentModel(s.model, t.Model)
 	if spec.Model != "" {
@@ -332,14 +356,43 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	if spec.Approver != nil {
 		approver = spec.Approver
 	}
+	if approver != nil {
+		// The prompt shows the parent's own ask and a child's identically,
+		// which with several children running is a question the user cannot
+		// attribute. Name the child on the request before it reaches the UI.
+		inner := approver
+		who := id
+		if t.Name != "" {
+			who = fmt.Sprintf("%s (%s)", id, t.Name)
+		}
+		if label != "" {
+			who += ": " + label
+		}
+		approver = ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
+			req.Agent = who
+			return inner.Approve(ctx, req)
+		})
+	}
 	var budget float64
 	if spec.Budget != nil {
+		if *spec.Budget <= 0 {
+			// 0 would mean "no budget" to the loop, which is the opposite of
+			// what an exhausted parent means. Refuse rather than launch a child
+			// that can spend without limit.
+			return "", nil, fmt.Errorf("the session's budget is spent; not launching a sub-agent")
+		}
 		budget = *spec.Budget
 	}
 
 	maxTurns := s.maxTurns
 	if maxTurns <= 0 {
 		maxTurns = defaultSubagentMaxTurns
+	}
+	// The type's own bound is tighter than the shared one and wins. A
+	// reviewer that should stop after a handful of turns must not inherit
+	// the fifty-turn default.
+	if t.MaxTurns > 0 && (maxTurns <= 0 || t.MaxTurns < maxTurns) {
+		maxTurns = t.MaxTurns
 	}
 	// Give the child the model's real window. Leaving this 0 fell back to the
 	// 200k compaction default, so a sub-agent on a 1M model summarised its
@@ -368,26 +421,50 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
 	}, emit)
+	usage := childUsageOf(string(model), res)
 	if err != nil {
 		// What the sub-agent had already worked out is not lost with it: the
 		// last reply it completed goes back with the error, marked as partial.
 		// Returning "" threw away everything it found before a stream error
 		// or an overload ended its run.
 		if res.Text != "" {
-			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), err
+			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
 		}
-		return "", err
+		return "", usage, err
 	}
 	// Say so rather than passing back a truncated answer as if it were complete.
-	if res.StopReason == "max_turns" {
+	if res.StopReason == "max_turns" || res.StopReason == "max_budget" {
 		note := fmt.Sprintf("[Sub-agent stopped at its %d-turn limit before finishing. "+
 			"The result below may be incomplete.]", maxTurns)
-		if res.Text == "" {
-			return note + subagentUsage(res, time.Since(start)), nil
+		if res.StopReason == "max_budget" {
+			note = "[Sub-agent stopped because it reached its budget before finishing. " +
+				"The result below may be incomplete.]"
 		}
-		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), nil
+		if res.Text == "" {
+			return note + subagentUsage(res, time.Since(start)), usage, nil
+		}
+		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 	}
-	return res.Text + subagentUsage(res, time.Since(start)), nil
+	return res.Text + subagentUsage(res, time.Since(start)), usage, nil
+}
+
+// childUsageOf is the child's spend in the shape the parent folds into its
+// own totals. Nil when the child never made a request, so a launch that
+// failed before the loop does not add a zero row.
+func childUsageOf(model string, res Result) *tools.ChildUsage {
+	if res.NumTurns == 0 && res.CostUSD == 0 && res.InputTokens == 0 && res.OutputTokens == 0 {
+		return nil
+	}
+	return &tools.ChildUsage{
+		Model:                    model,
+		InputTokens:              res.InputTokens,
+		OutputTokens:             res.OutputTokens,
+		CacheReadInputTokens:     res.CacheReadInputTokens,
+		CacheCreationInputTokens: res.CacheCreationInputTokens,
+		APIDuration:              res.APIDuration,
+		CostUSD:                  res.CostUSD,
+		NumTurns:                 res.NumTurns,
+	}
 }
 
 // SpawnBackground launches a sub-agent that runs independently of the parent
@@ -422,15 +499,15 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
-	repo, prov, err := s.childRepo(spec)
+	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
 		return "", "", err
 	}
 	reg := s.Background()
-	isolate := s.isolate && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(conversation, subagentType, label, isolate, prov.String(), cancel)
+	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
@@ -444,7 +521,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 
 	go func() {
 		defer cancel()
-		workingDir := repo
+		workingDir := filepath.Join(repo, sub)
 		var tree *worktree.Tree
 		if isolate {
 			wt, err := worktree.New(ctx, repo, subagentType)
@@ -452,26 +529,26 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 				// Isolation is a safety property, not a nicety: rather than run a
 				// writer in the shared tree and risk corrupting it, fail the agent
 				// and say why.
-				reg.finish(id, "", fmt.Errorf("could not isolate a worktree: %w", err))
+				reg.finish(id, "", nil, fmt.Errorf("could not isolate a worktree: %w", err))
 				return
 			}
-			tree, workingDir = wt, wt.Dir
+			tree, workingDir = wt, filepath.Join(wt.Dir, sub)
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
-		result, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
+		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, id, label, emit)
 		if tree == nil {
-			reg.finish(id, prov.note(result), err)
+			reg.finish(id, prov.note(result), usage, err)
 			return
 		}
 		if err != nil {
 			// Whatever the child wrote stays where it is: applying half a change
 			// to the user's tree is the one outcome isolation exists to prevent.
-			reg.finish(id, tree.Rewrite(result), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
+			reg.finish(id, tree.Rewrite(result), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
 			return
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
 		defer stop()
-		reg.finish(id, prov.note(s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress)), nil)
+		reg.finish(id, prov.note(s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress)), usage, nil)
 	}()
 
 	return id, prov.String(), nil
@@ -485,23 +562,44 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 // there, so a path inside a nested checkout still lands in the right tree.
 // A directory that is not a repository is used as given — a child can still
 // share it — and says so rather than naming a branch it does not have.
-func (s *Spawner) childRepo(spec ChildSpec) (string, repoProvenance, error) {
+// childRepo resolves the repository a child is cut from and the subpath the
+// session sits at inside it. The subpath is "" when the session is the
+// repository toplevel. The child runs at <checkout>/<sub> and the adoption
+// runs from the toplevel, so an edit outside the session's subdirectory is
+// still applied instead of being listed and then discarded.
+func (s *Spawner) childRepo(spec ChildSpec) (repo, sub string, prov repoProvenance, err error) {
 	base := spec.WorkingDir
 	if base == "" {
 		base = s.workingDir
 	}
 	if spec.RequestedDir == "" {
-		return base, repoOf(base), nil
+		repo, prov = base, repoOf(base)
+	} else {
+		dir := canonical(spec.RequestedDir)
+		if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
+			return "", "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+		}
+		top := repoToplevel(dir)
+		if top == "" {
+			return dir, "", repoProvenance{Repo: dir}, nil
+		}
+		// sub stays empty. A requested nested directory is resolved to its
+		// repository toplevel and the child runs at the checkout root: the
+		// request names which repository to cut from, not a subdirectory to
+		// work inside. Computing sub here made the child write into the
+		// subdirectory and its edit never reached the repository root.
+		repo, prov = top, repoOf(top)
+		return repo, sub, prov, nil
 	}
-	dir := canonical(spec.RequestedDir)
-	if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
-		return "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+	top := repoToplevel(repo)
+	if top != "" && top != canonical(repo) {
+		rel, relErr := filepath.Rel(top, canonical(repo))
+		if relErr == nil && rel != "." {
+			sub = rel
+		}
+		repo, prov = top, repoOf(top)
 	}
-	top := repoToplevel(dir)
-	if top == "" {
-		return dir, repoProvenance{Repo: dir}, nil
-	}
-	return top, repoOf(top), nil
+	return repo, sub, prov, nil
 }
 
 // dirAllowed reports whether dir is inside one of roots. Both sides are

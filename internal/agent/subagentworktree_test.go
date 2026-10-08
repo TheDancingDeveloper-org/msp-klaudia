@@ -25,11 +25,13 @@ import (
 // because the spawner decides on tool names: that is what marks a sub-agent as
 // one that can change the tree.
 type relWriteTool struct {
-	rel  string
-	body string
+	rel   string
+	body  string
+	abs   string   // joined to the parent of the working dir, so a subdir session writes at the checkout root
+	dirs  []string // the working directories it was actually handed
+	paths []string // the files it wrote
 
-	mu   *sync.Mutex
-	dirs []string // the working directories it was actually handed
+	mu *sync.Mutex
 }
 
 // wrote reports the working directories the tool was handed so far. The tool
@@ -55,10 +57,14 @@ func (relWriteTool) CheckPermissions(permission.Context, permission.PermissionRe
 	return permission.Decision{Behavior: permission.Allow}
 }
 func (w *relWriteTool) Execute(_ context.Context, tctx tools.Context, _ json.RawMessage) ([]tools.Result, error) {
+	path := filepath.Join(tctx.WorkingDir, w.rel)
+	if w.abs != "" {
+		path = filepath.Join(tctx.WorkingDir, "..", w.abs)
+	}
 	w.mu.Lock()
 	w.dirs = append(w.dirs, tctx.WorkingDir)
+	w.paths = append(w.paths, path)
 	w.mu.Unlock()
-	path := filepath.Join(tctx.WorkingDir, w.rel)
 	if err := os.WriteFile(path, []byte(w.body), 0o644); err != nil {
 		return nil, err
 	}
@@ -130,7 +136,7 @@ func TestWritingSubAgentWorksInItsOwnCheckoutAndTheWorkComesBack(t *testing.T) {
 	root := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "the child's work\n"}
 
-	text, err := writingSpawner(t, w, root).WithWorktrees(true).
+	text, _, err := writingSpawner(t, w, root).WithWorktrees(true).
 		Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -203,7 +209,7 @@ func TestSubAgentResultNamesPathsInTheUsersTree(t *testing.T) {
 	s := NewSpawner(&reportProvider{t: t, w: w}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 3).WithWorkingDir(root).WithWorktrees(true)
 
-	text, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
+	text, _, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -255,7 +261,7 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 			}}, reg, "claude-opus-4-8", bypassPerm(), nil, 2).
 				WithWorkingDir(root).WithWorktrees(tt.worktrees)
 
-			if _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
+			if _, _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
 				t.Fatalf("Spawn: %v", err)
 			}
 			got := capture.got.WorkingDir
@@ -281,7 +287,7 @@ func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	_, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
+	_, _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
 	if err == nil {
 		t.Fatal("expected the provider's error")
 	}
@@ -340,6 +346,7 @@ func (s requestedDirSpec) ParentBeforeEdit() func(string, []string) { return nil
 func (s requestedDirSpec) ParentExtraDirs() []string                { return s.extraDirs }
 func (s requestedDirSpec) ParentBudget() *float64                   { return nil }
 func (s requestedDirSpec) ParentWorkingDir() string                 { return s.workingDir }
+func (s requestedDirSpec) ParentConversation() string               { return "" }
 func (s requestedDirSpec) RequestedWorkingDir() string              { return s.dir }
 
 // A working_dir inside an additional directory is resolved to that repository's
@@ -354,7 +361,7 @@ func TestWorkingDirInsideExtraDirSeedsFromThatRepo(t *testing.T) {
 	}
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from B\n"}
 
-	text, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+	text, _, err := writingSpawner(t, w, rootA).WithWorktrees(true).
 		Spawn(context.Background(), requestedDirSpec{
 			workingDir: rootA, extraDirs: []string{rootB}, dir: nested,
 		}, "general-purpose", "write it", nil)
@@ -390,7 +397,7 @@ func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
 	elsewhere := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "nope\n"}
 
-	_, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+	_, _, err := writingSpawner(t, w, rootA).WithWorktrees(true).
 		Spawn(context.Background(), requestedDirSpec{
 			workingDir: rootA, dir: elsewhere,
 		}, "general-purpose", "write it", nil)
@@ -402,5 +409,70 @@ func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
 	}
 	if len(w.wrote()) != 0 {
 		t.Errorf("the child ran anyway: %v", w.wrote())
+	}
+}
+
+// A session rooted in a subdirectory of its repository still adopts an edit the
+// child made outside that subdirectory. Before the fix the patch was applied
+// from the subdirectory, so the edit was listed and then discarded.
+func TestSubdirSessionAdoptsEditsOutsideIt(t *testing.T) {
+	root := gitRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "svc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "top.txt"), []byte("top\n"), 0o644)
+	os.WriteFile(filepath.Join(root, "svc", "keep.txt"), []byte("k\n"), 0o644)
+	gitCommitAll(t, root)
+
+	w := &relWriteTool{mu: new(sync.Mutex), abs: "top.txt", body: "changed at the top\n"}
+	s := writingSpawner(t, w, filepath.Join(root, "svc")).WithWorktrees(true)
+	if _, _, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	wrote := w.wrote()
+	if len(wrote) != 1 {
+		t.Fatalf("wrote %v", wrote)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "top.txt")); err != nil || string(got) != "changed at the top\n" {
+		t.Fatalf("the edit outside the session subdirectory was not adopted (child wrote %v): %v, got %q", w.paths, err, got)
+	}
+}
+
+func gitCommitAll(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "--quiet", "-m", "more"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		// Inherit the environment so GIT_DIR and GIT_WORK_TREE, which the
+		// hermetic test harness exports, still point at this repository. A
+		// minimal env that drops them lets `git add -A` invent a nested
+		// repository in a subdirectory it is about to commit.
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.invalid",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.invalid")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}
+
+// A child that shares the tree, in a session rooted in a subdirectory, writes
+// relative to that subdirectory and not to the repository toplevel.
+func TestSharedChildInSubdirWritesThere(t *testing.T) {
+	root := gitRepo(t)
+	sub := filepath.Join(root, "svc")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "here.txt", body: "in svc\n"}
+	s := writingSpawner(t, w, sub) // worktrees off: the child shares the tree
+	if _, _, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, "here.txt")); err != nil {
+		t.Errorf("the write did not land in the session subdirectory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "here.txt")); err == nil {
+		t.Error("the write landed at the repository toplevel")
 	}
 }

@@ -149,6 +149,10 @@ func New(ctx context.Context, root, label string) (*Tree, error) {
 	}
 	pruneStale(ctx, root, filepath.Dir(dir), staleAfter)
 
+	// One add and seed at a time per repository. Both touch the parent's index
+	// and refs, and two at once corrupt them.
+	unlock := lockRepo(root)
+	defer unlock()
 	if _, err := run(ctx, root, nil, "worktree", "add", "--detach", "--quiet", dir, "HEAD"); err != nil {
 		return nil, fmt.Errorf("git worktree add: %w", err)
 	}
@@ -369,17 +373,22 @@ func reserve(root, label string) (string, error) {
 	if slug == "" {
 		slug = "agent"
 	}
-	// A timestamp plus a counter: two children of the same type spawned in the
-	// same second must not collide, and a bare timestamp did.
 	stamp := time.Now().UTC().Format("20060102-150405")
-	for i := 0; i < 100; i++ {
-		dir := filepath.Join(base, fmt.Sprintf("%s-%s", slug, stamp))
-		if i > 0 {
-			dir = filepath.Join(base, fmt.Sprintf("%s-%s-%d", slug, stamp, i))
+	// A lock file claims the name atomically: git worktree add refuses a
+	// directory that already exists, so the directory itself cannot be the
+	// claim. An Lstat-then-use check let two writers of the same type, started
+	// in the same second, both believe the name was free.
+	for i := 0; i < 1000; i++ {
+		dir := filepath.Join(base, fmt.Sprintf("%s-%s-%d", slug, stamp, i))
+		f, err := os.OpenFile(dir+".lock", os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, os.ErrExist) {
+			continue
 		}
-		if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
-			return dir, nil
+		if err != nil {
+			return "", fmt.Errorf("worktree directory: %w", err)
 		}
+		f.Close()
+		return dir, nil
 	}
 	return "", errors.New("no free worktree directory")
 }

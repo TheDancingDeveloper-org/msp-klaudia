@@ -25,6 +25,10 @@ type ApprovalRequest struct {
 	Specifier string
 	// Suggestion is the message from the intrinsic check (may be empty).
 	Suggestion string
+	// Agent names the child that is asking, "agent-3 (Explore): search the
+	// tree". Empty for the parent's own ask. With several children running,
+	// the prompt is otherwise indistinguishable.
+	Agent string
 	// HostChange, when set, means this approval is about a change to the
 	// machine Klaudia is running on rather than about a tool's ordinary
 	// permission. Frontends should render it as the host-change card — what

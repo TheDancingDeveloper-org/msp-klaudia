@@ -11,6 +11,10 @@ import (
 type fakeBackgroundAgents struct{ agents []agent.BackgroundAgent }
 
 func (f *fakeBackgroundAgents) List() []agent.BackgroundAgent { return f.agents }
+func (f *fakeBackgroundAgents) Get(string) (agent.BackgroundAgent, bool) {
+	return agent.BackgroundAgent{}, false
+}
+func (f *fakeBackgroundAgents) Cancel(string) bool { return false }
 
 // The /agents view lists each background agent with its id, type, status and
 // elapsed time — the status view the issue asks for.
@@ -95,5 +99,59 @@ func TestAgentsCommandIncludesBackgroundSection(t *testing.T) {
 	}
 	if !strings.Contains(got, "Explore") || !strings.Contains(got, "agent-1") {
 		t.Errorf("combined /agents output missing a half:\n%s", got)
+	}
+}
+
+// fakeLister is the registry the /agents commands talk to.
+type fakeLister struct {
+	agents  []agent.BackgroundAgent
+	cancels []string
+}
+
+func (f *fakeLister) List() []agent.BackgroundAgent { return f.agents }
+func (f *fakeLister) Get(id string) (agent.BackgroundAgent, bool) {
+	for _, a := range f.agents {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return agent.BackgroundAgent{}, false
+}
+func (f *fakeLister) Cancel(id string) bool {
+	f.cancels = append(f.cancels, id)
+	return id == "agent-1"
+}
+
+func agentsModel(l BackgroundAgentLister) *Model {
+	return &Model{sess: &Session{BackgroundAgents: l}}
+}
+
+// /agents show prints the child's result in full, which the list truncates.
+func TestAgentsShowPrintsResult(t *testing.T) {
+	m := agentsModel(&fakeLister{agents: []agent.BackgroundAgent{{
+		ID: "agent-1", Type: "Explore", Status: agent.BackgroundSucceeded,
+		Result: "the full report",
+	}}})
+	out := m.agentsCommand([]string{"show", "agent-1"})
+	if !strings.Contains(out, "the full report") {
+		t.Errorf("show did not print the result:\n%s", out)
+	}
+	if got := m.agentsCommand([]string{"show", "agent-9"}); !strings.Contains(got, "No sub-agent") {
+		t.Errorf("unknown id: %q", got)
+	}
+}
+
+// /agents cancel stops a running child and says so; an unknown id is refused.
+func TestAgentsCancel(t *testing.T) {
+	l := &fakeLister{}
+	m := agentsModel(l)
+	if got := m.agentsCommand([]string{"cancel", "agent-1"}); !strings.Contains(got, "Cancelling") {
+		t.Errorf("cancel: %q", got)
+	}
+	if len(l.cancels) != 1 || l.cancels[0] != "agent-1" {
+		t.Errorf("cancels = %v", l.cancels)
+	}
+	if got := m.agentsCommand([]string{"cancel", "agent-9"}); !strings.Contains(got, "Cannot cancel") {
+		t.Errorf("unknown cancel: %q", got)
 	}
 }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,6 +239,33 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	}
 }
 
+// A type that says isolation: none stays in the shared tree even though it
+// writes and worktrees are on. The type opted out; cutting a checkout for it
+// would discard that choice.
+func TestBackgroundWriterWithIsolationNoneSharesTheTree(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "shared\n"}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Isolation: "none"}})
+
+	id, _, err := s.SpawnBackground("", nil, "Patcher", "write it", "rw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	wrote := w.wrote()
+	if len(wrote) != 1 || wrote[0] != root {
+		t.Fatalf("child wrote %v, want the shared tree %s", wrote, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "made.txt")); err != nil {
+		t.Errorf("the file never reached the shared tree: %v", err)
+	}
+}
+
 // A read-only type shares the parent tree even when isolation is on: a checkout
 // would make every path it returns wrong, and there is nothing to isolate.
 func TestBackgroundReadOnlySharesTree(t *testing.T) {
@@ -432,11 +460,11 @@ func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 // as running with a growing elapsed time, finished ones keep their result.
 func TestRegistryListReportsStates(t *testing.T) {
 	r := NewBackgroundRegistry()
-	id1 := r.register("", "Explore", "search", false, "", nil)
-	id2 := r.register("", "general-purpose", "build", true, "", nil)
+	id1 := r.register("", "Explore", "search", false, "", true, nil)
+	id2 := r.register("", "general-purpose", "build", true, "", true, nil)
 
-	r.finish(id1, "found it", nil)
-	r.finish(id2, "", fmt.Errorf("boom"))
+	r.finish(id1, "found it", nil, nil)
+	r.finish(id2, "", nil, fmt.Errorf("boom"))
 
 	byID := map[string]BackgroundAgent{}
 	for _, a := range r.List() {
@@ -452,9 +480,72 @@ func TestRegistryListReportsStates(t *testing.T) {
 		t.Error("writer should be marked isolated in the listing")
 	}
 	// A still-running agent reports a non-negative elapsed and Done()==false.
-	id3 := r.register("", "Explore", "slow", false, "", nil)
+	id3 := r.register("", "Explore", "slow", false, "", true, nil)
 	if a, _ := r.Get(id3); a.Done() || a.Elapsed() < 0 {
 		t.Errorf("running agent: done=%v elapsed=%v", a.Done(), a.Elapsed())
+	}
+}
+
+// Lifecycle events carry their payload in `text`, the field docs/embedding.md
+// names for subagent_started and subagent_finished. `content` is the tool
+// result's field; a driver written against the contract reads `text`.
+func TestSubagentEventsUseTheDocumentedTextField(t *testing.T) {
+	r := NewBackgroundRegistry()
+	id := r.register("", "Explore", "search the tree", false, "", true, nil)
+	r.finish(id, "done", nil, fmt.Errorf("boom"))
+
+	evs := r.TakeEvents("")
+	if len(evs) != 2 {
+		t.Fatalf("events = %d, want 2", len(evs))
+	}
+	want := []Event{
+		{Type: "subagent_started", ToolUseID: id, ToolName: "Explore", Text: "search the tree"},
+		{Type: "subagent_finished", ToolUseID: id, ToolName: "Explore", Text: "failed"},
+	}
+	for i, w := range want {
+		got := evs[i]
+		if got.Type != w.Type || got.ToolUseID != w.ToolUseID || got.ToolName != w.ToolName || got.Text != w.Text || got.Content != "" {
+			t.Errorf("event %d = %+v, want %+v", i, got, w)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m["text"] != w.Text {
+			t.Errorf("event %d wire text = %v, want %q: %s", i, m["text"], w.Text, b)
+		}
+		if _, ok := m["content"]; ok {
+			t.Errorf("event %d carries content, which the contract does not name: %s", i, b)
+		}
+	}
+	if again := r.TakeEvents(""); len(again) != 0 {
+		t.Errorf("TakeEvents did not drain: %+v", again)
+	}
+}
+
+// Two conversations share one registry, because an ACP server runs several
+// sessions in one process. Each must see only its own children's events, and
+// draining one must leave the other intact.
+func TestSubagentEventsAreScopedToTheConversation(t *testing.T) {
+	r := NewBackgroundRegistry()
+	a := r.register("conv-a", "Explore", "a's search", false, "", true, nil)
+	b := r.register("conv-b", "Explore", "b's search", false, "", true, nil)
+	r.finish(a, "done", nil, nil)
+
+	gotA := r.TakeEvents("conv-a")
+	if len(gotA) != 2 || gotA[0].ToolUseID != a || gotA[1].ToolUseID != a {
+		t.Errorf("conv-a events = %+v, want its own start and finish", gotA)
+	}
+	gotB := r.TakeEvents("conv-b")
+	if len(gotB) != 1 || gotB[0].ToolUseID != b || gotB[0].Type != "subagent_started" {
+		t.Errorf("conv-b events = %+v, want only its own start", gotB)
+	}
+	if leaked := r.TakeEvents(""); len(leaked) != 0 {
+		t.Errorf("the default conversation saw another session's events: %+v", leaked)
 	}
 }
 
@@ -467,9 +558,9 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", nil)
+			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", true, nil)
 			r.setActivity(id, "Read x")
-			r.finish(id, "done", nil)
+			r.finish(id, "done", nil, nil)
 		}(i)
 	}
 	for i := 0; i < 20; i++ {
@@ -497,22 +588,22 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 // that one (#276).
 func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 	r := NewBackgroundRegistry()
-	a := r.register("thread-a", "Explore", "a's search", false, "", nil)
-	b := r.register("thread-b", "Explore", "b's search", false, "", nil)
-	r.finish(a, "found in a", nil)
-	r.finish(b, "found in b", nil)
+	a := r.register("thread-a", "Explore", "a's search", false, "", true, nil)
+	b := r.register("thread-b", "Explore", "b's search", false, "", true, nil)
+	r.finish(a, "found in a", nil, nil)
+	r.finish(b, "found in b", nil, nil)
 
 	if got := r.PendingReport(); got != "" {
 		t.Errorf("the default conversation collected another conversation's result: %q", got)
 	}
-	gotA := r.PendingReportFor("thread-a")
+	gotA, _ := r.PendingReportFor("thread-a")
 	if !strings.Contains(gotA, "found in a") || strings.Contains(gotA, "found in b") {
 		t.Errorf("thread-a report = %q", gotA)
 	}
-	if again := r.PendingReportFor("thread-a"); again != "" {
+	if again, _ := r.PendingReportFor("thread-a"); again != "" {
 		t.Errorf("thread-a's result delivered twice: %q", again)
 	}
-	if gotB := r.PendingReportFor("thread-b"); !strings.Contains(gotB, "found in b") {
+	if gotB, _ := r.PendingReportFor("thread-b"); !strings.Contains(gotB, "found in b") {
 		t.Errorf("thread-b report = %q", gotB)
 	}
 }
@@ -521,10 +612,10 @@ func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 // ones whose result has not been collected yet. Once collected, nothing is left.
 func TestRegistryUndelivered(t *testing.T) {
 	r := NewBackgroundRegistry()
-	slow := r.register("", "Explore", "slow", false, "", nil)
-	fast := r.register("", "Explore", "fast", false, "", nil)
-	_ = r.register("other", "Explore", "elsewhere", false, "", nil)
-	r.finish(fast, "quick answer", nil)
+	slow := r.register("", "Explore", "slow", false, "", true, nil)
+	fast := r.register("", "Explore", "fast", false, "", true, nil)
+	_ = r.register("other", "Explore", "elsewhere", false, "", true, nil)
+	r.finish(fast, "quick answer", nil, nil)
 
 	running, ready := r.Undelivered("")
 	if len(running) != 1 || running[0].ID != slow {
@@ -535,9 +626,36 @@ func TestRegistryUndelivered(t *testing.T) {
 	}
 
 	_ = r.PendingReport()
-	r.finish(slow, "slow answer", nil)
+	r.finish(slow, "slow answer", nil, nil)
 	_ = r.PendingReport()
 	if running, ready := r.Undelivered(""); len(running)+len(ready) != 0 {
 		t.Errorf("after delivery: running=%v ready=%v", running, ready)
+	}
+}
+
+// A foreground child is registered while it runs and collected when it returns,
+// so /agents can see it without its result also arriving as a background report.
+func TestForegroundChildIsRegisteredAndCollected(t *testing.T) {
+	dir := t.TempDir()
+	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
+		{StopReason: "end_turn", Content: []anthropic.BetaContentBlockUnion{{Type: "text", Text: "done"}}},
+	}}
+	sp := readOnlySpawner(t, provider, dir, 0)
+	_, _, err := sp.Spawn(context.Background(), nil, "Explore", "look", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	list := sp.Background().List()
+	if len(list) != 1 {
+		t.Fatalf("registry has %d entries, want the foreground child", len(list))
+	}
+	if list[0].Background {
+		t.Error("a foreground child was recorded as background")
+	}
+	if !list[0].Done() {
+		t.Error("the child is still running after Spawn returned")
+	}
+	if got := sp.Background().PendingReport(); got != "" {
+		t.Errorf("the foreground result was also delivered as a background report:\n%s", got)
 	}
 }

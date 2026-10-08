@@ -416,3 +416,60 @@ func TestATruncatedCallIsNotGrouped(t *testing.T) {
 		}
 	}
 }
+
+// selectiveTool is safe only for the calls whose input says so, the way the
+// Agent tool's background launch is and its foreground launch is not.
+type selectiveTool struct {
+	probeTool
+}
+
+func (s *selectiveTool) ConcurrencySafeFor(raw json.RawMessage) bool {
+	var in struct{ Safe bool }
+	_ = json.Unmarshal(raw, &in)
+	return in.Safe
+}
+
+// A tool that decides per call runs its safe calls together and its unsafe
+// ones alone, even when they name the same tool.
+func TestPerCallSafetySplitsTheGroup(t *testing.T) {
+	log := &runLog{}
+	tool := &selectiveTool{probeTool: probeTool{name: "Agent", log: log, run: func(context.Context, string) (string, bool) {
+		time.Sleep(30 * time.Millisecond)
+		return "ok", false
+	}}}
+	reg := tools.NewRegistry(tool)
+	l := New(&scriptedProvider{}, reg)
+
+	uses := []anthropic.BetaToolUseBlock{
+		toolUseTurn(t, "a", "Agent", map[string]any{"safe": true, "id": "1"}).Content[0].AsToolUse(),
+		toolUseTurn(t, "b", "Agent", map[string]any{"safe": true, "id": "2"}).Content[0].AsToolUse(),
+		toolUseTurn(t, "c", "Agent", map[string]any{"safe": false, "id": "3"}).Content[0].AsToolUse(),
+	}
+	l.dispatchAll(context.Background(), uses, Options{}, 0, nil, func(...string) {}, newFailureState(), func(anthropic.BetaToolUseBlock) (string, bool) { return "", false })
+	if peak := log.peakConcurrency(); peak != 2 {
+		t.Errorf("peak concurrency = %d, want 2: the unsafe call ran with the safe ones", peak)
+	}
+}
+
+// Agent launches are capped below the general tool cap, so one turn cannot
+// start an unbounded number of children.
+func TestAgentLaunchesAreCapped(t *testing.T) {
+	log := &runLog{}
+	tool := &selectiveTool{probeTool: probeTool{name: "Agent", log: log, run: func(ctx context.Context, _ string) (string, bool) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(40 * time.Millisecond):
+		}
+		return "ok", false
+	}}}
+	reg := tools.NewRegistry(tool)
+	l := New(&scriptedProvider{}, reg)
+	var uses []anthropic.BetaToolUseBlock
+	for i := 0; i < 6; i++ {
+		uses = append(uses, toolUseTurn(t, fmt.Sprintf("t%d", i), "Agent", map[string]any{"safe": true, "id": fmt.Sprint(i)}).Content[0].AsToolUse())
+	}
+	l.dispatchAll(context.Background(), uses, Options{MaxConcurrent: 2}, 0, nil, func(...string) {}, newFailureState(), func(anthropic.BetaToolUseBlock) (string, bool) { return "", false })
+	if peak := log.peakConcurrency(); peak != 2 {
+		t.Errorf("peak concurrency = %d, want the cap of 2", peak)
+	}
+}

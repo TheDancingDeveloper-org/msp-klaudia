@@ -86,7 +86,7 @@ func TestSpawnGivesTheChildContextItsOwnTodosAndNoQuestions(t *testing.T) {
 	sp := NewSpawner(provider, tools.NewRegistry(todo, ask, read), "claude-opus-4-8",
 		bypassPerm(), nil, 0).WithWorkingDir(dir)
 
-	out, err := sp.Spawn(context.Background(), nil, "general-purpose", "do it", nil)
+	out, _, err := sp.Spawn(context.Background(), nil, "general-purpose", "do it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}

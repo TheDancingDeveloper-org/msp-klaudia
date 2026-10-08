@@ -33,8 +33,8 @@ type Emitter func(event Event)
 
 // Event is a streaming event emitted during a run (stream-json mode).
 type Event struct {
-	Type      string `json:"type"`                  // "assistant" | "tool_use" | "tool_progress" | "tool_result" | "usage" | "compaction" | "warning" | "notice" | "permission_mode"
-	Text      string `json:"text,omitempty"`        // assistant text
+	Type      string `json:"type"`                  // "assistant" | "tool_use" | "tool_progress" | "tool_result" | "usage" | "compaction" | "warning" | "notice" | "permission_mode" | "subagent_started" | "subagent_finished"
+	Text      string `json:"text,omitempty"`        // assistant text; subagent_started label; subagent_finished status
 	ToolName  string `json:"tool_name,omitempty"`   // tool_use / tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"` // tool_use / tool_result
 	Input     any    `json:"input,omitempty"`       // tool_use input
@@ -75,8 +75,11 @@ type Options struct {
 	System    string
 	MaxTurns  int   // 0 = unlimited
 	MaxTokens int64 // 0 = model-aware default via api.MaxOutputTokensFor
-	// MaxBudgetUSD stops the run once cumulative cost reaches this many USD,
-	// the same way MaxTurns stops it on turn count. 0 = unlimited. It can only
+	// MaxConcurrent bounds how many Agent launches one turn runs at once. 0 means
+	// the default of 3. Other tools keep their own cap.
+	MaxConcurrent int
+	// MaxBudgetUSD stops the run once cumulative cost reaches this many USD, the
+	// same way MaxTurns stops it on turn count. 0 = unlimited. It can only
 	// fire for a model with a known price (see api.CostUSD); an unpriced model
 	// (e.g. an OpenAI-compatible endpoint) has cost 0 and is never budget-stopped.
 	MaxBudgetUSD float64
@@ -120,6 +123,11 @@ type Options struct {
 	// delivers a background Agent-tool launch back to the parent. Nil means the
 	// caller has no background sub-agents to collect.
 	CollectBackground func() string
+	// CollectChildUsage, if set, is polled with CollectBackground and returns
+	// what the children just delivered spent, so the parent can fold it in.
+	CollectChildUsage func() []*tools.ChildUsage
+	// SubagentEvents returns the lifecycle events recorded since the last poll.
+	SubagentEvents func() []Event
 	// Conversation identifies which conversation this run belongs to, for a
 	// frontend with more than one; see Turn.Conversation. It is passed to tools
 	// (tools.Context.Conversation) so a background sub-agent's result is
@@ -218,16 +226,42 @@ type Result struct {
 	// either "free" or "unpriced" — callers that must tell them apart re-query
 	// api.CostUSD for the known flag.
 	CostUSD float64
+	// Children is what the sub-agents this run launched spent. Their cost is
+	// already inside CostUSD — a parent under a budget cannot spend past it
+	// by delegating — and the breakdown is here so /cost and the stream-json
+	// result can show it rather than only the total.
+	Children []ChildUsage
 	// Messages is the full conversation after the run (initial + this turn's
 	// exchanges), so a caller can carry it forward as InitialMessages for the
 	// next turn (used by the stream-json embedding frontend).
 	Messages []anthropic.BetaMessageParam
 }
 
+// ChildUsage is one sub-agent's spend, folded into the parent's totals.
+// Model is the model the child ran on, since the parent's price table does
+// not price a child that ran on a different one.
+type ChildUsage struct {
+	Model                    string
+	InputTokens              int64
+	OutputTokens             int64
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
+	APIDuration              time.Duration
+	CostUSD                  float64
+	NumTurns                 int
+}
+
 // Loop drives the agentic loop against an API client and a tool registry.
 type Loop struct {
 	provider api.Provider
 	tools    *tools.Registry
+
+	// childUsage holds the spend of sub-agents dispatched this run, keyed by
+	// the tool-use id of the Agent call, so the loop can fold it into the
+	// parent's totals after dispatch returns its opaque blocks. Guarded by
+	// childMu: a grouped dispatch runs calls concurrently.
+	childMu    sync.Mutex
+	childUsage map[string]*tools.ChildUsage
 
 	// compactFailures counts automatic compactions that failed in a row. After
 	// maxCompactFailures the threshold-driven compaction stops trying — each
@@ -419,7 +453,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Deliver any background sub-agent that finished since the last turn, at
 		// the same safe point a steer lands: as a user message before the request
 		// is built, so the model sees the result while deciding what to do next.
+		emitSubagentEvents(opts, emit)
 		if report := pollBackground(opts); report != "" {
+			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
 				messages = append(messages, msg)
 				rec("user", msg)
@@ -516,6 +552,12 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			CacheReadInputTokens:     res.CacheReadInputTokens,
 			CacheCreationInputTokens: res.CacheCreationInputTokens,
 		})
+		// The children's cost was priced against their own models and is not
+		// in the token totals above, so it has to be added back each time the
+		// parent's own cost is recomputed.
+		for _, c := range res.Children {
+			res.CostUSD += c.CostUSD
+		}
 		res.Text = finalText
 		// Live usage tick: emit per inner LLM call so frontends can update
 		// counters during long iterations. TurnDelta=1 mirrors res.NumTurns
@@ -589,6 +631,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			return "", false
 		}
 		resultBlocks := l.dispatchAll(ctx, toolUses, opts, res.CostUSD, emit, reveal, fs, preempt)
+		// A sub-agent's spend lands here, before the budget check, so a parent
+		// cannot delegate its way past MaxBudgetUSD.
+		l.foldChildren(opts, &res)
 		// The aggregate cap, after the per-result one. Results that each pass
 		// the 30 KB budget still add up, and a turn is not limited to a few
 		// calls; see batchcap.go.
@@ -624,7 +669,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// The second delivery point, mirroring the interjection poll above: a
 		// background agent that finished while this turn's tools ran reaches the
 		// model on the next request rather than a turn later.
+		emitSubagentEvents(opts, emit)
 		if report := pollBackground(opts); report != "" {
+			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
 				messages = append(messages, msg)
 				record(opts.Recorder, "user", msg)
@@ -1040,7 +1087,84 @@ func truncatedToolNote(maxTokens int64) string {
 		"then continue.", maxTokens)
 }
 
-// budgetLeft is what a child launched during this dispatch may still spend.
+// noteChild records one sub-agent's spend against the tool call that
+// launched it. An Agent call yields one result, so the first wins.
+func (l *Loop) noteChild(toolUseID string, u *tools.ChildUsage) {
+	l.childMu.Lock()
+	defer l.childMu.Unlock()
+	if l.childUsage == nil {
+		l.childUsage = map[string]*tools.ChildUsage{}
+	}
+	if _, ok := l.childUsage[toolUseID]; !ok {
+		l.childUsage[toolUseID] = u
+	}
+}
+
+// takeChildren returns and forgets the sub-agent spend recorded since the
+// last call, in no particular order.
+func (l *Loop) takeChildren() []*tools.ChildUsage {
+	l.childMu.Lock()
+	defer l.childMu.Unlock()
+	if len(l.childUsage) == 0 {
+		return nil
+	}
+	out := make([]*tools.ChildUsage, 0, len(l.childUsage))
+	for _, u := range l.childUsage {
+		out = append(out, u)
+	}
+	l.childUsage = nil
+	return out
+}
+
+// foldChildren adds the sub-agents launched by the dispatch just finished
+// into the parent's result and recomputes cost, so a budget check made
+// after this sees the children's spend.
+//
+// The children's tokens stay out of the parent's token totals: those are
+// priced against the parent's model, and a child may have run on another.
+// Their cost, already priced against their own model, is added on top.
+func (l *Loop) foldChildren(opts Options, res *Result) {
+	children := l.takeChildren()
+	if len(children) == 0 {
+		return
+	}
+	for _, u := range children {
+		cost := u.CostUSD
+		if cost == 0 {
+			// A usage recorded with tokens but no cost — the background
+			// delivery path carries the raw counts — is priced here, the same
+			// way the child's own result was. A child whose model has no known
+			// price contributes nothing, which is what its own result did too.
+			cost, _ = api.CostUSD(u.Model, api.Usage{
+				InputTokens:              u.InputTokens,
+				OutputTokens:             u.OutputTokens,
+				CacheReadInputTokens:     u.CacheReadInputTokens,
+				CacheCreationInputTokens: u.CacheCreationInputTokens,
+			})
+		}
+		res.Children = append(res.Children, ChildUsage{
+			Model:                    u.Model,
+			InputTokens:              u.InputTokens,
+			OutputTokens:             u.OutputTokens,
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+			APIDuration:              u.APIDuration,
+			CostUSD:                  cost,
+			NumTurns:                 u.NumTurns,
+		})
+	}
+	own, _ := api.CostUSD(string(opts.Model), api.Usage{
+		InputTokens:              res.InputTokens,
+		OutputTokens:             res.OutputTokens,
+		CacheReadInputTokens:     res.CacheReadInputTokens,
+		CacheCreationInputTokens: res.CacheCreationInputTokens,
+	})
+	for _, c := range res.Children {
+		own += c.CostUSD
+	}
+	res.CostUSD = own
+}
+
 // Nil means the turn has no budget, so the child is not bounded by one either.
 func budgetLeft(opts Options, spentUSD float64) *float64 {
 	if opts.MaxBudgetUSD <= 0 {
@@ -1289,6 +1413,9 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 	clamped := false
 	var images []tools.ResultImage
 	for i, r := range results {
+		if r.Child != nil {
+			l.noteChild(tu.ID, r.Child)
+		}
 		if i > 0 && r.Content != "" {
 			content += "\n"
 			full += "\n"
@@ -1600,4 +1727,23 @@ func finalAssistantText(m anthropic.BetaMessage) string {
 		}
 	}
 	return s
+}
+
+func (l *Loop) foldDelivered(opts Options, res *Result) {
+	if opts.CollectChildUsage == nil {
+		return
+	}
+	for i, u := range opts.CollectChildUsage() {
+		l.noteChild(fmt.Sprintf("bg-%d", i), u)
+	}
+	l.foldChildren(opts, res)
+}
+
+func emitSubagentEvents(opts Options, emit Emitter) {
+	if opts.SubagentEvents == nil || emit == nil {
+		return
+	}
+	for _, ev := range opts.SubagentEvents() {
+		emit(ev)
+	}
 }

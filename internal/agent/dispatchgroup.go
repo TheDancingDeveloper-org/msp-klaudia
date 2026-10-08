@@ -85,11 +85,11 @@ func (l *Loop) groupable(tu anthropic.BetaToolUseBlock, opts Options, preempt fu
 	if _, ok := preempt(tu); ok {
 		return false
 	}
+	raw, _ := json.Marshal(tu.Input)
 	tool, ok := l.tools.Lookup(tu.Name)
-	if !ok || !tools.IsConcurrencySafe(tool) {
+	if !ok || !tools.IsConcurrencySafeFor(tool, raw) {
 		return false
 	}
-	raw, _ := json.Marshal(tu.Input)
 	if permission.CurrentMode(opts.Permission) != permission.ModeBypassPermissions {
 		if len(opts.Host.Check(tu.Name, raw, opts.WorkingDir).Ask) > 0 {
 			return false
@@ -113,7 +113,7 @@ func (l *Loop) dispatchGroup(
 	fs *failureState,
 ) {
 	oe := newOrderedEmitter(emit, len(group))
-	sem := make(chan struct{}, maxConcurrentTools)
+	sem := make(chan struct{}, l.groupLimit(group, opts))
 	var wg sync.WaitGroup
 	for i, tu := range group {
 		wg.Add(1)
@@ -126,6 +126,21 @@ func (l *Loop) dispatchGroup(
 		}(i, tu)
 	}
 	wg.Wait()
+}
+
+// groupLimit is how many calls in this group may run at once. A group of
+// Agent launches is bounded by Options.MaxConcurrent (default 3): each one is
+// a whole child loop, and five of those at once is a lot of requests. Any
+// other group keeps the general cap.
+func (l *Loop) groupLimit(group []anthropic.BetaToolUseBlock, opts Options) int {
+	limit := maxConcurrentTools
+	if len(group) > 0 && group[0].Name == "Agent" {
+		limit = opts.MaxConcurrent
+		if limit <= 0 {
+			limit = 3
+		}
+	}
+	return limit
 }
 
 // orderedEmitter serializes a group's events and delivers them in call order,
