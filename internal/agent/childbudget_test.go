@@ -114,3 +114,19 @@ func TestChildReceivesRemainingBudget(t *testing.T) {
 		t.Errorf("child usage %+v, want a cost at or over the %v budget", usage, left)
 	}
 }
+
+// A spent budget refuses the launch. Passing 0 through would mean "no budget"
+// to the loop, so the child would spend without limit.
+func TestSpentBudgetRefusesTheLaunch(t *testing.T) {
+	child := &pricedProvider{out: 1_000_000}
+	sp := NewSpawner(child, tools.NewRegistry(), anthropic.Model("claude-sonnet-5"), permission.Context{}, nil, 0).
+		WithTypes(subagent.Builtin())
+	spent := 0.0
+	_, _, err := sp.spawn(context.Background(), ChildSpec{Budget: &spent}, "Explore", "look", nil)
+	if err == nil {
+		t.Fatal("a child was launched with nothing left to spend")
+	}
+	if child.calls != 0 {
+		t.Errorf("the refused child made %d requests", child.calls)
+	}
+}

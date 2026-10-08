@@ -265,7 +265,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
-	repo, prov, err := s.childRepo(spec)
+	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
 		return "", nil, err
 	}
@@ -281,14 +281,14 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
 		// background poll, so it is marked collected the moment it ends.
-		reg.finish(id, "", childErr)
+		reg.finish(id, "", nil, childErr)
 		reg.collected(id)
 	}()
 	if isolate {
 		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
 			reportf(progress, "  (sharing the working tree: %v)", err)
 		} else {
-			tree, dir = wt, wt.Dir
+			tree, dir = wt, filepath.Join(wt.Dir, sub)
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
 	}
@@ -354,6 +354,12 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	}
 	var budget float64
 	if spec.Budget != nil {
+		if *spec.Budget <= 0 {
+			// 0 would mean "no budget" to the loop, which is the opposite of
+			// what an exhausted parent means. Refuse rather than launch a child
+			// that can spend without limit.
+			return "", nil, fmt.Errorf("the session's budget is spent; not launching a sub-agent")
+		}
 		budget = *spec.Budget
 	}
 
@@ -474,7 +480,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
-	repo, prov, err := s.childRepo(spec)
+	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
 		return "", "", err
 	}
@@ -505,26 +511,26 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 				// Isolation is a safety property, not a nicety: rather than run a
 				// writer in the shared tree and risk corrupting it, fail the agent
 				// and say why.
-				reg.finish(id, "", fmt.Errorf("could not isolate a worktree: %w", err))
+				reg.finish(id, "", nil, fmt.Errorf("could not isolate a worktree: %w", err))
 				return
 			}
-			tree, workingDir = wt, wt.Dir
+			tree, workingDir = wt, filepath.Join(wt.Dir, sub)
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
-		result, _, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
+		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
 		if tree == nil {
-			reg.finish(id, prov.note(result), err)
+			reg.finish(id, prov.note(result), usage, err)
 			return
 		}
 		if err != nil {
 			// Whatever the child wrote stays where it is: applying half a change
 			// to the user's tree is the one outcome isolation exists to prevent.
-			reg.finish(id, tree.Rewrite(result), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
+			reg.finish(id, tree.Rewrite(result), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
 			return
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
 		defer stop()
-		reg.finish(id, prov.note(s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress)), nil)
+		reg.finish(id, prov.note(s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress)), usage, nil)
 	}()
 
 	return id, prov.String(), nil
@@ -538,23 +544,37 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 // there, so a path inside a nested checkout still lands in the right tree.
 // A directory that is not a repository is used as given — a child can still
 // share it — and says so rather than naming a branch it does not have.
-func (s *Spawner) childRepo(spec ChildSpec) (string, repoProvenance, error) {
+// childRepo resolves the repository a child is cut from and the subpath the
+// session sits at inside it. The subpath is "" when the session is the
+// repository toplevel. The child runs at <checkout>/<sub> and the adoption
+// runs from the toplevel, so an edit outside the session's subdirectory is
+// still applied instead of being listed and then discarded.
+func (s *Spawner) childRepo(spec ChildSpec) (repo, sub string, prov repoProvenance, err error) {
 	base := spec.WorkingDir
 	if base == "" {
 		base = s.workingDir
 	}
 	if spec.RequestedDir == "" {
-		return base, repoOf(base), nil
+		repo, prov = base, repoOf(base)
+	} else {
+		dir := canonical(spec.RequestedDir)
+		if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
+			return "", "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+		}
+		top := repoToplevel(dir)
+		if top == "" {
+			return dir, "", repoProvenance{Repo: dir}, nil
+		}
+		repo, prov = top, repoOf(top)
 	}
-	dir := canonical(spec.RequestedDir)
-	if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
-		return "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+	if top := repoToplevel(repo); top != "" && top != canonical(repo) {
+		rel, relErr := filepath.Rel(top, canonical(repo))
+		if relErr == nil && rel != "." {
+			sub = rel
+		}
+		repo, prov = top, repoOf(top)
 	}
-	top := repoToplevel(dir)
-	if top == "" {
-		return dir, repoProvenance{Repo: dir}, nil
-	}
-	return top, repoOf(top), nil
+	return repo, sub, prov, nil
 }
 
 // dirAllowed reports whether dir is inside one of roots. Both sides are

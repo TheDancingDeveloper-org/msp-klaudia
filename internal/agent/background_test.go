@@ -435,8 +435,8 @@ func TestRegistryListReportsStates(t *testing.T) {
 	id1 := r.register("", "Explore", "search", false, "", true, nil)
 	id2 := r.register("", "general-purpose", "build", true, "", true, nil)
 
-	r.finish(id1, "found it", nil)
-	r.finish(id2, "", fmt.Errorf("boom"))
+	r.finish(id1, "found it", nil, nil)
+	r.finish(id2, "", nil, fmt.Errorf("boom"))
 
 	byID := map[string]BackgroundAgent{}
 	for _, a := range r.List() {
@@ -469,7 +469,7 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 			defer wg.Done()
 			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", true, nil)
 			r.setActivity(id, "Read x")
-			r.finish(id, "done", nil)
+			r.finish(id, "done", nil, nil)
 		}(i)
 	}
 	for i := 0; i < 20; i++ {
@@ -499,20 +499,20 @@ func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 	r := NewBackgroundRegistry()
 	a := r.register("thread-a", "Explore", "a's search", false, "", true, nil)
 	b := r.register("thread-b", "Explore", "b's search", false, "", true, nil)
-	r.finish(a, "found in a", nil)
-	r.finish(b, "found in b", nil)
+	r.finish(a, "found in a", nil, nil)
+	r.finish(b, "found in b", nil, nil)
 
 	if got := r.PendingReport(); got != "" {
 		t.Errorf("the default conversation collected another conversation's result: %q", got)
 	}
-	gotA := r.PendingReportFor("thread-a")
+	gotA, _ := r.PendingReportFor("thread-a")
 	if !strings.Contains(gotA, "found in a") || strings.Contains(gotA, "found in b") {
 		t.Errorf("thread-a report = %q", gotA)
 	}
-	if again := r.PendingReportFor("thread-a"); again != "" {
+	if again, _ := r.PendingReportFor("thread-a"); again != "" {
 		t.Errorf("thread-a's result delivered twice: %q", again)
 	}
-	if gotB := r.PendingReportFor("thread-b"); !strings.Contains(gotB, "found in b") {
+	if gotB, _ := r.PendingReportFor("thread-b"); !strings.Contains(gotB, "found in b") {
 		t.Errorf("thread-b report = %q", gotB)
 	}
 }
@@ -524,7 +524,7 @@ func TestRegistryUndelivered(t *testing.T) {
 	slow := r.register("", "Explore", "slow", false, "", true, nil)
 	fast := r.register("", "Explore", "fast", false, "", true, nil)
 	_ = r.register("other", "Explore", "elsewhere", false, "", true, nil)
-	r.finish(fast, "quick answer", nil)
+	r.finish(fast, "quick answer", nil, nil)
 
 	running, ready := r.Undelivered("")
 	if len(running) != 1 || running[0].ID != slow {
@@ -535,7 +535,7 @@ func TestRegistryUndelivered(t *testing.T) {
 	}
 
 	_ = r.PendingReport()
-	r.finish(slow, "slow answer", nil)
+	r.finish(slow, "slow answer", nil, nil)
 	_ = r.PendingReport()
 	if running, ready := r.Undelivered(""); len(running)+len(ready) != 0 {
 		t.Errorf("after delivery: running=%v ready=%v", running, ready)

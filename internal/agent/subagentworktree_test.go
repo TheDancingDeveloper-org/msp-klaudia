@@ -405,3 +405,42 @@ func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
 		t.Errorf("the child ran anyway: %v", w.wrote())
 	}
 }
+
+// A session rooted in a subdirectory of its repository still adopts an edit the
+// child made outside that subdirectory. Before the fix the patch was applied
+// from the subdirectory, so the edit was listed and then discarded.
+func TestSubdirSessionAdoptsEditsOutsideIt(t *testing.T) {
+	root := gitRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "svc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(root, "svc", "keep.txt"), []byte("k\n"), 0o644)
+	gitCommitAll(t, root)
+
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "../outside.txt", body: "from the child\n"}
+	s := writingSpawner(t, w, filepath.Join(root, "svc")).WithWorktrees(true)
+	if _, _, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil); err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "outside.txt"))
+	if err != nil {
+		t.Fatalf("the edit outside the session subdirectory was lost: %v", err)
+	}
+	if string(got) != "from the child\n" {
+		t.Errorf("outside.txt = %q", got)
+	}
+}
+
+func gitCommitAll(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{{"add", "-A"}, {"commit", "--quiet", "-m", "more"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = []string{"GIT_CONFIG_NOSYSTEM=1", "PATH=" + os.Getenv("PATH"),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e.invalid",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e.invalid"}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+}

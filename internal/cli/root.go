@@ -1937,7 +1937,14 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// -p, stream-json and ACP a background Agent launch was never delivered
 		// (#276). Set here, a frontend cannot leave it out by accident.
 		bg, conversation := wiring.spawner.Background(), opts.Conversation
-		opts.CollectBackground = func() string { return bg.PendingReportFor(conversation) }
+		opts.CollectBackground = func() string {
+			report, _ := bg.PendingReportFor(conversation)
+			return report
+		}
+		opts.CollectChildUsage = func() []*tools.ChildUsage {
+			_, usage := bg.PendingReportFor(conversation)
+			return usage
+		}
 		return opts
 	}
 
