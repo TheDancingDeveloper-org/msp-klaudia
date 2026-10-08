@@ -29,6 +29,13 @@ type Type struct {
 	// Model, when set, is the model this sub-agent runs on (an alias or a
 	// full id); empty uses the parent's.
 	Model string
+	// MaxTurns bounds the child's own loop. 0 means the shared default.
+	MaxTurns int
+	// DisallowedTools are removed from Tools even when Tools says "*".
+	DisallowedTools []string
+	// Isolation, when "none", keeps a writer in the shared tree. "" uses the
+	// default, which isolates writers.
+	Isolation string
 }
 
 // readOnlyTool is implemented by tools that can state they only read. MCP tools
@@ -105,6 +112,22 @@ func Lookup(name string) (Type, bool) {
 	return Find(Builtin(), name)
 }
 
+// UnknownTools reports the tool names this type names that are not in base, so
+// a custom agent file that misspells a tool is reported at startup rather
+// than silently granting nothing. "*" is never unknown.
+func (t Type) UnknownTools(base *tools.Registry) []string {
+	var out []string
+	for _, name := range append(append([]string{}, t.Tools...), t.DisallowedTools...) {
+		if name == "*" {
+			continue
+		}
+		if _, ok := base.Lookup(name); !ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // Filter returns a new registry containing only the tools this type may use,
 // drawn from base. A Tools entry of "*" includes everything in base.
 func (t Type) Filter(base *tools.Registry) *tools.Registry {
@@ -115,7 +138,7 @@ func (t Type) Filter(base *tools.Registry) *tools.Registry {
 				all = append(all, tool)
 			}
 		}
-		return tools.NewRegistry(all...)
+		return tools.NewRegistry(t.withoutDisallowed(all)...)
 	}
 	var allowed []tools.Tool
 	seen := make(map[string]bool, len(t.Tools))
@@ -154,5 +177,24 @@ func (t Type) Filter(base *tools.Registry) *tools.Registry {
 			}
 		}
 	}
-	return tools.NewRegistry(allowed...)
+	return tools.NewRegistry(t.withoutDisallowed(allowed)...)
+}
+
+// withoutDisallowed drops the tools this type's frontmatter forbids, so a
+// wildcard toolset can still say "everything except Bash".
+func (t Type) withoutDisallowed(in []tools.Tool) []tools.Tool {
+	if len(t.DisallowedTools) == 0 {
+		return in
+	}
+	ban := map[string]bool{}
+	for _, n := range t.DisallowedTools {
+		ban[n] = true
+	}
+	out := in[:0:0]
+	for _, tool := range in {
+		if !ban[tool.Name()] {
+			out = append(out, tool)
+		}
+	}
+	return out
 }

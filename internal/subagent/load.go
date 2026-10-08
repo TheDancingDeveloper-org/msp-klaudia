@@ -73,10 +73,13 @@ func Load(cwd string, warn func(string)) []Type {
 }
 
 type agentFrontmatter struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description"`
-	Tools       any    `yaml:"tools"`
-	Model       string `yaml:"model"`
+	Name            string `yaml:"name"`
+	Description     string `yaml:"description"`
+	Tools           any    `yaml:"tools"`
+	Model           string `yaml:"model"`
+	MaxTurns        int    `yaml:"maxTurns"`
+	DisallowedTools any    `yaml:"disallowedTools"`
+	Isolation       string `yaml:"isolation"`
 }
 
 func parseAgentFile(path string) (Type, error) {
@@ -123,11 +126,14 @@ func parseAgentFile(path string) (Type, error) {
 		return Type{}, fmt.Errorf("missing description (the model chooses agents by it)")
 	}
 	t := Type{
-		Name:         name,
-		Description:  strings.TrimSpace(fm.Description),
-		SystemPrompt: strings.TrimSpace(body),
-		Model:        strings.TrimSpace(fm.Model),
-		Tools:        []string{"*"},
+		Name:            name,
+		Description:     strings.TrimSpace(fm.Description),
+		SystemPrompt:    strings.TrimSpace(body),
+		Model:           strings.TrimSpace(fm.Model),
+		Tools:           []string{"*"},
+		MaxTurns:        fm.MaxTurns,
+		DisallowedTools: toolList(fm.DisallowedTools),
+		Isolation:       strings.TrimSpace(fm.Isolation),
 	}
 	switch v := fm.Tools.(type) {
 	case nil:
@@ -154,7 +160,7 @@ func parseAgentFile(path string) (Type, error) {
 
 // agentKeys are the frontmatter keys an agent file uses. A line starting with
 // one begins a new field; any other line continues the field before it.
-var agentKeys = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "color": true}
+var agentKeys = map[string]bool{"name": true, "description": true, "tools": true, "model": true, "color": true, "maxTurns": true, "disallowedTools": true, "isolation": true}
 
 // lenientAgentFrontmatter reads an agent file's frontmatter as "key: value"
 // lines, joining every line that does not start a known key to the value
@@ -211,4 +217,22 @@ func Find(types []Type, name string) (Type, bool) {
 		}
 	}
 	return Type{}, false
+}
+
+// toolList reads a frontmatter field that may be one string or a list of them.
+func toolList(v any) []string {
+	switch x := v.(type) {
+	case string:
+		return splitTools(x)
+	case []any:
+		var out []string
+		for _, e := range x {
+			if n, ok := e.(string); ok && strings.TrimSpace(n) != "" {
+				out = append(out, strings.TrimSpace(n))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }

@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"github.com/greenthread-ai/klaudia/internal/tools"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,5 +71,42 @@ func TestLoadOverridesBuiltin(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("%d Explore types, want 1", n)
+	}
+}
+
+// The newer frontmatter fields round-trip, and a name that is not a real tool
+// is reported rather than silently dropped.
+func TestLoadNewerFrontmatter(t *testing.T) {
+	dir := t.TempDir()
+	agents := filepath.Join(dir, ".klaudia", "agents")
+	os.MkdirAll(agents, 0o755)
+	os.WriteFile(filepath.Join(agents, "reviewer.md"), []byte(`---
+name: reviewer
+description: reviews a change
+tools: ["*"]
+maxTurns: 4
+disallowedTools: ["Bash", "NoSuchTool"]
+isolation: none
+---
+Review it.
+`), 0o644)
+	var warned []string
+	got := Load(dir, func(m string) { warned = append(warned, m) })
+	var reviewer Type
+	for _, t := range got {
+		if t.Name == "reviewer" {
+			reviewer = t
+		}
+	}
+	if reviewer.MaxTurns != 4 || reviewer.Isolation != "none" || len(reviewer.DisallowedTools) != 2 {
+		t.Fatalf("frontmatter = %+v", reviewer)
+	}
+}
+
+func TestUnknownToolsReported(t *testing.T) {
+	reg := tools.NewRegistry(stubTool{name: "Read"}, stubTool{name: "Bash"})
+	unknown := (Type{Tools: []string{"Read", "Grep"}, DisallowedTools: []string{"Nope"}}).UnknownTools(reg)
+	if len(unknown) != 2 {
+		t.Fatalf("unknown = %v, want Grep and Nope", unknown)
 	}
 }
