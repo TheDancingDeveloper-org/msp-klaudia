@@ -33,9 +33,36 @@ type Type struct {
 	MaxTurns int
 	// DisallowedTools are removed from Tools even when Tools says "*".
 	DisallowedTools []string
-	// Isolation, when "none", keeps a writer in the shared tree. "" uses the
-	// default, which isolates writers.
+	// Isolation says where a writer runs. "" and IsolationAuto isolate a writer
+	// and share the tree for a read-only type. IsolationWorktree always
+	// isolates; IsolationShared and the older "none" keep the shared tree.
 	Isolation string
+}
+
+// The isolation values a type and the Agent tool share. One set, so the tool
+// input and a type's frontmatter cannot drift apart. The loader stores a
+// frontmatter value as written (with "none" kept as its own alias) and the
+// spawner asks SharesTree rather than comparing strings.
+const (
+	// IsolationAuto isolates a type that can write and shares the tree otherwise.
+	IsolationAuto = "auto"
+	// IsolationWorktree always gives the child its own checkout.
+	IsolationWorktree = "worktree"
+	// IsolationShared keeps the child in the session's tree.
+	IsolationShared = "shared"
+	// IsolationNone is the older spelling of IsolationShared, still accepted
+	// from frontmatter written before the tool input existed.
+	IsolationNone = "none"
+)
+
+// SharesTree reports whether this isolation keeps the child in the session's
+// tree. Anything else isolates a writer (and a forced worktree).
+func SharesTree(isolation string) bool {
+	switch isolation {
+	case IsolationShared, IsolationNone:
+		return true
+	}
+	return false
 }
 
 // readOnlyTool is implemented by tools that can state they only read. MCP tools
@@ -93,13 +120,26 @@ var mutatingTools = map[string]bool{
 }
 
 // MayWrite reports whether this type can modify the working tree. A wildcard
-// toolset ("*") can, and so can any explicit set naming a mutating tool. It is
+// toolset ("*") can, and so can any explicit set naming a mutating tool. A
+// wildcard whose mutating tools are all in DisallowedTools cannot. It is
 // derived from the granted toolset rather than the system prompt for the same
 // reason ReadOnlyMCP is: an instruction not to write is a request, but the tool
 // registry is what the sub-agent actually holds.
 func (t Type) MayWrite() bool {
+	banned := map[string]bool{}
+	for _, name := range t.DisallowedTools {
+		banned[name] = true
+	}
 	for _, name := range t.Tools {
-		if name == "*" || mutatingTools[name] {
+		if name == "*" {
+			for tool := range mutatingTools {
+				if !banned[tool] {
+					return true
+				}
+			}
+			continue
+		}
+		if mutatingTools[name] && !banned[name] {
 			return true
 		}
 	}

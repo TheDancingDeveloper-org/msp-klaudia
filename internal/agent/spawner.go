@@ -275,7 +275,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// sits in: adoption applies the child's patch to t.Root, and an edit the
 	// child made above the session's subdirectory only lands when that root is
 	// the repository.
-	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
+	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
@@ -497,7 +497,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		return "", "", err
 	}
 	reg := s.Background()
-	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)

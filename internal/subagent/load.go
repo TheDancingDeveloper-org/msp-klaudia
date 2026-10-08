@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,15 +59,19 @@ func LoadAll(cwd, root string, extra, known []string, warn func(string)) []Type 
 		}
 		dirs = append(dirs, filepath.Join(base, ".claude", "agents"), filepath.Join(base, ".klaudia", "agents"))
 	}
-	add(root)
-	if root == "" || !samePath(root, cwd) {
-		add(cwd)
-	}
+	// Extra directories first, then the project, so a definition the project
+	// ships wins over one an --add-dir repo happens to share a name with.
+	// Within the project, cwd wins over the root: a session started in a
+	// subdirectory can override the repository's agent.
 	for _, d := range extra {
 		if samePath(d, cwd) || samePath(d, root) {
 			continue
 		}
 		add(d)
+	}
+	add(root)
+	if root == "" || !samePath(root, cwd) {
+		add(cwd)
 	}
 	knownSet := map[string]bool{}
 	for _, k := range known {
@@ -88,7 +93,7 @@ func LoadAll(cwd, root string, extra, known []string, warn func(string)) []Type 
 				for _, key := range ignored {
 					if !seenIgnored[key] {
 						seenIgnored[key] = true
-						warn(fmt.Sprintf("agent frontmatter key %q is ignored", key))
+						warn(fmt.Sprintf("agent %s: frontmatter key %q is ignored", f, key))
 					}
 				}
 				if known != nil {
@@ -142,6 +147,9 @@ func parseAgentFile(path string) (Type, []string, error) {
 		// of the agents shipped in Claude Code's own plugins are written so.
 		lenient, ok := lenientAgentFrontmatter(raw)
 		if !ok {
+			if maxTurnsNotInteger(raw) {
+				return fail(fmt.Errorf("maxTurns must be an integer"))
+			}
 			return fail(fmt.Errorf("invalid frontmatter: %w", err))
 		}
 		fm = lenient
@@ -167,7 +175,7 @@ func parseAgentFile(path string) (Type, []string, error) {
 		return fail(fmt.Errorf("isolation %q is not one of auto, worktree, shared (none is accepted as shared)", fm.Isolation))
 	}
 	if fm.MaxTurns < 0 {
-		return fail(fmt.Errorf("maxTurns must be positive, got %d", fm.MaxTurns))
+		return fail(fmt.Errorf("maxTurns must not be negative, got %d", fm.MaxTurns))
 	}
 	t := Type{
 		Name:            name,
@@ -179,6 +187,7 @@ func parseAgentFile(path string) (Type, []string, error) {
 		DisallowedTools: toolList(fm.DisallowedTools),
 		Isolation:       isolation,
 	}
+	toolsNamed := fm.Tools != nil
 	switch v := fm.Tools.(type) {
 	case nil:
 	case string:
@@ -199,28 +208,29 @@ func parseAgentFile(path string) (Type, []string, error) {
 	if t.SystemPrompt == "" {
 		return fail(fmt.Errorf("empty body (the body is the agent's system prompt)"))
 	}
-	// A type whose granted tools can only read gets the MCP access the
-	// built-in read-only types get. A wildcard grants whatever the session
-	// connected, writers included, so it does not qualify.
-	if !t.MayWrite() {
+	// Read-only MCP tools are added only when the author did not name an
+	// exact set. An explicit `tools:` list is the whole grant, the way an
+	// author who wrote one expects; omitting the key, or writing "*", leaves
+	// the set open, and a set that can only read then gets the same MCP
+	// access the built-in read-only types get.
+	open := !toolsNamed || (len(t.Tools) == 1 && t.Tools[0] == "*")
+	if open && !t.MayWrite() {
 		t.ReadOnlyMCP = true
 	}
 	return t, ignoredKeys(raw), nil
 }
 
-// parseIsolation normalises a frontmatter isolation value. The vocabulary
-// itself — which value isolates and which shares the tree — belongs to the
-// spawner (chunk 12). This only rejects a value that is not in it, and folds
-// the legacy "none" spelling onto "shared" so a file written either way loads.
-// Empty and "auto" stay empty, which is "follow the session setting".
+// parseIsolation checks a frontmatter isolation value against the shared
+// vocabulary and stores it as written. "none" stays "none" rather than being
+// folded onto "shared": the spawner recognises both through SharesTree, and a
+// stored spelling the spawner does not know would isolate a writer that opted
+// out. Empty is stored as IsolationAuto.
 func parseIsolation(v string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "", "auto":
-		return "", true
-	case "worktree":
-		return "worktree", true
-	case "shared", "none":
-		return "shared", true
+	case "":
+		return IsolationAuto, true
+	case IsolationAuto, IsolationWorktree, IsolationShared, IsolationNone:
+		return strings.ToLower(strings.TrimSpace(v)), true
 	default:
 		return "", false
 	}
@@ -245,24 +255,42 @@ var honouredKeys = map[string]bool{
 	"color": true,
 }
 
-// ignoredKeys lists the frontmatter keys this file sets that Klaudia does not
-// read, in the order they appear, without duplicates.
+// ignoredKeys lists the top-level frontmatter keys this file sets that
+// Klaudia does not read, in the order they appear, without duplicates. A key
+// is a single identifier before the colon, so prose in a description
+// ("Context: a PR adds retries.") is not reported as one, while a typo
+// ("maxturn:") is.
 func ignoredKeys(raw string) []string {
 	var out []string
 	seen := map[string]bool{}
+	keyName := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 	for _, line := range strings.Split(raw, "\n") {
 		key, _, found := strings.Cut(line, ":")
 		if !found || strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "-") {
 			continue
 		}
 		k := strings.ToLower(strings.TrimSpace(key))
-		if k == "" || !agentKeys[k] || honouredKeys[k] || seen[k] {
+		if k == "" || !keyName.MatchString(k) || honouredKeys[k] || seen[k] {
 			continue
 		}
 		seen[k] = true
 		out = append(out, strings.TrimSpace(key))
 	}
 	return out
+}
+
+// maxTurnsNotInteger reports whether the frontmatter's maxTurns line is
+// present and not a whole number, so the error can name the field instead of
+// quoting the YAML parser.
+func maxTurnsNotInteger(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		key, val, found := strings.Cut(line, ":")
+		if found && strings.EqualFold(strings.TrimSpace(key), "maxturns") {
+			_, err := strconv.Atoi(strings.TrimSpace(val))
+			return err != nil
+		}
+	}
+	return false
 }
 
 // agentKeys are the frontmatter keys an agent file uses. A line starting with
