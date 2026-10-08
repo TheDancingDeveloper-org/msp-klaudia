@@ -1451,14 +1451,73 @@ func splitSchema(raw json.RawMessage) (properties any, required []string) {
 	var s struct {
 		Properties json.RawMessage `json:"properties"`
 		Required   []string        `json:"required"`
+		Defs       map[string]any  `json:"$defs"`
 	}
 	_ = json.Unmarshal(raw, &s)
 	if len(s.Properties) > 0 {
+		props := s.Properties
+		// BetaToolInputSchemaParam carries only properties and required, so a
+		// $ref whose target lived in $defs would be sent dangling. grok rejects
+		// the whole request ("invalid request") for one such tool. Inline the
+		// definitions first; a ref with no local target becomes an empty object
+		// rather than a ref the request can no longer resolve. The schema
+		// package already inlines its own schemas.
+		if len(s.Defs) > 0 || strings.Contains(string(props), `"$ref"`) {
+			props = inlineRefs(props, s.Defs)
+		}
 		var p any
-		_ = json.Unmarshal(s.Properties, &p)
+		_ = json.Unmarshal(props, &p)
 		properties = p
 	}
 	return properties, s.Required
+}
+
+// inlineRefs replaces {"$ref":"#/$defs/Name"} with the named definition.
+// A cycle, or a ref that points anywhere else, becomes an empty object schema
+// rather than a ref the request can no longer resolve.
+func inlineRefs(raw json.RawMessage, defs map[string]any) json.RawMessage {
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return raw
+	}
+	out, err := json.Marshal(inlineRefsValue(v, defs, nil))
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func inlineRefsValue(v any, defs map[string]any, seen map[string]bool) any {
+	switch x := v.(type) {
+	case map[string]any:
+		if ref, ok := x["$ref"].(string); ok {
+			const prefix = "#/$defs/"
+			name := strings.TrimPrefix(ref, prefix)
+			def, known := defs[name]
+			if !strings.HasPrefix(ref, prefix) || !known || seen[name] {
+				return map[string]any{"type": "object"}
+			}
+			next := make(map[string]bool, len(seen)+1)
+			for k := range seen {
+				next[k] = true
+			}
+			next[name] = true
+			return inlineRefsValue(def, defs, next)
+		}
+		out := make(map[string]any, len(x))
+		for k, val := range x {
+			out[k] = inlineRefsValue(val, defs, seen)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, val := range x {
+			out[i] = inlineRefsValue(val, defs, seen)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // record marshals a message param and hands it to the recorder, returning
