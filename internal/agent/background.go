@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+
+	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 // Background sub-agents.
@@ -44,7 +46,10 @@ type BackgroundAgent struct {
 	Activity   string    // last tool the child ran, for a live status line
 	Result     string    // final text, once succeeded
 	Err        string    // error text, once failed
-	Isolated   bool      // ran in its own git worktree (a writer) vs shared tree
+	// Usage is what the child spent, nil until it made a request. The parent
+	// folds it in when the result is delivered.
+	Usage    *tools.ChildUsage
+	Isolated bool // ran in its own git worktree (a writer) vs shared tree
 	// Provenance names the repository, branch and HEAD the child was cut
 	// from ("<repo> on <branch> at <head>"). "" when that is not a repository.
 	Provenance string
@@ -155,7 +160,7 @@ func (r *BackgroundRegistry) setActivity(id, activity string) {
 
 // finish records a terminal outcome. A non-nil err marks the agent failed even
 // when result is non-empty (a partial answer plus an error is still a failure).
-func (r *BackgroundRegistry) finish(id, result string, err error) {
+func (r *BackgroundRegistry) finish(id, result string, usage *tools.ChildUsage, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	e, ok := r.byID[id]
@@ -163,6 +168,7 @@ func (r *BackgroundRegistry) finish(id, result string, err error) {
 		return
 	}
 	e.agent.FinishedAt = r.now()
+	e.agent.Usage = usage
 	if err != nil {
 		e.agent.Status = BackgroundFailed
 		e.agent.Err = err.Error()
@@ -260,16 +266,26 @@ func (r *BackgroundRegistry) Undelivered(conversation string) (running, ready []
 
 // PendingReport formats the newly-finished background agents of the default
 // conversation (""). See PendingReportFor.
-func (r *BackgroundRegistry) PendingReport() string { return r.PendingReportFor("") }
+func (r *BackgroundRegistry) PendingReport() string {
+	s, _ := r.PendingReportFor("")
+	return s
+}
 
 // PendingReportFor formats the newly-finished background agents launched from
 // conversation as a user message for the parent loop, or "" when none are
-// pending. Wiring this to Options.CollectBackground is what turns "launched in
-// the background" into "delivered when ready".
-func (r *BackgroundRegistry) PendingReportFor(conversation string) string {
+// pending. The usage is what those children spent, for the caller to fold
+// into its totals. Wiring this to Options.CollectBackground is what turns
+// "launched in the background" into "delivered when ready".
+func (r *BackgroundRegistry) PendingReportFor(conversation string) (string, []*tools.ChildUsage) {
 	finished := r.TakeFinishedFor(conversation)
 	if len(finished) == 0 {
-		return ""
+		return "", nil
+	}
+	var usage []*tools.ChildUsage
+	for _, a := range finished {
+		if a.Usage != nil {
+			usage = append(usage, a.Usage)
+		}
 	}
 	var b strings.Builder
 	b.WriteString("Background sub-agent(s) you launched earlier have finished. " +
@@ -294,7 +310,7 @@ func (r *BackgroundRegistry) PendingReportFor(conversation string) string {
 			}
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), usage
 }
 
 // pollBackground reads any finished-agent report, if the caller wired a source.

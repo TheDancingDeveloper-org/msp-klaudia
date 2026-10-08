@@ -123,6 +123,9 @@ type Options struct {
 	// delivers a background Agent-tool launch back to the parent. Nil means the
 	// caller has no background sub-agents to collect.
 	CollectBackground func() string
+	// CollectChildUsage, if set, is polled with CollectBackground and returns
+	// what the children just delivered spent, so the parent can fold it in.
+	CollectChildUsage func() []*tools.ChildUsage
 	// Conversation identifies which conversation this run belongs to, for a
 	// frontend with more than one; see Turn.Conversation. It is passed to tools
 	// (tools.Context.Conversation) so a background sub-agent's result is
@@ -449,6 +452,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// the same safe point a steer lands: as a user message before the request
 		// is built, so the model sees the result while deciding what to do next.
 		if report := pollBackground(opts); report != "" {
+			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
 				messages = append(messages, msg)
 				rec("user", msg)
@@ -663,6 +667,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// background agent that finished while this turn's tools ran reaches the
 		// model on the next request rather than a turn later.
 		if report := pollBackground(opts); report != "" {
+			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
 				messages = append(messages, msg)
 				record(opts.Recorder, "user", msg)
@@ -1705,4 +1710,14 @@ func finalAssistantText(m anthropic.BetaMessage) string {
 		}
 	}
 	return s
+}
+
+func (l *Loop) foldDelivered(opts Options, res *Result) {
+	if opts.CollectChildUsage == nil {
+		return
+	}
+	for i, u := range opts.CollectChildUsage() {
+		l.noteChild(fmt.Sprintf("bg-%d", i), u)
+	}
+	l.foldChildren(opts, res)
 }
