@@ -4134,9 +4134,9 @@ func Run(ctx context.Context, run RunFunc, history []anthropic.BetaMessageParam,
 	// when that is a terminal. The terminal's own title comes back on exit.
 	out, restoreTitle := StartTitle(os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), sess != nil && sess.NoTitle)
 	m.titleOut = out
+	defer restoreTitle() // deferred, so a panic out of the program still gives the title back
 	p := tea.NewProgram(m, tea.WithReportFocus())
 	defer quietStandardLogger()()
 	_, err := p.Run()
-	restoreTitle()
 	return err
 }
