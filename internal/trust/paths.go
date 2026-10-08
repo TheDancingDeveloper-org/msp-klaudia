@@ -207,6 +207,53 @@ func CredentialPaths(home string) (hide, keep []string) {
 	return hide, keep
 }
 
+// CredentialGuard returns a predicate for a directory walk rooted at root (an
+// absolute path): true for a credential location the walk must not enter.
+//
+// A search tool's permission check looks only at its root, so a search rooted
+// at $HOME with hidden entries included would read ~/.aws/credentials without
+// a prompt. The walk therefore never enters a credential location — unless
+// the root is already inside one, which is a search aimed there on purpose,
+// and the root check (ClassifyToolCall) is what asks about that. Nil when no
+// location applies.
+func CredentialGuard(home, root string) func(abs string) bool {
+	rootReal := canonicalPolicy(root)
+	var locs []string
+	for _, c := range credentialPaths {
+		full := c
+		if !filepath.IsAbs(c) {
+			if home == "" {
+				continue
+			}
+			full = filepath.Join(home, c)
+		}
+		forms := []string{filepath.Clean(full)}
+		if real := canonicalPolicy(full); real != forms[0] {
+			forms = append(forms, real)
+		}
+		inside := false
+		for _, f := range forms {
+			if under(root, f) || under(rootReal, f) {
+				inside = true
+			}
+		}
+		if !inside {
+			locs = append(locs, forms...)
+		}
+	}
+	if len(locs) == 0 {
+		return nil
+	}
+	return func(abs string) bool {
+		for _, l := range locs {
+			if under(abs, l) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
 // credentialExceptions are inside a credential directory but hold no secret.
 // known_hosts in particular is touched constantly by ordinary ssh use.
 var credentialExceptions = []string{

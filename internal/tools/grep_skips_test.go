@@ -18,6 +18,7 @@ func skipRepo(t *testing.T) string {
 		".git/HEAD":                "ref: refs/heads/main\n",
 		".gitignore":               "target/\n",
 		".github/workflows/ci.yml": "jobs:\n  test:\n    run: make needle-ci\n",
+		"deploy/app.yml":           "name: needle-app\n",
 		".vscode/settings.json":    "{}\n",
 		"target/out.txt":           "needle-built\n",
 		"src/main.go":              "package main\n",
@@ -69,19 +70,33 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 			quiet: true,
 		},
 		{
-			name:   "hidden: true finds it from the root",
-			in:     GrepInput{Pattern: "needle-ci", Hidden: true},
-			found:  filepath.Join(".github", "workflows", "ci.yml"),
-			note:   []string{"ignored: target/"},
-			absent: []string{".github", ".vscode", "hidden: true"},
+			name:  "hidden: true finds it from the root",
+			in:    GrepInput{Pattern: "needle-ci", Hidden: true},
+			found: filepath.Join(".github", "workflows", "ci.yml"),
+			quiet: true,
 		},
 		{
 			name:  "an untracked file is searched",
 			in:    GrepInput{Pattern: "needle-untracked"},
 			found: "notes.txt",
-			// A match was found, but two directories were not looked in: the
-			// note names them so the model knows the result may be partial.
-			note: []string{"hidden: .github/, .vscode/", "ignored: target/"},
+			// Matches, and no glob or type to tell which skipped directory
+			// could have held more: a note here would be on every search.
+			quiet: true,
+		},
+		{
+			name:  "with matches, a glob names only the skipped dirs holding files it would visit",
+			in:    GrepInput{Pattern: "needle", Glob: "**/*.yml"},
+			found: filepath.Join("deploy", "app.yml"),
+			// .github holds a .yml; .vscode and target do not.
+			note:   []string{"hidden: .github/", "hidden: true"},
+			absent: []string{".vscode", "target", "no_ignore", "hidden file"},
+		},
+		{
+			name:   "with matches, a type filter works the same way",
+			in:     GrepInput{Pattern: "needle", Type: "yaml"},
+			found:  filepath.Join("deploy", "app.yml"),
+			note:   []string{"hidden: .github/"},
+			absent: []string{".vscode", "target"},
 		},
 		{
 			name: "a gitignored directory is skipped, and says so",
@@ -89,11 +104,10 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 			note: []string{"No matches found", "ignored: target/", "no_ignore: true"},
 		},
 		{
-			name:   "no_ignore: true searches it",
-			in:     GrepInput{Pattern: "needle-built", NoIgnore: true},
-			found:  filepath.Join("target", "out.txt"),
-			note:   []string{"hidden: .github/"},
-			absent: []string{"target/.", "no_ignore: true"},
+			name:  "no_ignore: true searches it",
+			in:    GrepInput{Pattern: "needle-built", NoIgnore: true},
+			found: filepath.Join("target", "out.txt"),
+			quiet: true,
 		},
 	}
 	for _, c := range cases {
@@ -129,13 +143,12 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 	}
 }
 
-// With matches in hand, a dotfile skipped at the root is not worth a line —
-// only directories are, since that is where whole classes of files go
-// missing. With none, every skip is reported.
+// With matches in hand, a dotfile skipped at the root is not worth a line.
+// With none, every skip is reported.
 func TestGrepSkipNoteCountsFilesOnlyWhenEmpty(t *testing.T) {
 	dir := skipRepo(t)
 	g, _ := NewGrep()
-	hit := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "needle-untracked"})
+	hit := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "needle", Glob: "**/*.yml"})
 	if strings.Contains(hit.Content, "hidden file") {
 		t.Errorf("a result with matches counted skipped dotfiles:\n%s", hit.Content)
 	}
@@ -178,11 +191,11 @@ func TestGlobHiddenAndIgnoredInputs(t *testing.T) {
 	dir := skipRepo(t)
 	g, _ := NewGlob()
 
-	res := runTool(t, g, Context{WorkingDir: dir}, GlobInput{Pattern: "**/*.yml"})
+	res := runTool(t, g, Context{WorkingDir: dir}, GlobInput{Pattern: "**/ci.yml"})
 	if !strings.HasPrefix(res.Content, "No files found") || !strings.Contains(res.Content, "hidden: .github/") {
 		t.Errorf("default glob should miss the workflow and say where it did not look:\n%s", res.Content)
 	}
-	res = runTool(t, g, Context{WorkingDir: dir}, GlobInput{Pattern: "**/*.yml", Hidden: true})
+	res = runTool(t, g, Context{WorkingDir: dir}, GlobInput{Pattern: "**/ci.yml", Hidden: true})
 	if first, _, _ := strings.Cut(res.Content, "\n"); first != filepath.Join(".github", "workflows", "ci.yml") {
 		t.Errorf("hidden: true should find the workflow:\n%s", res.Content)
 	}
@@ -206,5 +219,73 @@ func TestGrepDescriptionStatesDefaultsAndSkips(t *testing.T) {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description does not say %q:\n%s", want, desc)
 		}
+	}
+}
+
+// The permission check sees only a search's root, so the walk must not carry a
+// search from $HOME into ~/.aws: reproduced in review, Grep path=<home>
+// hidden:true output_mode:content printed the credentials file. A glob naming
+// the directory must not get in either; passing it as the path does, because
+// that is the root the permission check classifies as sensitive
+// (trust.TestSearchRootedInCredentialsIsSensitive).
+func TestGrepNeverWalksIntoCredentials(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for name, body := range map[string]string{
+		".aws/credentials": "aws_secret_access_key = needle-secret\n",
+		".netrc":           "machine x password needle-secret\n",
+		"notes/todo.txt":   "nothing here\n",
+	} {
+		p := filepath.Join(home, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _ := NewGrep()
+	gl, _ := NewGlob()
+	tctx := Context{WorkingDir: home}
+
+	for _, in := range []GrepInput{
+		{Pattern: "needle-secret", Path: home, Hidden: true, OutputMode: "content"},
+		{Pattern: "needle-secret", Path: home, Hidden: true, NoIgnore: true, OutputMode: "content"},
+		{Pattern: "needle-secret", Path: home, Glob: ".aws/**", OutputMode: "content"},
+	} {
+		res := runTool(t, g, tctx, in)
+		if strings.Contains(res.Content, "aws_secret") || strings.Contains(res.Content, "password") {
+			t.Errorf("%+v read a credential:\n%s", in, res.Content)
+		}
+		if !strings.HasPrefix(res.Content, "No matches found") || !strings.Contains(res.Content, ".aws") {
+			t.Errorf("%+v: want no matches and the credential location named:\n%s", in, res.Content)
+		}
+	}
+	res := runTool(t, gl, tctx, GlobInput{Pattern: "**/*", Path: home, Hidden: true})
+	if strings.Contains(res.Content, "credentials\n") || strings.Contains(res.Content, ".netrc\n") || strings.HasSuffix(res.Content, "credentials") {
+		t.Errorf("Glob listed a credential file:\n%s", res.Content)
+	}
+
+	// Aimed at the location itself, the search runs — behind the prompt the
+	// root check raises.
+	res = runTool(t, g, tctx, GrepInput{Pattern: "needle-secret", Path: filepath.Join(home, ".aws")})
+	if first, _, _ := strings.Cut(res.Content, "\n"); first != filepath.Join(".aws", "credentials") {
+		t.Errorf("a search rooted in .aws should search it:\n%s", res.Content)
+	}
+}
+
+// A linked worktree or submodule has a .git file, not a directory. It is the
+// same metadata as a .git directory: not searched, and not reported.
+func TestGitFileIsNotAHiddenFile(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{".git": "gitdir: /elsewhere/.git/worktrees/x\n", "a.txt": "plain\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, _ := NewGrep()
+	res := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "gitdir"})
+	if res.Content != "No matches found" {
+		t.Errorf("want a bare no-match (nothing worth reporting was skipped), got:\n%s", res.Content)
 	}
 }

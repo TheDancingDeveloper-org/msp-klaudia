@@ -16,14 +16,24 @@ port mirrors (see `internal/version`).
 ### Fixed
 - **Grep no longer hides what it did not search.** `-A`/`-B`/`-C` or `-n`
   without `output_mode` now selects `content`, where they used to be dropped
-  and bare paths returned. When a Grep or Glob walk leaves out hidden or
-  ignored directories, the result says which ones (and, when nothing matched,
-  how many dotfiles and ignored files) and how to include them — instead of a
-  bare "No matches found" that models read as "search is broken" before
-  falling back to `rg` in the shell. Both tools take `hidden` and `no_ignore`;
-  `no_ignore` also lifts the node_modules/vendor/__pycache__ default.
-  Version-control directories (`.git`, `.svn`, `.hg`) are never walked unless
-  named, and never reported. (#283)
+  and bare paths returned. **Behaviour change:** `-n` alone, which used to be
+  ignored outside content mode, now returns matching lines with numbers
+  instead of file paths; pass `output_mode: "files_with_matches"` for paths.
+  When a Grep or Glob finds nothing, the result names the hidden and ignored
+  directories it skipped (and counts dotfiles and ignored files) and how to
+  include them — instead of a bare "No matches found" that models read as
+  "search is broken" before falling back to `rg` in the shell. With matches,
+  it names only a skipped directory that holds a file the glob or type would
+  have searched, so a search from a repository root is not followed by a note
+  every time. Both tools take `hidden` and `no_ignore`; `no_ignore` also lifts
+  the node_modules/vendor/__pycache__ default. Version-control metadata
+  (`.git`, `.svn`, `.hg`, including a worktree's `.git` file) is never walked
+  unless named, and never reported. (#283)
+- **Grep and Glob never walk into credential locations from above.** The
+  permission check sees only a search's root, so `Grep path=~ hidden:true`
+  printed `~/.aws/credentials` without a prompt. The walk now skips trust's
+  credential locations even when a glob names them; passing one as `path` still
+  works, and is classified as a sensitive read, so it asks first.
 
 ### Merged from upstream (greenthread-ai/klaudia 2e644c9, 0fa00a6)
 

@@ -26,6 +26,9 @@ type GlobOptions struct {
 	// NoIgnore searches what .gitignore/.ignore and the default skip list
 	// (node_modules, vendor, __pycache__) would leave out.
 	NoIgnore bool
+	// Private, when set, names credential locations (absolute paths) the
+	// walk must never enter, even when the pattern names them.
+	Private func(abs string) bool
 	// Report, when set, records the hidden and ignored entries left out.
 	Report *SkipReport
 	// Ctx, when set, stops the walk once it is done (an interrupted turn).
@@ -61,7 +64,7 @@ func Glob(opts GlobOptions) ([]string, error) {
 		root = "."
 	}
 	root = filepath.Clean(root)
-	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Pattern, opts.Report)
+	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Pattern, opts.Private, opts.Report)
 	type ent struct {
 		path string
 		mod  int64
@@ -138,8 +141,9 @@ type GrepOptions struct {
 	Multiline  bool   // '.' matches newlines; pattern may span lines
 	Glob       string // optional file filter (e.g. "*.go")
 	Hidden     bool
-	// NoIgnore and Report are as for GlobOptions.
+	// NoIgnore, Private and Report are as for GlobOptions.
 	NoIgnore bool
+	Private  func(abs string) bool
 	Report   *SkipReport
 	// Limit, when positive, stops the search once more than Limit matches
 	// are found (Limit+1 are returned, so the caller can tell it stopped).
@@ -238,7 +242,7 @@ func Grep(opts GrepOptions) ([]GrepMatch, error) {
 		return matches, nil
 	}
 	root = filepath.Clean(root)
-	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Glob, opts.Report)
+	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Glob, opts.Private, opts.Report)
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if cerr := ctxErr(opts.Ctx); cerr != nil {
@@ -348,4 +352,34 @@ func compile(opts GrepOptions) (*regexp.Regexp, error) {
 func isBinary(data []byte) bool {
 	n := min(len(data), 8192)
 	return bytes.IndexByte(data[:n], 0) >= 0
+}
+
+// Holds reports whether directory rel (slash-separated, relative to root)
+// holds a file a search filtered by pattern and exts would visit — by name
+// only; nothing is read. It stops at budget entries and then says no: the
+// answer feeds a note about where a search did not look, and a guess there
+// is worse than silence.
+func Holds(root, rel, pattern string, exts []string, budget int) bool {
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+	found, seen := false, 0
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if seen++; seen > budget {
+			return errLimit
+		}
+		if d.IsDir() {
+			if p != dir && vcsDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if (pattern == "" || matchGlob(root, p, pattern)) && (len(exts) == 0 || hasExt(p, exts)) {
+			found = true
+			return errLimit
+		}
+		return nil
+	})
+	return found
 }

@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/greenthread-ai/klaudia/internal/native/search"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/schema"
+	"github.com/greenthread-ai/klaudia/internal/trust"
 )
 
 // GrepInput is the Grep tool's input. Mirrors the JS Grep tool's core options.
@@ -67,8 +70,10 @@ func (g *Grep) Description(context.Context) (string, error) {
 		"What is searched: by default, hidden (dot) files and directories such as .github, " +
 		"and paths excluded by .gitignore/.ignore (plus node_modules, vendor, __pycache__), are NOT searched. " +
 		"Search them with hidden: true / no_ignore: true, or by naming them in path or glob " +
-		"(path: \".github\", glob: \".github/**/*.yml\"). When something was skipped the result says what, " +
-		"so \"No matches found\" with a skip note means \"not found where I looked\", not \"not in the repo\".\n" +
+		"(path: \".github\", glob: \".github/**/*.yml\"). Credential locations (~/.ssh, ~/.aws, ~/.netrc, …) " +
+		"are never searched from above, even when named in glob; pass one as path to search it (that asks first). " +
+		"\"No matches found\" names what was skipped, so it means \"not found where I looked\", not \"not in the repo\"; " +
+		"with matches, a note names only skipped directories holding files the glob or type would have searched.\n" +
 		"Output: output_mode is \"files_with_matches\" by default (matching file paths only), " +
 		"\"content\" (matching lines) or \"count\" (per-file counts). Giving -A/-B/-C (context lines) or -n " +
 		"(line numbers) without output_mode selects content. Context lines use '-' where matches use ':'.\n" +
@@ -156,6 +161,7 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		Skipped:    &hidden,
 		Hidden:     in.Hidden,
 		NoIgnore:   in.NoIgnore,
+		Private:    credentialGuard(root),
 		Report:     &skipped,
 		Exts:       grepTypes[strings.ToLower(in.Type)],
 		Before:     before,
@@ -165,10 +171,11 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		return []Result{{Content: fmt.Sprintf("Error: %v", err), IsError: true}}, nil
 	}
 	note := hiddenNote(hidden)
+	scope := skipScope{root: root, pattern: in.Glob, exts: grepTypes[strings.ToLower(in.Type)]}
 	if len(matches) == 0 {
-		return []Result{{Content: "No matches found" + note + skipNote(&skipped, true)}}, nil
+		return []Result{{Content: "No matches found" + note + skipNote(&skipped, true, scope)}}, nil
 	}
-	note += skipNote(&skipped, false)
+	note += skipNote(&skipped, false, scope)
 	for i := range matches {
 		matches[i].File = displayPath(tctx, matches[i].File) // relative to the working dir
 	}
@@ -267,23 +274,48 @@ func hiddenNote(n int) string {
 	return fmt.Sprintf("\n(%d path(s) not searched: covered by a Read deny rule)", n)
 }
 
-// skipNote says where a walk did not look: the hidden and ignored directories
-// it pruned, and — when nothing was found, so every possibility matters — the
-// dotfiles and ignored files too. A result that has matches mentions only
-// directories, which is where a whole class of files (.github/workflows, a
-// build dir) goes missing; a stray .editorconfig is not worth a line on every
-// search.
-func skipNote(r *search.SkipReport, empty bool) string {
+// skipScope is what a search was filtered by: enough to tell whether a skipped
+// directory could have held a result.
+type skipScope struct {
+	root    string // the walk root, absolute
+	pattern string // Glob's pattern or Grep's glob; "" for none
+	exts    []string
+}
+
+// holdsBudget bounds the entries skipNote looks at in one skipped directory.
+const holdsBudget = 2000
+
+// skipNote says where a walk did not look, and how to look there.
+//
+// When nothing was found, everything counts: the skipped directories, the
+// dotfiles and ignored files, and the credential locations. When something
+// was found, a note on every search from a repository root (.github, .vscode,
+// node_modules exist nearly everywhere) would be noise read as a warning, so
+// it names only a skipped directory that really holds a file the search's
+// glob or type would have visited — checked by name, never by reading. A Grep
+// with neither has no such test, so it says nothing once it has matches.
+func skipNote(r *search.SkipReport, empty bool, scope skipScope) string {
 	if r.Empty() {
 		return ""
 	}
+	keep := func(dirs []string) []string { return dirs }
+	if !empty {
+		if scope.pattern == "" && len(scope.exts) == 0 {
+			return ""
+		}
+		keep = func(dirs []string) []string {
+			var out []string
+			for _, d := range dirs {
+				if search.Holds(scope.root, d, scope.pattern, scope.exts, holdsBudget) {
+					out = append(out, d)
+				}
+			}
+			return out
+		}
+	}
 	list := func(dirs []string, files int, noun string) string {
 		var parts []string
-		for i, d := range dirs {
-			if i == 6 {
-				parts = append(parts, fmt.Sprintf("%d more", len(dirs)-i))
-				break
-			}
+		for _, d := range dirs {
 			parts = append(parts, d+"/")
 		}
 		if empty && files > 0 {
@@ -292,20 +324,40 @@ func skipNote(r *search.SkipReport, empty bool) string {
 		return strings.Join(parts, ", ")
 	}
 	var what, how []string
-	if h := list(r.HiddenDirs, r.HiddenFiles, "hidden file(s)"); h != "" {
+	if h := list(keep(r.HiddenDirs), r.HiddenFiles, "hidden file(s)"); h != "" {
 		what = append(what, "hidden: "+h)
 		how = append(how, "hidden: true")
 	}
-	if g := list(r.IgnoredDirs, r.IgnoredFiles, "ignored file(s)"); g != "" {
+	if g := list(keep(r.IgnoredDirs), r.IgnoredFiles, "ignored file(s)"); g != "" {
 		what = append(what, "ignored: "+g)
 		how = append(how, "no_ignore: true")
 	}
-	if r.MoreDirs > 0 {
-		what = append(what, fmt.Sprintf("%d more dir(s)", r.MoreDirs))
+	if empty && r.MoreDirs > 0 {
+		what = append(what, fmt.Sprintf("%d more", r.MoreDirs))
 	}
-	if len(how) == 0 {
-		return ""
+	var out string
+	if len(how) > 0 {
+		out = fmt.Sprintf("\n(not searched — %s. To include them pass %s, or name them in path or glob.)",
+			strings.Join(what, "; "), strings.Join(how, " / "))
 	}
-	return fmt.Sprintf("\n(not searched — %s. To include them pass %s, or name them in path or glob.)",
-		strings.Join(what, "; "), strings.Join(how, " / "))
+	if empty && len(r.Credentials) > 0 {
+		out += fmt.Sprintf("\n(credential locations are never searched from above: %s. To search one, pass it as path; that asks first.)",
+			strings.Join(r.Credentials, ", "))
+	}
+	return out
+}
+
+// credentialGuard keeps a walk from root out of the credential locations
+// (trust.CredentialGuard): the permission check sees only the root, so a
+// search from $HOME with hidden: true would otherwise read ~/.aws/credentials
+// without asking.
+func credentialGuard(root string) func(abs string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = ""
+	}
+	if abs, err := filepath.Abs(root); err == nil {
+		root = abs
+	}
+	return trust.CredentialGuard(home, root)
 }

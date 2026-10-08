@@ -45,7 +45,8 @@ func (g *Glob) Description(context.Context) (string, error) {
 		"By default, hidden (dot) files and directories, and paths excluded by .gitignore/.ignore " +
 		"(plus node_modules, vendor, __pycache__), are NOT matched. Include them with hidden: true / " +
 		"no_ignore: true, or by naming them in the pattern or path (e.g. \".github/**/*.yml\", \"dist/*.js\", " +
-		"\".env*\"). When something was skipped the result says what.", nil
+		"\".env*\"). Credential locations (~/.ssh, ~/.aws, ~/.netrc, …) are never matched from above; " +
+		"pass one as path to list it (that asks first). When something relevant was skipped the result says what.", nil
 }
 
 func (g *Glob) InputSchema() json.RawMessage { return g.schema.Raw }
@@ -83,13 +84,14 @@ func (g *Glob) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	var skipped search.SkipReport
 	files, err := search.Glob(search.GlobOptions{
 		Root: root, Pattern: in.Pattern, Ctx: ctx, Skip: tctx.Hidden, Skipped: &hidden,
-		Hidden: in.Hidden, NoIgnore: in.NoIgnore, Report: &skipped,
+		Hidden: in.Hidden, NoIgnore: in.NoIgnore, Private: credentialGuard(root), Report: &skipped,
 	})
+	scope := skipScope{root: root, pattern: in.Pattern}
 	if err != nil {
 		return []Result{{Content: fmt.Sprintf("Error: %v", err), IsError: true}}, nil
 	}
 	if len(files) == 0 {
-		return []Result{{Content: "No files found" + hiddenNote(hidden) + skipNote(&skipped, true)}}, nil
+		return []Result{{Content: "No files found" + hiddenNote(hidden) + skipNote(&skipped, true, scope)}}, nil
 	}
 	var note string
 	if len(files) > maxSearchResults {
@@ -99,5 +101,5 @@ func (g *Glob) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	for i, f := range files {
 		files[i] = displayPath(tctx, f) // relative to the working dir, like Write/Edit results
 	}
-	return []Result{CapResult(Result{Content: strings.Join(files, "\n") + note + hiddenNote(hidden) + skipNote(&skipped, false)})}, nil
+	return []Result{CapResult(Result{Content: strings.Join(files, "\n") + note + hiddenNote(hidden) + skipNote(&skipped, false, scope)})}, nil
 }
