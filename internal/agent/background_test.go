@@ -55,7 +55,7 @@ func TestSpawnBackgroundReturnsHandleImmediately(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir)
 
-	id, err := s.SpawnBackground("", nil, "Explore", "read it", "read the notes", nil)
+	id, _, err := s.SpawnBackground("", nil, "Explore", "read it", "read the notes", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir)
 
-	id, err := s.SpawnBackground("", nil, "Explore", "read it", "task", nil)
+	id, _, err := s.SpawnBackground("", nil, "Explore", "read it", "task", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestBackgroundWriterLandsInParentTree(t *testing.T) {
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from the background child\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestBackgroundWriterKeepsCheckoutOnConflict(t *testing.T) {
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "child's version\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestBackgroundWriterKeepsCheckoutOnFailure(t *testing.T) {
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "write", "rw", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "write", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestBackgroundReadOnlySharesTree(t *testing.T) {
 		WithWorkingDir(root).WithWorktrees(true).
 		WithTypes([]subagent.Type{{Name: "Explore", Tools: []string{"Capture"}}})
 
-	id, err := s.SpawnBackground("", nil, "Explore", "look", "ro", nil)
+	id, _, err := s.SpawnBackground("", nil, "Explore", "look", "ro", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestBackgroundLaunchesCustomType(t *testing.T) {
 	}}, tools.NewRegistry(capture), "claude-opus-4-8", bypassPerm(), nil, 2).
 		WithWorkingDir(dir).WithTypes([]subagent.Type{custom})
 
-	id, err := s.SpawnBackground("", nil, "reviewer", "review it", "custom", nil)
+	id, _, err := s.SpawnBackground("", nil, "reviewer", "review it", "custom", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestBackgroundSystemPromptCarriesProjectContext(t *testing.T) {
 	s := NewSpawner(seen, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 1).
 		WithWorkingDir(dir)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "go", "ctx", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "go", "ctx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestBackgroundChildHonoursCommandGuard(t *testing.T) {
 		WithWorkingDir(root).WithWorktrees(false).
 		WithCommandGuard(base.CheckTool)
 
-	id, err := s.SpawnBackground("", nil, "general-purpose", "tidy up", "guard", nil)
+	id, _, err := s.SpawnBackground("", nil, "general-purpose", "tidy up", "guard", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestBackgroundProgressIsReported(t *testing.T) {
 
 	var mu sync.Mutex
 	var lines []string
-	id, err := s.SpawnBackground("", nil, "Explore", "read it", "prog", func(line string) {
+	id, _, err := s.SpawnBackground("", nil, "Explore", "read it", "prog", func(line string) {
 		mu.Lock()
 		lines = append(lines, line)
 		mu.Unlock()
@@ -420,7 +420,7 @@ func TestBackgroundProgressIsReported(t *testing.T) {
 // An unknown type is rejected before anything is registered.
 func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 	s := backgroundSpawner(t, &scriptedProvider{}, t.TempDir())
-	if _, err := s.SpawnBackground("", nil, "bogus", "x", "l", nil); err == nil {
+	if _, _, err := s.SpawnBackground("", nil, "bogus", "x", "l", nil); err == nil {
 		t.Fatal("expected an unknown type to be rejected")
 	}
 	if got := s.Background().List(); len(got) != 0 {
@@ -432,8 +432,8 @@ func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 // as running with a growing elapsed time, finished ones keep their result.
 func TestRegistryListReportsStates(t *testing.T) {
 	r := NewBackgroundRegistry()
-	id1 := r.register("", "Explore", "search", false, nil)
-	id2 := r.register("", "general-purpose", "build", true, nil)
+	id1 := r.register("", "Explore", "search", false, "", nil)
+	id2 := r.register("", "general-purpose", "build", true, "", nil)
 
 	r.finish(id1, "found it", nil)
 	r.finish(id2, "", fmt.Errorf("boom"))
@@ -452,7 +452,7 @@ func TestRegistryListReportsStates(t *testing.T) {
 		t.Error("writer should be marked isolated in the listing")
 	}
 	// A still-running agent reports a non-negative elapsed and Done()==false.
-	id3 := r.register("", "Explore", "slow", false, nil)
+	id3 := r.register("", "Explore", "slow", false, "", nil)
 	if a, _ := r.Get(id3); a.Done() || a.Elapsed() < 0 {
 		t.Errorf("running agent: done=%v elapsed=%v", a.Done(), a.Elapsed())
 	}
@@ -467,7 +467,7 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, nil)
+			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", nil)
 			r.setActivity(id, "Read x")
 			r.finish(id, "done", nil)
 		}(i)
@@ -497,8 +497,8 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 // that one (#276).
 func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 	r := NewBackgroundRegistry()
-	a := r.register("thread-a", "Explore", "a's search", false, nil)
-	b := r.register("thread-b", "Explore", "b's search", false, nil)
+	a := r.register("thread-a", "Explore", "a's search", false, "", nil)
+	b := r.register("thread-b", "Explore", "b's search", false, "", nil)
 	r.finish(a, "found in a", nil)
 	r.finish(b, "found in b", nil)
 
@@ -521,9 +521,9 @@ func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 // ones whose result has not been collected yet. Once collected, nothing is left.
 func TestRegistryUndelivered(t *testing.T) {
 	r := NewBackgroundRegistry()
-	slow := r.register("", "Explore", "slow", false, nil)
-	fast := r.register("", "Explore", "fast", false, nil)
-	_ = r.register("other", "Explore", "elsewhere", false, nil)
+	slow := r.register("", "Explore", "slow", false, "", nil)
+	fast := r.register("", "Explore", "fast", false, "", nil)
+	_ = r.register("other", "Explore", "elsewhere", false, "", nil)
 	r.finish(fast, "quick answer", nil)
 
 	running, ready := r.Undelivered("")

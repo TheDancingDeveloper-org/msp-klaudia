@@ -1909,6 +1909,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			Thinking:      thinking,
 			ProviderName:  cfg.Provider,
 			System:        withExtraDirs(sysPrompt, s.ExtraDirs),
+			ExtraDirs:     s.ExtraDirs,
 			MaxTurns:      opts.maxTurns,
 			MaxBudgetUSD:  opts.maxBudgetUSD,
 			Diagnostics:   lspPool.Diagnostics,

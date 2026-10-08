@@ -30,7 +30,10 @@ type Spawner interface {
 	// (Context.Conversation) is the one conversation the result is delivered
 	// to. It takes no context because the child must outlive the turn that
 	// started it. spec is the same launching-turn state as Spawn.
-	SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(line string)) (id string, err error)
+	// note names the repository, branch and HEAD the child was cut from, so the
+	// launch result can say where its checkout came from. "" when that is not
+	// a repository.
+	SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(line string)) (id, note string, err error)
 }
 
 // AgentTypeInfo is the model-facing summary of a sub-agent type, used to build
@@ -51,6 +54,11 @@ type AgentInput struct {
 	// work you want to continue past; leave it false (the default) to wait for
 	// the result inline.
 	Background bool `json:"background,omitempty" jsonschema:"description=Run the sub-agent in the background: return a handle immediately and deliver the result on a later turn instead of blocking this turn. Default false (wait inline)."`
+	// WorkingDir, when set, is the repository the child is cut from: its
+	// checkout is seeded from that repo and its changes are adopted back
+	// there, instead of the session's working directory. It must be the
+	// session's working directory or one of its additional directories.
+	WorkingDir string `json:"working_dir,omitempty" jsonschema:"description=Repository the sub-agent works in, as an absolute path. It must be the session working directory or one of the additional working directories. Omit it to use the session working directory."`
 }
 
 // Agent launches a sub-agent (its own agentic loop with a filtered toolset)
@@ -93,7 +101,10 @@ func (a *Agent) Description(context.Context) (string, error) {
 		"ask follow-up questions, so give it a complete, self-contained prompt.\n")
 	b.WriteString("Set background=true to launch it without blocking: the call returns a handle " +
 		"immediately and the result is delivered to you on a later turn, so you can continue in the " +
-		"meantime. A background writer runs in its own isolated worktree.")
+		"meantime. A background writer runs in its own isolated worktree.\n")
+	b.WriteString("Set working_dir to an absolute path inside the session's working directory or one " +
+		"of its additional working directories when the sub-agent should work in a different repository " +
+		"than the session's. Its checkout is cut from that repository and its changes land back there.")
 	return b.String(), nil
 }
 
@@ -129,16 +140,20 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		return nil, err
 	}
 	if in.Background {
-		id, err := a.spawner.SpawnBackground(tctx.Conversation, tctx.parentSpec(), in.SubagentType, in.Prompt, in.Description, tctx.Progress)
+		id, note, err := a.spawner.SpawnBackground(tctx.Conversation, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, in.Description, tctx.Progress)
 		if err != nil {
 			return []Result{{Content: fmt.Sprintf("Could not launch background sub-agent: %v", err), IsError: true}}, nil
 		}
-		return []Result{{Content: fmt.Sprintf(
+		msg := fmt.Sprintf(
 			"Launched background sub-agent %q (%s). It runs independently; its result will be "+
 				"delivered to you on a later turn once it finishes. Continue with other work — do not "+
-				"wait on it, and do not re-launch it.", id, in.SubagentType)}}, nil
+				"wait on it, and do not re-launch it.", id, in.SubagentType)
+		if note != "" {
+			msg = "[" + note + "]\n\n" + msg
+		}
+		return []Result{{Content: msg}}, nil
 	}
-	result, err := a.spawner.Spawn(ctx, tctx.parentSpec(), in.SubagentType, in.Prompt, tctx.Progress)
+	result, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
 	if err != nil {
 		msg := fmt.Sprintf("Sub-agent failed: %v", err)
 		if result != "" {
@@ -181,6 +196,9 @@ type ParentContext interface {
 	// ParentBudget, when non-nil, is what is left of the launching turn's
 	// budget in USD. Nil means the turn has no budget.
 	ParentBudget() *float64
+	// ParentWorkingDir is the session's working directory: the default repo a
+	// child is cut from, and the root a requested working_dir is judged against.
+	ParentWorkingDir() string
 }
 
 // parentSpec is the launching turn's state, forwarded verbatim. The spawner
@@ -198,3 +216,25 @@ func (c parentSpecOf) ParentThinking() string                   { return c.Think
 func (c parentSpecOf) ParentBeforeEdit() func(string, []string) { return c.BeforeEdit }
 func (c parentSpecOf) ParentExtraDirs() []string                { return c.ExtraDirs }
 func (c parentSpecOf) ParentBudget() *float64                   { return c.Budget }
+func (c parentSpecOf) ParentWorkingDir() string                 { return c.WorkingDir }
+
+// requestedDirSpec is a ParentContext that also carries the Agent tool's
+// working_dir input. The spawner reads it with RequestedWorkingDir.
+type requestedDirSpec struct {
+	ParentContext
+	dir string
+}
+
+// RequestedWorkingDir is the repository the caller asked the child to be cut
+// from. "" means the session's working directory.
+func (r requestedDirSpec) RequestedWorkingDir() string { return r.dir }
+
+// withRequestedDir wraps spec so the spawner can see working_dir. A nil spec
+// still carries the request: the child then falls back to the spawner's own
+// wiring for everything else.
+func withRequestedDir(spec ParentContext, dir string) any {
+	if dir == "" {
+		return spec
+	}
+	return requestedDirSpec{ParentContext: spec, dir: dir}
+}

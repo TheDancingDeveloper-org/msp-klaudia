@@ -47,6 +47,9 @@ func renderBackgroundAgents(agents []agent.BackgroundAgent) string {
 		if a.Label != "" {
 			fmt.Fprintf(&b, "  %s", a.Label)
 		}
+		if a.Provenance != "" {
+			fmt.Fprintf(&b, "\n              cut from %s", oneLine(a.Provenance, 72))
+		}
 		switch {
 		case a.Status == agent.BackgroundFailed && a.Err != "":
 			fmt.Fprintf(&b, "\n              %s", oneLine(a.Err, 72))

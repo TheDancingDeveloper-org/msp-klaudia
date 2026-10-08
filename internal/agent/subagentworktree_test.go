@@ -322,3 +322,85 @@ func TestWritesFiles(t *testing.T) {
 		})
 	}
 }
+
+// requestedDirSpec is the test double for the Agent tool's working_dir input:
+// the launching turn's state plus the requested directory childSpecFrom reads.
+type requestedDirSpec struct {
+	workingDir string
+	extraDirs  []string
+	dir        string
+}
+
+func (s requestedDirSpec) ParentApprover() any                      { return nil }
+func (s requestedDirSpec) ParentMode() func() permission.Mode       { return nil }
+func (s requestedDirSpec) ParentModel() string                      { return "" }
+func (s requestedDirSpec) ParentEffort() string                     { return "" }
+func (s requestedDirSpec) ParentThinking() string                   { return "" }
+func (s requestedDirSpec) ParentBeforeEdit() func(string, []string) { return nil }
+func (s requestedDirSpec) ParentExtraDirs() []string                { return s.extraDirs }
+func (s requestedDirSpec) ParentBudget() *float64                   { return nil }
+func (s requestedDirSpec) ParentWorkingDir() string                 { return s.workingDir }
+func (s requestedDirSpec) RequestedWorkingDir() string              { return s.dir }
+
+// A working_dir inside an additional directory is resolved to that repository's
+// toplevel, and both the seed and the adoption happen there rather than in the
+// session's repository. The launch result names the repo, branch and HEAD.
+func TestWorkingDirInsideExtraDirSeedsFromThatRepo(t *testing.T) {
+	rootA := gitRepo(t)
+	rootB := gitRepo(t)
+	nested := filepath.Join(rootB, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from B\n"}
+
+	text, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{
+			workingDir: rootA, extraDirs: []string{rootB}, dir: nested,
+		}, "general-purpose", "write it", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if len(w.wrote()) != 1 || w.wrote()[0] == rootA {
+		t.Fatalf("child wrote %v, want a checkout of %s", w.wrote(), rootB)
+	}
+	body, err := os.ReadFile(filepath.Join(rootB, "made.txt"))
+	if err != nil {
+		t.Fatalf("the child's work never reached repo B: %v", err)
+	}
+	if string(body) != "from B\n" {
+		t.Errorf("made.txt in B = %q", body)
+	}
+	if _, err := os.Stat(filepath.Join(rootA, "made.txt")); err == nil {
+		t.Error("repo A received the child's file")
+	}
+	head := gitOut(rootB, "rev-parse", "--short", "HEAD")
+	for _, want := range []string{"Cut from " + rootB, "on master", "at " + head} {
+		if !strings.Contains(text, want) {
+			t.Errorf("launch result missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// A working_dir outside the session's directory and its additional directories
+// is refused before anything is cut, and the refusal says why.
+func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
+	rootA := gitRepo(t)
+	elsewhere := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "nope\n"}
+
+	_, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{
+			workingDir: rootA, dir: elsewhere,
+		}, "general-purpose", "write it", nil)
+	if err == nil {
+		t.Fatal("a working_dir outside the session was accepted")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("error does not say the directory is outside the session: %v", err)
+	}
+	if len(w.wrote()) != 0 {
+		t.Errorf("the child ran anyway: %v", w.wrote())
+	}
+}

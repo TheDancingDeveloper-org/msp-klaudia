@@ -40,6 +40,18 @@ func TestRenderBackgroundAgentsListsStates(t *testing.T) {
 	}
 }
 
+// The view names the repository, branch and HEAD a child was cut from, so a
+// background launch into another checkout is visible without opening it.
+func TestRenderBackgroundAgentsShowsProvenance(t *testing.T) {
+	out := renderBackgroundAgents([]agent.BackgroundAgent{{
+		ID: "agent-1", Type: "general-purpose", Status: agent.BackgroundRunning,
+		Provenance: "/repos/other on feature at abc1234",
+	}})
+	if !strings.Contains(out, "cut from /repos/other on feature at abc1234") {
+		t.Errorf("provenance not shown:\n%s", out)
+	}
+}
+
 // Running agents are listed before finished ones.
 func TestRenderBackgroundAgentsRunningFirst(t *testing.T) {
 	out := renderBackgroundAgents([]agent.BackgroundAgent{

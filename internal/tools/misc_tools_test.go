@@ -155,8 +155,8 @@ func (failingSpawner) Spawn(context.Context, any, string, string, func(string)) 
 	return "", errors.New("model unavailable")
 }
 
-func (failingSpawner) SpawnBackground(string, any, string, string, string, func(string)) (string, error) {
-	return "", errors.New("model unavailable")
+func (failingSpawner) SpawnBackground(string, any, string, string, string, func(string)) (string, string, error) {
+	return "", "", errors.New("model unavailable")
 }
 
 func TestAgentHasTypeAndReportsSpawnFailure(t *testing.T) {

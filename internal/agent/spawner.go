@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/subagent"
@@ -45,28 +47,42 @@ type ChildSpec struct {
 	// Budget, when non-nil, bounds the child's own spend in USD. Nil means the
 	// launching turn has no budget, so the child is not bounded by one either.
 	Budget *float64
+	// WorkingDir is the session's working directory. "" keeps the Spawner's.
+	WorkingDir string
+	// RequestedDir is the Agent tool's working_dir input: the repository the
+	// child should be cut from, instead of the session's. "" means the
+	// session's. It is validated against WorkingDir and ExtraDirs.
+	RequestedDir string
 }
 
 // childSpecFrom reads the launching turn's state off a tools.ParentContext.
 // nil — a caller that predates the per-call capture — is the zero spec, which
 // falls back to what the Spawner was built with. Anything else that does not
 // implement the interface is the zero spec too: a spec the spawner cannot
-// read is no better than none.
+// read is no better than none. A requested working directory travels on the
+// spec (tools.requestedDirSpec) rather than on ParentContext, because it is
+// one tool call's input and not a property of the turn.
 func childSpecFrom(spec any) ChildSpec {
+	requested := ""
+	if r, ok := spec.(interface{ RequestedWorkingDir() string }); ok && r != nil {
+		requested = r.RequestedWorkingDir()
+	}
 	pc, ok := spec.(tools.ParentContext)
 	if !ok || pc == nil {
-		return ChildSpec{}
+		return ChildSpec{RequestedDir: requested}
 	}
 	approver, _ := pc.ParentApprover().(Approver)
 	return ChildSpec{
-		Approver:   approver,
-		Mode:       pc.ParentMode(),
-		Model:      pc.ParentModel(),
-		Effort:     pc.ParentEffort(),
-		Thinking:   pc.ParentThinking(),
-		BeforeEdit: pc.ParentBeforeEdit(),
-		ExtraDirs:  pc.ParentExtraDirs(),
-		Budget:     pc.ParentBudget(),
+		Approver:     approver,
+		Mode:         pc.ParentMode(),
+		Model:        pc.ParentModel(),
+		Effort:       pc.ParentEffort(),
+		Thinking:     pc.ParentThinking(),
+		BeforeEdit:   pc.ParentBeforeEdit(),
+		ExtraDirs:    pc.ParentExtraDirs(),
+		Budget:       pc.ParentBudget(),
+		WorkingDir:   pc.ParentWorkingDir(),
+		RequestedDir: requested,
 	}
 }
 
@@ -244,11 +260,11 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
-	// A child that can write gets a checkout of its own, seeded with the
-	// user's uncommitted work and adopted back when it finishes: two writers in
-	// one tree both succeed at producing a mess. A failure to create it falls
-	// back to sharing the tree, and says so.
-	dir := s.workingDir
+	repo, prov, err := s.childRepo(spec)
+	if err != nil {
+		return "", err
+	}
+	dir := repo
 	var tree *worktree.Tree
 	if s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir) {
 		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
@@ -270,7 +286,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	text, err := s.runChild(ctx, spec, t, prompt, dir, emit)
 	if tree == nil {
-		return text, err
+		return prov.note(text), err
 	}
 	if err != nil {
 		// Whatever the child wrote stays where it is: applying half a change to
@@ -279,7 +295,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
-	return s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress), nil
+	return prov.note(s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress)), nil
 }
 
 // progressEmitter adapts a per-line progress callback into a child Emitter.
@@ -389,28 +405,32 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 // The child runs on a context detached from the parent turn — it must outlive
 // the turn that started it — so its cancellation is tracked in the registry
 // (Cancel) rather than tied to ctx.
-func (s *Spawner) SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(string)) (string, error) {
+func (s *Spawner) SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(string)) (string, string, error) {
 	return s.spawnBackground(conversation, childSpecFrom(spec), subagentType, prompt, label, progress)
 }
 
-func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentType, prompt, label string, progress func(string)) (string, error) {
+func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentType, prompt, label string, progress func(string)) (string, string, error) {
 	types := s.types
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
 	t, ok := subagent.Find(types, subagentType)
 	if !ok {
-		return "", fmt.Errorf("unknown subagent_type %q", subagentType)
+		return "", "", fmt.Errorf("unknown subagent_type %q", subagentType)
 	}
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
+	repo, prov, err := s.childRepo(spec)
+	if err != nil {
+		return "", "", err
+	}
 	reg := s.Background()
-	isolate := s.isolate && s.workingDir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), s.workingDir)
+	isolate := s.isolate && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(conversation, subagentType, label, isolate, cancel)
+	id := reg.register(conversation, subagentType, label, isolate, prov.String(), cancel)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
@@ -424,10 +444,10 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 
 	go func() {
 		defer cancel()
-		workingDir := s.workingDir
+		workingDir := repo
 		var tree *worktree.Tree
 		if isolate {
-			wt, err := worktree.New(ctx, s.workingDir, subagentType)
+			wt, err := worktree.New(ctx, repo, subagentType)
 			if err != nil {
 				// Isolation is a safety property, not a nicety: rather than run a
 				// writer in the shared tree and risk corrupting it, fail the agent
@@ -440,7 +460,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		}
 		result, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
 		if tree == nil {
-			reg.finish(id, result, err)
+			reg.finish(id, prov.note(result), err)
 			return
 		}
 		if err != nil {
@@ -451,10 +471,144 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
 		defer stop()
-		reg.finish(id, s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress), nil)
+		reg.finish(id, prov.note(s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress)), nil)
 	}()
 
-	return id, nil
+	return id, prov.String(), nil
+}
+
+// childRepo resolves the repository a child is cut from. With no requested
+// directory that is the session's working directory (the spawner's, when the
+// turn did not say). A requested directory must sit inside that working
+// directory or one of the session's additional directories, and it is then
+// resolved to its repository toplevel: the seed and the adoption both happen
+// there, so a path inside a nested checkout still lands in the right tree.
+// A directory that is not a repository is used as given — a child can still
+// share it — and says so rather than naming a branch it does not have.
+func (s *Spawner) childRepo(spec ChildSpec) (string, repoProvenance, error) {
+	base := spec.WorkingDir
+	if base == "" {
+		base = s.workingDir
+	}
+	if spec.RequestedDir == "" {
+		return base, repoOf(base), nil
+	}
+	dir := canonical(spec.RequestedDir)
+	if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
+		return "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+	}
+	top := repoToplevel(dir)
+	if top == "" {
+		return dir, repoProvenance{Repo: dir}, nil
+	}
+	return top, repoOf(top), nil
+}
+
+// dirAllowed reports whether dir is inside one of roots. Both sides are
+// canonicalised first, so a symlink or a ".." cannot step outside a root
+// that was named by its real path. A root that cannot be canonicalised is
+// skipped rather than treated as a match.
+func dirAllowed(dir string, roots []string) bool {
+	dir = canonical(dir)
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		root = canonical(root)
+		if dir == root {
+			return true
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// canonical is the real, absolute path, falling back to the cleaned absolute
+// path when the directory does not exist yet.
+func canonical(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if real, err := filepath.EvalSymlinks(dir); err == nil {
+		return real
+	}
+	return filepath.Clean(dir)
+}
+
+// repoProvenance is where a child was cut from: the repository toplevel, the
+// branch and the HEAD commit. Zero when the directory is not a repository.
+type repoProvenance struct {
+	Repo   string
+	Branch string
+	Head   string
+}
+
+// note prepends the provenance to a child's result, so the launch result
+// names the repo, branch and HEAD the child was cut from. A result with no
+// provenance — the session directory is not a repository — is unchanged.
+func (p repoProvenance) note(text string) string {
+	if p.Repo == "" {
+		return text
+	}
+	line := "Cut from " + p.Repo
+	if p.Branch != "" {
+		line += " on " + p.Branch
+	}
+	if p.Head != "" {
+		line += " at " + p.Head
+	}
+	return "[" + line + "]\n\n" + text
+}
+
+// String is the one-line form the /agents view prints. A zero provenance
+// prints nothing, so a child cut from a plain directory adds no line.
+func (p repoProvenance) String() string {
+	if p.Repo == "" {
+		return ""
+	}
+	line := p.Repo
+	if p.Branch != "" {
+		line += " on " + p.Branch
+	}
+	if p.Head != "" {
+		line += " at " + p.Head
+	}
+	return line
+}
+
+// repoOf reads a directory's toplevel, branch and short HEAD. A directory
+// that is not a repository, or a git that fails, gives the zero value: the
+// child still runs, it just cannot name where it was cut from.
+func repoOf(dir string) repoProvenance {
+	top := repoToplevel(dir)
+	if top == "" {
+		return repoProvenance{}
+	}
+	return repoProvenance{Repo: top, Branch: gitOut(top, "rev-parse", "--abbrev-ref", "HEAD"), Head: gitOut(top, "rev-parse", "--short", "HEAD")}
+}
+
+// repoToplevel resolves dir to its repository toplevel, or "" when dir is
+// not inside one.
+func repoToplevel(dir string) string {
+	return gitOut(dir, "rev-parse", "--show-toplevel")
+}
+
+// gitOut runs one guarded read-only git command and returns its trimmed
+// stdout, or "" when git is absent or the command fails.
+func gitOut(dir string, args ...string) string {
+	cmd := gitprobe.Command(dir, args...)
+	cmd.Stdin = nil
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // worktreeCleanupTimeout bounds adoption and removal. Both are a handful of git
