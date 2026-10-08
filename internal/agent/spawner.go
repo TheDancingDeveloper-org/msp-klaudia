@@ -271,11 +271,12 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	dir := repo
 	var tree *worktree.Tree
-	isolate := s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir)
+	isolate := s.isolate && t.Isolation != "none" && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
 	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	reportf(progress, "subagent_started %s %s", id, subagentType)
 	var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
@@ -357,6 +358,14 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	}
 
 	maxTurns := s.maxTurns
+	if t.MaxTurns > 0 {
+		// The type's own bound wins over the session's, and is itself capped by
+		// it when the session set one, so a file cannot raise the ceiling.
+		maxTurns = t.MaxTurns
+		if s.maxTurns > 0 && s.maxTurns < maxTurns {
+			maxTurns = s.maxTurns
+		}
+	}
 	if maxTurns <= 0 {
 		maxTurns = defaultSubagentMaxTurns
 	}
@@ -470,10 +479,11 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		return "", "", err
 	}
 	reg := s.Background()
-	isolate := s.isolate && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
+	reportf(progress, "subagent_started %s %s", id, subagentType)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which

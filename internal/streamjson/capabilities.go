@@ -62,7 +62,7 @@ func GetCapabilities(modes, providers []string) Capabilities {
 			Protocol:        ProtocolVersion,
 			Input:           []string{"user", "control_request", "control_response"},
 			ControlRequests: []string{"interrupt", "set_permission_mode", "set_model", "initialize"},
-			Output:          []string{"system/init", "assistant", "user", "usage", "tool_progress", "compaction", "warning", "notice", "control_request", "control_response", "result"},
+			Output:          []string{"system/init", "assistant", "user", "usage", "tool_progress", "subagent_started", "subagent_finished", "compaction", "warning", "notice", "control_request", "control_response", "result"},
 			ControlAsks:     []string{"can_use_tool", "ask_user", "exit_plan"},
 			ResultFields:    []string{"type", "subtype", "is_error", "result", "session_id", "duration_ms", "num_turns", "stop_reason", "total_cost_usd", "usage"},
 			UsageFields:     []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"},

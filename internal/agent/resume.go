@@ -24,3 +24,24 @@ func MessagesFromEntries(entries []session.Entry) ([]anthropic.BetaMessageParam,
 	}
 	return msgs, nil
 }
+
+// ContinueFrom returns the messages to send when a resumed session's prompt is
+// empty: the reconstructed conversation plus one instruction to carry on from
+// the last assistant turn, so the model picks up its own unfinished work rather
+// than waiting for a new question. ok is false when there is no assistant turn
+// to continue from.
+func ContinueFrom(msgs []anthropic.BetaMessageParam) ([]anthropic.BetaMessageParam, bool) {
+	last := -1
+	for i := range msgs {
+		if msgs[i].Role == "assistant" {
+			last = i
+		}
+	}
+	if last < 0 {
+		return nil, false
+	}
+	out := append([]anthropic.BetaMessageParam{}, msgs[:last+1]...)
+	out = append(out, anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
+		"Continue from where you stopped. Finish the work your last reply left unfinished; do not repeat it.")))
+	return out, true
+}

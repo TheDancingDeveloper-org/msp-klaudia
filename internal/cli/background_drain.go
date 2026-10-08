@@ -52,6 +52,13 @@ type followUpFunc func(ctx context.Context, history []anthropic.BetaMessageParam
 // and stopping those still running — when a turn failed or was cut short, when
 // the turn or budget cap is used up, when ctx ends, or when the wait expires.
 func drainBackground(ctx context.Context, reg *agent.BackgroundRegistry, res agent.Result, err error, lim drainLimits, run followUpFunc, warn func(string)) (agent.Result, error) {
+	if lim.wait == 0 {
+		running, ready := reg.Undelivered("")
+		if n := len(running) + len(ready); n > 0 && warn != nil {
+			warn(fmt.Sprintf("%d background sub-agent(s) still running; exiting without waiting (--background-wait 0)", n))
+		}
+		return res, err
+	}
 	deadline := time.Now().Add(lim.wait)
 	for {
 		running, ready := reg.Undelivered("")

@@ -853,13 +853,14 @@ type options struct {
 	dangerouslySkip   bool
 	verbose           bool
 	maxTurns          int
-	maxBudgetUSD      float64 // --max-budget-usd: stop the run past this cumulative cost
-	resume            string  // --resume <session-id>
-	continueSession   bool    // --continue
-	newSession        bool    // --new-session
-	forkSession       bool    // --fork-session
-	fullResume        bool    // --full (replay entire transcript, not the summary)
-	sessionID         string  // --session-id <id>: the id to record under (embedders)
+	maxBudgetUSD      float64       // --max-budget-usd: stop the run past this cumulative cost
+	backgroundWait    time.Duration // --background-wait: how long -p waits for background children; 0 exits without waiting
+	resume            string        // --resume <session-id>
+	continueSession   bool          // --continue
+	newSession        bool          // --new-session
+	forkSession       bool          // --fork-session
+	fullResume        bool          // --full (replay entire transcript, not the summary)
+	sessionID         string        // --session-id <id>: the id to record under (embedders)
 
 	partialMessages bool   // --include-partial-messages
 	createConfig    string // --create-config global|local
@@ -1174,6 +1175,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.BoolVar(&opts.verbose, "verbose", false, "Verbose output (required for stream-json)")
 	f.IntVar(&opts.maxTurns, "max-turns", 0, "Limit the number of agentic loop turns (0 = unlimited)")
 	f.Float64Var(&opts.maxBudgetUSD, "max-budget-usd", 0, "Stop the run once its cumulative cost reaches this many USD, checked at each turn boundary like --max-turns (0 = unlimited; has no effect on models with no known price)")
+	f.DurationVar(&opts.backgroundWait, "background-wait", headlessBackgroundWait, "How long a headless run waits for background sub-agents after its turn ends (0 = warn and exit without waiting)")
 	f.StringVarP(&opts.resume, "resume", "r", "", "Resume a session by ID")
 	f.BoolVarP(&opts.continueSession, "continue", "c", false, "Resume the most recent session in this directory (interactive runs already do this unless --new-session; headless runs only with this flag)")
 	f.BoolVar(&opts.newSession, "new-session", false, "Start a fresh session instead of auto-resuming the most recent session in this directory")
@@ -1741,6 +1743,11 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// do rather than only what failed.
 	approver := agent.HeadlessApprover(opts.allowHostChanges)
 	agentTypes := subagent.Load(cwd, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
+	for _, t := range agentTypes {
+		if unknown := t.UnknownTools(base); len(unknown) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q names unknown tools: %s\n", t.Name, strings.Join(unknown, ", "))
+		}
+	}
 	wiring, err := withAgentTool(base, provider, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
 	if err != nil {
 		return err
@@ -2209,7 +2216,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	res, err = drainBackground(ctx, wiring.spawner.Background(), res, err, drainLimits{
 		maxTurns:     opts.maxTurns,
 		maxBudgetUSD: opts.maxBudgetUSD,
-		wait:         headlessBackgroundWait,
+		wait:         opts.backgroundWait,
 	}, func(ctx context.Context, history []anthropic.BetaMessageParam, maxTurns int, maxBudgetUSD float64) (agent.Result, error) {
 		o := headlessOpts
 		o.Prompt, o.PromptImages, o.InitialMessages = "", nil, history
