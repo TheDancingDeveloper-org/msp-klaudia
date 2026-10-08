@@ -1764,7 +1764,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	if err != nil {
 		return err
 	}
-	wiring.spawner.WithProviderName(cfg.Provider)
+		wiring.spawner.WithProviderName(cfg.Provider).WithContextWindow(cfg.ContextWindow)
 	registry := wiring.registry
 	// Sub-agents inherit the hooks for the same reason they inherit the host
 	// gate: a child must not be the way around a rule the user set.

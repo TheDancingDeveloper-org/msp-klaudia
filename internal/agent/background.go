@@ -37,9 +37,13 @@ const (
 // BackgroundAgent is a snapshot of one background sub-agent, safe to hand to a
 // frontend: it is a copy, so reading it never races the registry's writers.
 type BackgroundAgent struct {
-	ID         string
-	Type       string
-	Label      string // the task description the model gave, for the status view
+	ID    string
+	Type  string
+	Label string // the task description the model gave, for the status view
+	// Name is the caller's handle for this child (the Agent tool's name
+	// input). "" means none. It is unique in the session; the registry id
+	// is still what delivery uses.
+	Name       string
 	Status     BackgroundStatus
 	StartedAt  time.Time
 	FinishedAt time.Time // zero while running
@@ -142,6 +146,32 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 	r.order = append(r.order, id)
 	r.recordEvent(conversation, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Text: label})
 	return id
+}
+
+// registerNamed is register with a caller-supplied name. The name is a label
+// on the registry id, not a second id: delivery still keys on agent-N. An
+// empty name is an ordinary register. A name already held by another child
+// in this session is refused, so two children cannot answer to one handle.
+func (r *BackgroundRegistry) registerNamed(conversation, subagentType, name, label string, isolated bool, provenance string, background bool, cancel func()) (string, error) {
+	r.mu.Lock()
+	if name != "" {
+		for _, e := range r.byID {
+			if e.agent.Name == name {
+				r.mu.Unlock()
+				return "", fmt.Errorf("a sub-agent named %q is already running in this session", name)
+			}
+		}
+	}
+	r.mu.Unlock()
+	id := r.register(conversation, subagentType, label, isolated, provenance, background, cancel)
+	if name != "" {
+		r.mu.Lock()
+		if e, ok := r.byID[id]; ok {
+			e.agent.Name = name
+		}
+		r.mu.Unlock()
+	}
+	return id, nil
 }
 
 // recordEvent appends a lifecycle event to one conversation's queue. The

@@ -344,9 +344,12 @@ func TestBackgroundSystemPromptCarriesProjectContext(t *testing.T) {
 	if !strings.Contains(sys, dir) {
 		t.Errorf("system prompt has no working directory:\n%s", sys)
 	}
-	if !strings.Contains(sys, "always run the tests") {
-		t.Errorf("system prompt dropped CLAUDE.md:\n%s", sys)
-	}
+		if !strings.Contains(sys, "always run the tests") {
+			t.Errorf("system prompt dropped CLAUDE.md:\n%s", sys)
+		}
+		if !strings.Contains(sys, "Report contract") {
+			t.Errorf("system prompt has no report contract:\n%s", sys)
+		}
 }
 
 // captureProvider records the system prompt of the one turn it is asked for.

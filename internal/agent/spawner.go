@@ -53,6 +53,22 @@ type ChildSpec struct {
 	// child should be cut from, instead of the session's. "" means the
 	// session's. It is validated against WorkingDir and ExtraDirs.
 	RequestedDir string
+	// RequestedModel is the Agent tool's model input, an alias or a full id.
+	// "" means the type's model, or the launching turn's when the type names
+	// none. It wins over both. A model the provider cannot serve is replaced
+	// and the result says so.
+	RequestedModel string
+	// RequestedIsolation is the Agent tool's isolation input. "" means the
+	// type's own isolation. It wins over the type.
+	RequestedIsolation string
+	// RequestedMaxTurns is the Agent tool's max_turns input. 0 means the
+	// type's bound, or the session's. It wins over the type and is itself
+	// capped by the session's bound.
+	RequestedMaxTurns int
+	// Name is the Agent tool's name input: the caller's handle for this
+	// child. It must be unique in the session. "" means none. The registry
+	// id (agent-N) is still what delivery uses.
+	Name string
 	// Conversation is the launching turn's Turn.Conversation, so the child's
 	// registry entry is delivered back to the same conversation. "" for a
 	// frontend with only one.
@@ -63,32 +79,50 @@ type ChildSpec struct {
 // nil — a caller that predates the per-call capture — is the zero spec, which
 // falls back to what the Spawner was built with. Anything else that does not
 // implement the interface is the zero spec too: a spec the spawner cannot
-// read is no better than none. A requested working directory travels on the
-// spec (tools.requestedDirSpec) rather than on ParentContext, because it is
-// one tool call's input and not a property of the turn.
+// read is no better than none. One tool call's inputs (working_dir, model,
+// isolation, max_turns, name) travel on the spec (tools.callOverrides) rather
+// than on ParentContext, because they are one call's input and not a
+// property of the turn.
 func childSpecFrom(spec any) ChildSpec {
-	requested := ""
-	if r, ok := spec.(interface{ RequestedWorkingDir() string }); ok && r != nil {
-		requested = r.RequestedWorkingDir()
-	}
+	call := callOverridesOf(spec)
 	pc, ok := spec.(tools.ParentContext)
 	if !ok || pc == nil {
-		return ChildSpec{RequestedDir: requested}
+		return call
 	}
 	approver, _ := pc.ParentApprover().(Approver)
-	return ChildSpec{
-		Approver:     approver,
-		Mode:         pc.ParentMode(),
-		Model:        pc.ParentModel(),
-		Effort:       pc.ParentEffort(),
-		Thinking:     pc.ParentThinking(),
-		BeforeEdit:   pc.ParentBeforeEdit(),
-		ExtraDirs:    pc.ParentExtraDirs(),
-		Budget:       pc.ParentBudget(),
-		WorkingDir:   pc.ParentWorkingDir(),
-		Conversation: pc.ParentConversation(),
-		RequestedDir: requested,
+	call.Approver = approver
+	call.Mode = pc.ParentMode()
+	call.Model = pc.ParentModel()
+	call.Effort = pc.ParentEffort()
+	call.Thinking = pc.ParentThinking()
+	call.BeforeEdit = pc.ParentBeforeEdit()
+	call.ExtraDirs = pc.ParentExtraDirs()
+	call.Budget = pc.ParentBudget()
+	call.WorkingDir = pc.ParentWorkingDir()
+	call.Conversation = pc.ParentConversation()
+	return call
+}
+
+// callOverridesOf reads one Agent tool call's inputs off the spec. Each
+// method is optional: a caller that predates an input simply does not set it.
+func callOverridesOf(spec any) ChildSpec {
+	var out ChildSpec
+	if r, ok := spec.(interface{ RequestedWorkingDir() string }); ok && r != nil {
+		out.RequestedDir = r.RequestedWorkingDir()
 	}
+	if r, ok := spec.(interface{ RequestedModel() string }); ok && r != nil {
+		out.RequestedModel = r.RequestedModel()
+	}
+	if r, ok := spec.(interface{ RequestedIsolation() string }); ok && r != nil {
+		out.RequestedIsolation = r.RequestedIsolation()
+	}
+	if r, ok := spec.(interface{ RequestedMaxTurns() int }); ok && r != nil {
+		out.RequestedMaxTurns = r.RequestedMaxTurns()
+	}
+	if r, ok := spec.(interface{ RequestedName() string }); ok && r != nil {
+		out.Name = r.RequestedName()
+	}
+	return out
 }
 
 // Spawner runs sub-agents. It implements tools.Spawner so the Agent tool can
@@ -112,6 +146,11 @@ type Spawner struct {
 	workingDir   string
 	hostGate     *HostGate
 	providerName string
+	// contextWindow is the configured context-window override (cfg.ContextWindow).
+	// 0 means none. A child inherits it: leaving it at 0 makes ContextWindowFor
+	// fall back to the 200k default on a provider whose parent was given a
+	// larger window.
+	contextWindow int
 
 	// background tracks sub-agents launched with SpawnBackground. Created lazily
 	// so a Spawner built without one (older callers, tests) still runs
@@ -177,6 +216,13 @@ func (s *Spawner) WithWorkingDir(dir string) *Spawner {
 // from Claude's tables on Anthropic, from the unknown-model defaults elsewhere.
 func (s *Spawner) WithProviderName(name string) *Spawner {
 	s.providerName = name
+	return s
+}
+
+// WithContextWindow records the configured context-window override, so a
+// child sizes its window the way the parent does. 0 means no override.
+func (s *Spawner) WithContextWindow(n int) *Spawner {
+	s.contextWindow = n
 	return s
 }
 
@@ -275,11 +321,18 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// sits in: adoption applies the child's patch to t.Root, and an edit the
 	// child made above the session's subdirectory only lands when that root is
 	// the repository.
+<<<<<<< HEAD
 	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
+=======
+	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
+>>>>>>> 33ec5ff (agent: per-call model, isolation, turns and name on the Agent tool)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
-	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	id, err := reg.registerNamed(spec.Conversation, subagentType, spec.Name, spec.Name, isolate, prov.String(), false, cancel)
+	if err != nil {
+		return "", nil, err
+	}
 	var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
@@ -307,6 +360,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
 	childErr = err
+	text = s.modelNotice(spec, t) + text
 	if tree == nil {
 		return prov.note(text), usage, err
 	}
@@ -340,13 +394,7 @@ func progressEmitter(progress func(string)) Emitter {
 // the same type are distinguishable. usage is nil when the run never started.
 func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
-	model := subagentModel(s.model, t.Model)
-	if spec.Model != "" {
-		// The launching turn's model wins over the wiring-time one: /model
-		// between startup and this launch has to reach the child. A type that
-		// names its own model still wins over both.
-		model = subagentModel(anthropic.Model(spec.Model), t.Model)
-	}
+	model, _ := s.resolveChildModel(spec, t)
 
 	perm := s.permission
 	if spec.Mode != nil {
@@ -384,20 +432,12 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		budget = *spec.Budget
 	}
 
-	maxTurns := s.maxTurns
-	if maxTurns <= 0 {
-		maxTurns = defaultSubagentMaxTurns
-	}
-	// The type's own bound is tighter than the shared one and wins. A
-	// reviewer that should stop after a handful of turns must not inherit
-	// the fifty-turn default.
-	if t.MaxTurns > 0 && (maxTurns <= 0 || t.MaxTurns < maxTurns) {
-		maxTurns = t.MaxTurns
-	}
-	// Give the child the model's real window. Leaving this 0 fell back to the
-	// 200k compaction default, so a sub-agent on a 1M model summarised its
-	// history at a fifth of the room it actually had.
-	ctxWindow, _ := api.ContextWindowFor(s.providerName, string(model), 0)
+	maxTurns := s.childMaxTurns(spec, t)
+	// Give the child the model's real window, and the configured override the
+	// parent was given. Leaving the override at 0 fell back to the 200k
+	// compaction default on a provider whose parent was told otherwise, so a
+	// sub-agent summarised its history at a fraction of the room it had.
+	ctxWindow, _ := api.ContextWindowFor(s.providerName, string(model), s.contextWindow)
 
 	start := time.Now()
 	loop := New(s.provider, childTools)
@@ -504,10 +544,18 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		return "", "", err
 	}
 	reg := s.Background()
+<<<<<<< HEAD
 	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+=======
+	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
+>>>>>>> 33ec5ff (agent: per-call model, isolation, turns and name on the Agent tool)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
+	id, err := reg.registerNamed(conversation, subagentType, spec.Name, firstNonEmpty(label, spec.Name), isolate, prov.String(), true, cancel)
+	if err != nil {
+		cancel()
+		return "", "", err
+	}
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
@@ -749,6 +797,97 @@ func (s *Spawner) collect(ctx context.Context, tree *worktree.Tree, text string,
 	}
 	reportf(progress, "  ↳ %s", rep.Summary())
 	return text + fmt.Sprintf("\n\n[Working tree: %s.]", rep.Summary())
+}
+
+// isolateChild decides whether this child gets its own checkout.
+//
+// The session must have worktrees on, the directory must be a repository,
+// and git must be able to make one. Within that, the call's isolation wins
+// over the type's: worktree isolates even a read-only type, shared (and the
+// older "none") never isolates, and "" or auto isolate only a writer.
+func (s *Spawner) isolateChild(t subagent.Type, requested, repo string) bool {
+	if !s.isolate || repo == "" || !worktree.Supported(context.Background(), repo) {
+		return false
+	}
+	choice := requested
+	if choice == "" {
+		choice = t.Isolation
+	}
+	switch choice {
+	case subagent.IsolationWorktree:
+		return true
+	case subagent.IsolationShared, subagent.IsolationNone:
+		return false
+	}
+	return writesFiles(subagentTools(t.Filter(s.base)))
+}
+
+// resolveChildModel is the model the child runs on, and whether the one that
+// was asked for had to be replaced. Precedence is the tool input, then the
+// type's model, then the launching turn's (or the spawner's, when the turn
+// named none). A Claude alias on a provider that does not serve one is not
+// sent: the parent model stands in, and substituted says so.
+func (s *Spawner) resolveChildModel(spec ChildSpec, t subagent.Type) (anthropic.Model, bool) {
+	parent := s.model
+	if spec.Model != "" {
+		parent = anthropic.Model(spec.Model)
+	}
+	asked := spec.RequestedModel
+	if strings.TrimSpace(asked) == "" {
+		asked = t.Model
+	}
+	if strings.TrimSpace(asked) == "" {
+		return parent, false
+	}
+	// A Claude alias on a provider that does not serve Claude ids is not
+	// sent: the parent model stands in, and the result says so. On Anthropic
+	// the alias resolves to a real id, which is the model that was asked for.
+	if api.AliasWarning(s.providerName, asked) != "" {
+		return parent, true
+	}
+	return api.ResolveModelFor(s.providerName, asked), false
+}
+
+// modelNotice is the one line prepended to a result when the model the call
+// asked for is not the one the child ran on. "" when nothing was substituted.
+func (s *Spawner) modelNotice(spec ChildSpec, t subagent.Type) string {
+	model, substituted := s.resolveChildModel(spec, t)
+	if !substituted {
+		return ""
+	}
+	asked := spec.RequestedModel
+	if strings.TrimSpace(asked) == "" {
+		asked = t.Model
+	}
+	return fmt.Sprintf("[Model %q is not served by this provider; the sub-agent ran on %s instead.]\n\n", strings.TrimSpace(asked), model)
+}
+
+// childMaxTurns is the child's turn bound. The tool input wins over the
+// type, which wins over the session, and the session's bound caps all of
+// them when one is set. Zero or below falls back to the shared default.
+func (s *Spawner) childMaxTurns(spec ChildSpec, t subagent.Type) int {
+	maxTurns := spec.RequestedMaxTurns
+	if maxTurns <= 0 {
+		maxTurns = t.MaxTurns
+	}
+	if maxTurns <= 0 {
+		maxTurns = s.maxTurns
+	}
+	if s.maxTurns > 0 && s.maxTurns < maxTurns {
+		maxTurns = s.maxTurns
+	}
+	if maxTurns <= 0 {
+		return defaultSubagentMaxTurns
+	}
+	return maxTurns
+}
+
+// firstNonEmpty returns the first string that is not empty.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // writesFiles reports whether this toolset can change the working tree.

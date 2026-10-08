@@ -60,6 +60,17 @@ type AgentInput struct {
 	// there, instead of the session's working directory. It must be the
 	// session's working directory or one of its additional directories.
 	WorkingDir string `json:"working_dir,omitempty" jsonschema:"description=Repository the sub-agent works in, as an absolute path. It must be the session working directory or one of the additional working directories. Omit it to use the session working directory."`
+	// Model, when set, is the model the child runs on (an alias or a full id).
+	// A model the provider cannot serve is substituted and the result says so.
+	Model string `json:"model,omitempty" jsonschema:"description=Model the sub-agent runs on, an alias (sonnet, opus, haiku) or a full model id. Omit it to use the type's model, or the session's when the type names none. A model the provider cannot serve is replaced and the result says so."`
+	// Isolation overrides where the child runs. "" means the type's own setting.
+	Isolation string `json:"isolation,omitempty" jsonschema:"enum=auto,enum=worktree,enum=shared,description=Where the sub-agent runs. auto (default) isolates a writer and shares the tree for a read-only type. worktree always gives it its own checkout, adopted back when it finishes. shared keeps it in the session's tree."`
+	// MaxTurns bounds the child's own loop. 0 means the type's bound, or the
+	// session's. It is always capped by the session's bound.
+	MaxTurns int `json:"max_turns,omitempty" jsonschema:"description=Maximum turns the sub-agent may take. Omit it to use the type's bound, or the session's when the type names none. A value above the session's bound is lowered to it."`
+	// Name is the caller's handle for this child. It must be unique in the
+	// session; the registry id (agent-N) is still what delivery uses.
+	Name string `json:"name,omitempty" jsonschema:"description=A handle for this sub-agent, unique in the session. The result still names the registry id (agent-N); this is how you refer to it."`
 }
 
 // Agent launches a sub-agent (its own agentic loop with a filtered toolset)
@@ -102,10 +113,21 @@ func (a *Agent) Description(context.Context) (string, error) {
 		"ask follow-up questions, so give it a complete, self-contained prompt.\n")
 	b.WriteString("Set background=true to launch it without blocking: the call returns a handle " +
 		"immediately and the result is delivered to you on a later turn, so you can continue in the " +
-		"meantime. A background writer runs in its own isolated worktree.\n")
+		"meantime. Use it for work that will outlast this turn; leave it false to wait for the result " +
+		"inline when the next step depends on it. A background writer runs in its own isolated worktree.\n")
 	b.WriteString("Set working_dir to an absolute path inside the session's working directory or one " +
 		"of its additional working directories when the sub-agent should work in a different repository " +
-		"than the session's. Its checkout is cut from that repository and its changes land back there.")
+		"than the session's. Its checkout is cut from that repository and its changes land back there.\n")
+	b.WriteString("isolation chooses the tree: auto (the default) isolates a writer and shares the tree " +
+		"for a read-only type, worktree always isolates, shared never does. A writer's changes are applied " +
+		"back to the session's tree when it finishes; paths in its report are rewritten to that tree.\n")
+	b.WriteString("model, max_turns and name are optional. model overrides the type's model (a model the " +
+		"provider cannot serve is replaced, and the result says so). max_turns bounds the child's loop and " +
+		"is itself capped by the session's bound. name is your handle for the child and must be unique in " +
+		"the session; the result names the registry id (agent-N) either way.\n")
+	b.WriteString("The result is the sub-agent's own report, framed so it reads as a report, followed by " +
+		"a <usage> block of the turns and tokens it spent. It states the commands it ran and the paths it " +
+		"counted, and it distinguishes what it measured from what it inferred. It cannot be continued.")
 	return b.String(), nil
 }
 
@@ -121,6 +143,12 @@ func (a *Agent) ValidateInput(raw json.RawMessage) error {
 	}
 	if !a.valid[in.SubagentType] {
 		return fmt.Errorf("unknown subagent_type %q", in.SubagentType)
+	}
+	if in.Isolation != "" && in.Isolation != "auto" && in.Isolation != "worktree" && in.Isolation != "shared" {
+		return fmt.Errorf("isolation must be auto, worktree or shared, not %q", in.Isolation)
+	}
+	if in.MaxTurns < 0 {
+		return fmt.Errorf("max_turns must be at least 1, not %d", in.MaxTurns)
 	}
 	return nil
 }
@@ -141,7 +169,7 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		return nil, err
 	}
 	if in.Background {
-		id, note, err := a.spawner.SpawnBackground(tctx.Conversation, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, in.Description, tctx.Progress)
+		id, note, err := a.spawner.SpawnBackground(tctx.Conversation, withCallOverrides(tctx.parentSpec(), in), in.SubagentType, in.Prompt, in.Description, tctx.Progress)
 		if err != nil {
 			return []Result{{Content: fmt.Sprintf("Could not launch background sub-agent: %v", err), IsError: true}}, nil
 		}
@@ -154,7 +182,7 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		}
 		return []Result{{Content: msg}}, nil
 	}
-	result, usage, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
+	result, usage, err := a.spawner.Spawn(ctx, withCallOverrides(tctx.parentSpec(), in), in.SubagentType, in.Prompt, tctx.Progress)
 	if err != nil {
 		msg := fmt.Sprintf("Sub-agent failed: %v", err)
 		if result != "" {
@@ -238,23 +266,52 @@ func (c parentSpecOf) ParentBudget() *float64                   { return c.Budge
 func (c parentSpecOf) ParentWorkingDir() string                 { return c.WorkingDir }
 func (c parentSpecOf) ParentConversation() string               { return c.Conversation }
 
-// requestedDirSpec is a ParentContext that also carries the Agent tool's
-// working_dir input. The spawner reads it with RequestedWorkingDir.
-type requestedDirSpec struct {
+// callOverrides is a ParentContext that also carries one Agent tool call's
+// inputs. The spawner reads them through the methods below. They live on a
+// wrapper rather than on ParentContext because they are one call's input, not
+// a property of the turn, and tools must not import the package that reads them.
+type callOverrides struct {
 	ParentContext
-	dir string
+	dir       string
+	model     string
+	isolation string
+	maxTurns  int
+	name      string
 }
 
 // RequestedWorkingDir is the repository the caller asked the child to be cut
 // from. "" means the session's working directory.
-func (r requestedDirSpec) RequestedWorkingDir() string { return r.dir }
+func (c callOverrides) RequestedWorkingDir() string { return c.dir }
 
-// withRequestedDir wraps spec so the spawner can see working_dir. A nil spec
-// still carries the request: the child then falls back to the spawner's own
-// wiring for everything else.
-func withRequestedDir(spec ParentContext, dir string) any {
-	if dir == "" {
+// RequestedModel is the model the caller asked the child to run on. "" means
+// the type's model, or the session's when the type names none.
+func (c callOverrides) RequestedModel() string { return c.model }
+
+// RequestedIsolation is where the caller asked the child to run. "" means the
+// type's own isolation.
+func (c callOverrides) RequestedIsolation() string { return c.isolation }
+
+// RequestedMaxTurns is the caller's bound on the child's loop. 0 means the
+// type's bound, or the session's.
+func (c callOverrides) RequestedMaxTurns() int { return c.maxTurns }
+
+// RequestedName is the caller's handle for the child. "" means none.
+func (c callOverrides) RequestedName() string { return c.name }
+
+// withCallOverrides wraps spec so the spawner can see this call's inputs. A
+// call that sets none of them returns spec unchanged, and a nil spec still
+// carries a request: the child then falls back to the spawner's own wiring for
+// everything else.
+func withCallOverrides(spec ParentContext, in AgentInput) any {
+	if in.WorkingDir == "" && in.Model == "" && in.Isolation == "" && in.MaxTurns == 0 && in.Name == "" {
 		return spec
 	}
-	return requestedDirSpec{ParentContext: spec, dir: dir}
+	return callOverrides{
+		ParentContext: spec,
+		dir:           in.WorkingDir,
+		model:         in.Model,
+		isolation:     in.Isolation,
+		maxTurns:      in.MaxTurns,
+		name:          in.Name,
+	}
 }

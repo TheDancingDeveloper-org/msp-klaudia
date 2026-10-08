@@ -102,13 +102,34 @@ func TestAgentBackgroundReturnsHandleWithoutBlocking(t *testing.T) {
 	}
 }
 
-func TestAgentDescriptionListsTypes(t *testing.T) {
-	a := newTestAgent(t, &fakeSpawner{})
-	desc, _ := a.Description(context.Background())
-	if !contains(desc, "general-purpose") || !contains(desc, "Explore") {
-		t.Errorf("description missing types: %s", desc)
+	func TestAgentDescriptionListsTypes(t *testing.T) {
+		a := newTestAgent(t, &fakeSpawner{})
+		desc, _ := a.Description(context.Background())
+		for _, want := range []string{
+			"general-purpose", "Explore",
+			"background=true", "isolation", "worktree", "<usage>", "agent-N",
+		} {
+			if !contains(desc, want) {
+				t.Errorf("description missing %q:\n%s", want, desc)
+			}
+		}
 	}
-}
+
+	func TestAgentValidateIsolationAndTurns(t *testing.T) {
+		a := newTestAgent(t, &fakeSpawner{})
+		ok, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "worktree", Model: "sonnet", MaxTurns: 3, Name: "scout"})
+		if err := a.ValidateInput(ok); err != nil {
+			t.Errorf("valid input rejected: %v", err)
+		}
+		bad, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "fork"})
+		if err := a.ValidateInput(bad); err == nil {
+			t.Error("isolation \"fork\" was accepted")
+		}
+		neg, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", MaxTurns: -1})
+		if err := a.ValidateInput(neg); err == nil {
+			t.Error("negative max_turns was accepted")
+		}
+	}
 
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
