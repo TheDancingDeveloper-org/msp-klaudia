@@ -1875,6 +1875,16 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		_ = persistSummary(summary)
 	}
 
+	// The same guard the goal loop uses (#250), for every frontend. A session
+	// in autonomous or bypass never prompts before Bash, so nothing else stops
+	// `git checkout -- <file>` from discarding a change the user had made before
+	// the session started (#257). Captured once, before any turn runs; outside a
+	// repository there is nothing to protect and the guard stays nil.
+	var sessionGuard func(tool string, input []byte, cwd string) string
+	if base, gerr := gitguard.Capture(cwd); gerr == nil {
+		sessionGuard = base.Guard()
+	}
+
 	// One options builder for every frontend.
 	//
 	// There used to be a separate one per mode, each spelling out its own list
@@ -1904,6 +1914,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			WebTools:      true,
 			OnSummary:     onSummary,
 			Hooks:         hookRunner,
+			CommandGuard:  sessionGuard,
 		}
 		turn.Apply(&opts)
 		return opts
