@@ -72,12 +72,10 @@ func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.
 		WithWorkingDir(workingDir).
 		WithHostGate(host).
 		WithTypes(types).
-		// A synchronous sub-agent that can write gets its own seeded checkout,
-		// adopted back when it finishes ([subagents] worktree, on by default).
-		WithWorktrees(worktrees).
-		// Background writers run in their own git worktree so concurrent writers
-		// cannot corrupt the shared tree; read-only agents share it.
-		WithBackgroundWorktrees(agent.NewGitWorktrees())
+		// A sub-agent that can write gets its own seeded checkout, adopted back
+		// when it finishes ([subagents] worktree, on by default). One knob for
+		// both the synchronous and the background path.
+		WithWorktrees(worktrees)
 
 	infos := make([]tools.AgentTypeInfo, 0)
 	for _, t := range types {
@@ -1884,6 +1882,9 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	if base, gerr := gitguard.Capture(cwd); gerr == nil {
 		sessionGuard = base.Guard()
 	}
+	// Background children do not run on the parent's context, so the guard
+	// has to be handed over explicitly or it holds only for the foreground.
+	wiring.spawner.WithCommandGuard(sessionGuard)
 
 	// One options builder for every frontend.
 	//

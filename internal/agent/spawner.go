@@ -39,11 +39,15 @@ type Spawner struct {
 	hostGate     *HostGate
 	providerName string
 
-	// background tracks sub-agents launched with SpawnBackground; worktrees
-	// isolates the writers among them. Both are set lazily so a Spawner built
-	// without them (older callers, tests) still runs synchronous sub-agents.
+	// background tracks sub-agents launched with SpawnBackground. Created lazily
+	// so a Spawner built without one (older callers, tests) still runs
+	// synchronous sub-agents.
 	background *BackgroundRegistry
-	worktrees  WorktreeProvider
+
+	// guard is the parent's CommandGuard, captured at launch. Background
+	// children run on a context detached from the parent turn, so the guard
+	// cannot travel on that context the way a synchronous child's does.
+	guard func(tool string, input []byte, cwd string) string
 
 	// hooks runs the user's lifecycle hooks in every child, so a formatter
 	// that runs on each edit also runs on a sub-agent's edits.
@@ -64,15 +68,6 @@ func (s *Spawner) Background() *BackgroundRegistry {
 		s.background = NewBackgroundRegistry()
 	}
 	return s.background
-}
-
-// WithWorktrees sets the provider that isolates background writers. Passing nil
-// disables isolation (writers then share the parent tree — acceptable for a
-// single writer, unsafe for concurrent ones). The default wiring supplies a
-// git-backed provider; tests inject a fake.
-func (s *Spawner) WithBackgroundWorktrees(w WorktreeProvider) *Spawner {
-	s.worktrees = w
-	return s
 }
 
 // SetDeferred replaces the deferred-tool set. A config reload can add or drop
@@ -124,9 +119,10 @@ func (s *Spawner) WithHooks(h *hooks.Runner) *Spawner {
 	return s
 }
 
-// WithWorktrees turns per-sub-agent checkouts on or off for synchronous
-// sub-agents that can write ([subagents] worktree in config; on by default).
-// Background writers are isolated separately (WithBackgroundWorktrees).
+// WithWorktrees turns per-sub-agent checkouts on or off for every sub-agent
+// that can write, synchronous or background ([subagents] worktree in config;
+// on by default). Both paths use internal/worktree: a seeded checkout,
+// adopted back on success and kept on failure.
 func (s *Spawner) WithWorktrees(on bool) *Spawner {
 	s.isolate = on
 	return s
@@ -134,6 +130,15 @@ func (s *Spawner) WithWorktrees(on bool) *Spawner {
 
 func (s *Spawner) WithHostGate(g *HostGate) *Spawner {
 	s.hostGate = g
+	return s
+}
+
+// WithCommandGuard records the parent's guard for background children. A
+// synchronous child inherits it from its context (WithCommandGuard on ctx);
+// a background child does not have that context, because its cancellation
+// must outlive the turn that started it.
+func (s *Spawner) WithCommandGuard(guard func(tool string, input []byte, cwd string) string) *Spawner {
+	s.guard = guard
 	return s
 }
 
@@ -262,6 +267,7 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 		ProviderName:  s.providerName,
 		DeferredTools: filterDeferred(s.deferred(), childTools),
 		Hooks:         s.hooks,
+		CommandGuard:  s.guard,
 		SubAgent:      true,
 	}, emit)
 	if err != nil {
@@ -293,34 +299,49 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 // conversation is the launching turn's Turn.Conversation (tools.Context): the
 // result is delivered only to that conversation.
 //
-// A writer type (subagent.Type.MayWrite) runs in an isolated git worktree when
-// a provider is configured, so concurrent writers cannot corrupt each other's
-// tree; a read-only type shares the parent tree. The child runs on a context
-// detached from the parent turn — it must outlive the turn that started it — so
-// its cancellation is tracked in the registry (Cancel) rather than tied to ctx.
+// A writer (writesFiles on the granted registry) runs in a seeded git checkout
+// when [subagents] worktree is on and the project is a repository, so
+// concurrent writers cannot corrupt each other's tree; a read-only type shares
+// the parent tree. The checkout is the same one a synchronous writer gets
+// (internal/worktree): adopted back on success, kept on failure or conflict.
+// The child runs on a context detached from the parent turn — it must outlive
+// the turn that started it — so its cancellation is tracked in the registry
+// (Cancel) rather than tied to ctx.
 func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label string, progress func(string)) (string, error) {
-	t, ok := subagent.Lookup(subagentType)
+	types := s.types
+	if len(types) == 0 {
+		types = subagent.Builtin()
+	}
+	t, ok := subagent.Find(types, subagentType)
 	if !ok {
 		return "", fmt.Errorf("unknown subagent_type %q", subagentType)
 	}
+	// The child sees the environment and the project's instructions, not only
+	// its type's prompt; t is a copy, so the built-in stays as it was.
+	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir)
 
 	reg := s.Background()
-	isolate := t.MayWrite() && s.worktrees != nil && s.workingDir != ""
+	isolate := s.isolate && s.workingDir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), s.workingDir)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id := reg.register(conversation, subagentType, label, isolate, cancel)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
-	// is what the /agents view reads for a live activity line.
-	emit := progressEmitter(func(line string) { reg.setActivity(id, line) })
+	// is what the /agents view reads for a live activity line. The callback the
+	// caller passed is honoured too: the frontend that launched the agent still
+	// wants the lines.
+	emit := progressEmitter(func(line string) {
+		reg.setActivity(id, line)
+		reportf(progress, "%s", line)
+	})
 
 	go func() {
 		defer cancel()
 		workingDir := s.workingDir
-		var cleanup func() error
+		var tree *worktree.Tree
 		if isolate {
-			dir, cl, err := s.worktrees.Create(ctx, s.workingDir, id)
+			wt, err := worktree.New(ctx, s.workingDir, subagentType)
 			if err != nil {
 				// Isolation is a safety property, not a nicety: rather than run a
 				// writer in the shared tree and risk corrupting it, fail the agent
@@ -328,13 +349,23 @@ func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label stri
 				reg.finish(id, "", fmt.Errorf("could not isolate a worktree: %w", err))
 				return
 			}
-			workingDir, cleanup = dir, cl
-		}
-		if cleanup != nil {
-			defer func() { _ = cleanup() }()
+			tree, workingDir = wt, wt.Dir
+			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
 		result, err := s.runChild(ctx, t, prompt, workingDir, emit)
-		reg.finish(id, result, err)
+		if tree == nil {
+			reg.finish(id, result, err)
+			return
+		}
+		if err != nil {
+			// Whatever the child wrote stays where it is: applying half a change
+			// to the user's tree is the one outcome isolation exists to prevent.
+			reg.finish(id, tree.Rewrite(result), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
+			return
+		}
+		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
+		defer stop()
+		reg.finish(id, s.collect(done, tree, tree.Rewrite(result), progress), nil)
 	}()
 
 	return id, nil

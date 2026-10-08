@@ -2,8 +2,9 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -12,49 +13,11 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/gitguard"
+	"github.com/greenthread-ai/klaudia/internal/sandbox"
+	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
-
-// fakeWorktrees records the ids it isolated and whether each was cleaned up.
-type fakeWorktrees struct {
-	mu       sync.Mutex
-	created  []string
-	cleaned  []string
-	dir      string
-	failWith error
-}
-
-func (f *fakeWorktrees) Create(_ context.Context, _, id string) (string, func() error, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.failWith != nil {
-		return "", nil, f.failWith
-	}
-	f.created = append(f.created, id)
-	dir := f.dir
-	if dir == "" {
-		dir = "/tmp/fake-worktree/" + id
-	}
-	cleanup := func() error {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.cleaned = append(f.cleaned, id)
-		return nil
-	}
-	return dir, cleanup, nil
-}
-
-func (f *fakeWorktrees) createdIDs() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.created...)
-}
-
-func (f *fakeWorktrees) cleanedIDs() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]string(nil), f.cleaned...)
-}
 
 // waitFor polls cond until true or the deadline, so a test never blocks forever
 // on a background goroutine that misbehaves.
@@ -70,7 +33,7 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("condition not met within deadline")
 }
 
-func backgroundSpawner(t *testing.T, provider api.Provider, dir string, wt WorktreeProvider) *Spawner {
+func backgroundSpawner(t *testing.T, provider api.Provider, dir string) *Spawner {
 	t.Helper()
 	read, err := tools.NewRead()
 	if err != nil {
@@ -81,7 +44,7 @@ func backgroundSpawner(t *testing.T, provider api.Provider, dir string, wt Workt
 		t.Fatal(err)
 	}
 	return NewSpawner(provider, tools.NewRegistry(read, write), "claude-opus-4-8",
-		bypassPerm(), nil, 0).WithWorkingDir(dir).WithBackgroundWorktrees(wt)
+		bypassPerm(), nil, 0).WithWorkingDir(dir)
 }
 
 // A background launch must return a handle promptly and not block on the child.
@@ -90,7 +53,7 @@ func TestSpawnBackgroundReturnsHandleImmediately(t *testing.T) {
 	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
 		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
 	}}
-	s := backgroundSpawner(t, provider, dir, &fakeWorktrees{})
+	s := backgroundSpawner(t, provider, dir)
 
 	id, err := s.SpawnBackground("", "Explore", "read it", "read the notes", nil)
 	if err != nil {
@@ -124,7 +87,7 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
 		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
 	}}
-	s := backgroundSpawner(t, provider, dir, &fakeWorktrees{})
+	s := backgroundSpawner(t, provider, dir)
 
 	id, err := s.SpawnBackground("", "Explore", "read it", "task", nil)
 	if err != nil {
@@ -141,65 +104,322 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 	}
 }
 
-// A read-only agent shares the parent tree; a writer is isolated in a worktree
-// that is cleaned up when it finishes.
-func TestWriterIsIsolatedAndCleanedUp(t *testing.T) {
-	dir, path := fixtureFile(t)
-	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
-		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
-	}}
-	wt := &fakeWorktrees{}
-	s := backgroundSpawner(t, provider, dir, wt)
+// A background writer works in a checkout of its own, and the file it writes
+// lands in the parent tree once it finishes. The checkout does not outlive it.
+func TestBackgroundWriterLandsInParentTree(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{rel: "made.txt", body: "from the background child\n"}
+	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	// Explore is read-only: no worktree.
-	roID, _ := s.SpawnBackground("", "Explore", "read", "ro", nil)
-	waitFor(t, func() bool { a, _ := s.Background().Get(roID); return a.Done() })
-	if got := wt.createdIDs(); len(got) != 0 {
-		t.Errorf("a read-only agent was isolated: %v", got)
+	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	if err != nil {
+		t.Fatalf("SpawnBackground: %v", err)
 	}
-	if a, _ := s.Background().Get(roID); a.Isolated {
-		t.Error("read-only agent marked isolated")
-	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
 
-	// general-purpose has the wildcard toolset: a writer, so it is isolated.
-	wID, _ := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
-	waitFor(t, func() bool { a, _ := s.Background().Get(wID); return a.Done() })
-	if got := wt.createdIDs(); len(got) != 1 || got[0] != wID {
-		t.Errorf("writer not isolated exactly once: %v", got)
+	a, _ := s.Background().Get(id)
+	if a.Status != BackgroundSucceeded {
+		t.Fatalf("status = %q, err = %q", a.Status, a.Err)
 	}
-	waitFor(t, func() bool { return len(wt.cleanedIDs()) == 1 })
-	if got := wt.cleanedIDs(); len(got) != 1 || got[0] != wID {
-		t.Errorf("worktree not cleaned up: %v", got)
-	}
-	if a, _ := s.Background().Get(wID); !a.Isolated {
+	if !a.Isolated {
 		t.Error("writer not marked isolated")
+	}
+	if len(w.dirs) != 1 || w.dirs[0] == root {
+		t.Fatalf("tool dirs = %v, want a checkout other than %s", w.dirs, root)
+	}
+	if _, err := os.Stat(w.dirs[0]); err == nil {
+		t.Errorf("the checkout at %s outlived the sub-agent", w.dirs[0])
+	}
+	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
+	if err != nil {
+		t.Fatalf("the child's work never reached the working tree: %v", err)
+	}
+	if string(body) != "from the background child\n" {
+		t.Errorf("made.txt = %q", body)
+	}
+	if !strings.Contains(a.Result, "1 file applied to the working tree") {
+		t.Errorf("result does not report what landed:\n%s", a.Result)
 	}
 }
 
-// If the worktree cannot be created, the writer fails rather than silently
-// running in the shared tree.
-func TestWriterFailsWhenIsolationFails(t *testing.T) {
-	dir, path := fixtureFile(t)
-	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
-		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
-	}}
-	wt := &fakeWorktrees{failWith: errors.New("not a git repo")}
-	s := backgroundSpawner(t, provider, dir, wt)
+// A conflict keeps the checkout and names it: the parent's copy moved after
+// the child started, so applying would overwrite work the child never saw.
+func TestBackgroundWriterKeepsCheckoutOnConflict(t *testing.T) {
+	root := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "made.txt"), []byte("parent's version\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{rel: "made.txt", body: "child's version\n"}
+	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, _ := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
+	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The child writes into its checkout before adoption. Wait until it has,
+	// then change the parent file so the patch no longer fits.
+	waitFor(t, func() bool { return len(w.dirs) == 1 })
+	if err := os.WriteFile(filepath.Join(root, "made.txt"), []byte("parent moved on\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	a, _ := s.Background().Get(id)
+	if a.Status != BackgroundSucceeded {
+		t.Fatalf("status = %q, err = %q", a.Status, a.Err)
+	}
+	if !strings.Contains(a.Result, "NOT applied") || !strings.Contains(a.Result, w.dirs[0]) {
+		t.Errorf("result does not keep and name the checkout:\n%s", a.Result)
+	}
+	if _, err := os.Stat(w.dirs[0]); err != nil {
+		t.Errorf("conflict removed the checkout: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
+	if err != nil || string(body) != "parent moved on\n" {
+		t.Errorf("parent file was overwritten: %q %v", body, err)
+	}
+}
+
+// A writer whose turn fails keeps its checkout: applying half a change is the
+// outcome isolation exists to prevent. The failure names the checkout.
+func TestBackgroundWriterKeepsCheckoutOnFailure(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{rel: "made.txt", body: "half done\n"}
+	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
+		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
+
+	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
 	a, _ := s.Background().Get(id)
 	if a.Status != BackgroundFailed {
 		t.Fatalf("status = %q, want failed", a.Status)
 	}
+	if !strings.Contains(a.Err, "left in") {
+		t.Errorf("error does not keep the checkout: %q", a.Err)
+	}
+}
+
+// When a checkout cannot be cut, the writer fails rather than silently sharing
+// the tree. A file where the worktree directory must be is the ordinary way
+// `git worktree add` refuses.
+func TestWriterFailsWhenIsolationFails(t *testing.T) {
+	root := gitRepo(t)
+	blocked := filepath.Join(os.Getenv("KLAUDIA_CONFIG_DIR"), "worktrees")
+	if err := os.MkdirAll(filepath.Dir(blocked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{rel: "made.txt", body: "x\n"}
+	s := writingSpawner(t, w, root).WithWorktrees(true)
+
+	id, err := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+	a, _ := s.Background().Get(id)
+	if a.Status != BackgroundFailed {
+		t.Fatalf("status = %q, err = %q, want failed", a.Status, a.Err)
+	}
 	if !strings.Contains(a.Err, "isolate") {
 		t.Errorf("error does not explain the failure: %q", a.Err)
+	}
+	if len(w.dirs) != 0 {
+		t.Errorf("the writer ran in the shared tree: %v", w.dirs)
+	}
+	if _, err := os.Stat(filepath.Join(root, "made.txt")); err == nil {
+		t.Error("a file landed in the parent tree from a writer that should have failed")
+	}
+}
+
+// A read-only type shares the parent tree even when isolation is on: a checkout
+// would make every path it returns wrong, and there is nothing to isolate.
+func TestBackgroundReadOnlySharesTree(t *testing.T) {
+	root := gitRepo(t)
+	capture := &captureTool{}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Capture", map[string]any{}),
+	}}, tools.NewRegistry(capture), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithTypes([]subagent.Type{{Name: "Explore", Tools: []string{"Capture"}}})
+
+	id, err := s.SpawnBackground("", "Explore", "look", "ro", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+	a, _ := s.Background().Get(id)
+	if a.Status != BackgroundSucceeded {
+		t.Fatalf("status = %q, err = %q", a.Status, a.Err)
+	}
+	if a.Isolated {
+		t.Error("read-only agent marked isolated")
+	}
+	if capture.got.WorkingDir != root {
+		t.Errorf("read-only child ran in %q, want the parent tree %q", capture.got.WorkingDir, root)
+	}
+}
+
+// A project-defined type is launchable in the background: SpawnBackground
+// resolves against the types the spawner was given, not only the built-ins.
+func TestBackgroundLaunchesCustomType(t *testing.T) {
+	dir := t.TempDir()
+	capture := &captureTool{}
+	custom := subagent.Type{
+		Name:         "reviewer",
+		Tools:        []string{"Capture"},
+		SystemPrompt: "you review",
+	}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Capture", map[string]any{}),
+	}}, tools.NewRegistry(capture), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(dir).WithTypes([]subagent.Type{custom})
+
+	id, err := s.SpawnBackground("", "reviewer", "review it", "custom", nil)
+	if err != nil {
+		t.Fatalf("SpawnBackground: %v", err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+	a, _ := s.Background().Get(id)
+	if a.Status != BackgroundSucceeded {
+		t.Fatalf("status = %q, err = %q", a.Status, a.Err)
+	}
+	if capture.got.WorkingDir != dir {
+		t.Errorf("child ran in %q, want %q", capture.got.WorkingDir, dir)
+	}
+}
+
+// The background child sees the environment and the project's instructions, not
+// only its type's prompt.
+func TestBackgroundSystemPromptCarriesProjectContext(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("always run the tests"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seen := &captureProvider{t: t}
+	s := NewSpawner(seen, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 1).
+		WithWorkingDir(dir)
+
+	id, err := s.SpawnBackground("", "general-purpose", "go", "ctx", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	sys := seen.system()
+	if !strings.Contains(sys, dir) {
+		t.Errorf("system prompt has no working directory:\n%s", sys)
+	}
+	if !strings.Contains(sys, "always run the tests") {
+		t.Errorf("system prompt dropped CLAUDE.md:\n%s", sys)
+	}
+}
+
+// captureProvider records the system prompt of the one turn it is asked for.
+type captureProvider struct {
+	t   *testing.T
+	mu  sync.Mutex
+	sys string
+}
+
+func (p *captureProvider) StreamTurn(_ context.Context, params anthropic.BetaMessageNewParams, sink api.StreamSink) (anthropic.BetaMessage, error) {
+	var sys string
+	for _, block := range params.System {
+		sys += block.Text
+	}
+	p.mu.Lock()
+	p.sys = sys
+	p.mu.Unlock()
+	if sink.OnText != nil {
+		sink.OnText("done")
+	}
+	return textTurn(p.t, "done"), nil
+}
+
+func (p *captureProvider) system() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.sys
+}
+
+// The parent's command guard reaches a background child even though its context
+// is detached from the launching turn. A git checkout that would discard
+// protected work is refused.
+func TestBackgroundChildHonoursCommandGuard(t *testing.T) {
+	root := gitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, err := gitguard.Capture(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bash, err := tools.NewBash(sandbox.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Bash", map[string]any{"command": "git checkout -- notes.txt"}),
+	}}, tools.NewRegistry(bash), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(false).
+		WithCommandGuard(base.CheckTool)
+
+	id, err := s.SpawnBackground("", "general-purpose", "tidy up", "guard", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	body, err := os.ReadFile(filepath.Join(root, "notes.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "uncommitted\n" {
+		t.Errorf("the guard let the checkout through; notes.txt = %q", body)
+	}
+}
+
+// Progress lines from a background child reach the callback the launcher
+// passed, not only the registry's activity line.
+func TestBackgroundProgressIsReported(t *testing.T) {
+	dir, path := fixtureFile(t)
+	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
+	}}
+	s := backgroundSpawner(t, provider, dir)
+
+	var mu sync.Mutex
+	var lines []string
+	id, err := s.SpawnBackground("", "Explore", "read it", "prog", func(line string) {
+		mu.Lock()
+		lines = append(lines, line)
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lines) == 0 {
+		t.Fatal("progress callback was never called")
+	}
+	a, _ := s.Background().Get(id)
+	if a.Activity == "" && a.Status == BackgroundRunning {
+		t.Error("registry activity was not updated")
 	}
 }
 
 // An unknown type is rejected before anything is registered.
 func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
-	s := backgroundSpawner(t, &scriptedProvider{}, t.TempDir(), &fakeWorktrees{})
+	s := backgroundSpawner(t, &scriptedProvider{}, t.TempDir())
 	if _, err := s.SpawnBackground("", "bogus", "x", "l", nil); err == nil {
 		t.Fatal("expected an unknown type to be rejected")
 	}
