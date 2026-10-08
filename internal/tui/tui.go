@@ -391,6 +391,11 @@ type Model struct {
 	history    []anthropic.BetaMessageParam
 	pending    chan permission.Decision
 	pendingReq agent.ApprovalRequest
+	// askQueue holds permission asks that arrived while one was already on
+	// screen. A second child asking at the same time used to overwrite
+	// pending, and the first child's goroutine then blocked forever on a
+	// reply nobody could send. Answered in order, one prompt at a time.
+	askQueue []permissionMsg
 	// knownModels is the model list the provider last reported to /model,
 	// kept so /model <id> can warn about an id the endpoint does not list and
 	// Tab can complete it, without a second lookup. Nil until the list has been
@@ -962,27 +967,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.onBangResult(msg)
 
 	case permissionMsg:
-		// A picker opened mid-turn would otherwise sit behind the prompt, with
-		// its keys answering the wrong question.
-		m.closeChoiceForPrompt()
-		m.setState(stateAwaitingPermission)
-		m.pending = msg.reply
-		m.pendingReq = msg.req
-		// A prompt stalls the turn until the user answers, so it is exactly the
-		// moment to get their attention if they have looked away.
-		m.notifyAttention("Klaudia needs permission")
-		if msg.req.HostChange != nil {
-			for _, line := range hostCardLines(msg.req.HostChange) {
-				m.appendLine(line)
-			}
+		if m.pending != nil {
+			// One prompt at a time: queue this ask until the one on screen
+			// is answered, so its reply channel is not abandoned.
+			m.askQueue = append(m.askQueue, msg)
 			return m, m.waitForEvent()
 		}
-		m.appendLine(askStyle.Render("Permission required: " + m.permissionSummary(msg.req)))
-		if detail := permissionDetail(msg.req); detail != "" {
-			m.appendLine(toolStyle.Render("  " + detail))
-		}
-		// The actionable prompt lives only in the persistent bottom view (see
-		// bottomView/stateAwaitingPermission) — don't duplicate it in scrollback.
+		m.showPermission(msg)
 		return m, m.waitForEvent()
 
 	case askMsg:
@@ -3222,6 +3213,32 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// showPermission puts one permission ask on screen. The caller has already
+// checked that nothing else is pending; a second ask goes on askQueue instead.
+func (m *Model) showPermission(msg permissionMsg) {
+	// A picker opened mid-turn would otherwise sit behind the prompt, with
+	// its keys answering the wrong question.
+	m.closeChoiceForPrompt()
+	m.setState(stateAwaitingPermission)
+	m.pending = msg.reply
+	m.pendingReq = msg.req
+	// A prompt stalls the turn until the user answers, so it is exactly the
+	// moment to get their attention if they have looked away.
+	m.notifyAttention("Klaudia needs permission")
+	if msg.req.HostChange != nil {
+		for _, line := range hostCardLines(msg.req.HostChange) {
+			m.appendLine(line)
+		}
+		return
+	}
+	m.appendLine(askStyle.Render("Permission required: " + m.permissionSummary(msg.req)))
+	if detail := permissionDetail(msg.req); detail != "" {
+		m.appendLine(toolStyle.Render("  " + detail))
+	}
+	// The actionable prompt lives only in the persistent bottom view (see
+	// bottomView/stateAwaitingPermission) — don't duplicate it in scrollback.
+}
+
 // answer resolves the pending permission ask.
 func (m *Model) answer(d permission.Decision) {
 	if m.pending != nil {
@@ -3242,6 +3259,11 @@ func (m *Model) answer(d permission.Decision) {
 	m.redirect = false
 	m.appendLine(toolStyle.Render("  → " + verb))
 	m.setState(stateRunning)
+	if len(m.askQueue) > 0 {
+		next := m.askQueue[0]
+		m.askQueue = m.askQueue[1:]
+		m.showPermission(next)
+	}
 }
 
 // hostReportCount is the session's host-gate report count, or 0 when no gate is

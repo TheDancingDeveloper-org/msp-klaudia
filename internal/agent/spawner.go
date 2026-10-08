@@ -269,14 +269,18 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	if err != nil {
 		return "", nil, err
 	}
-	dir := repo
+	dir := filepath.Join(repo, sub)
 	var tree *worktree.Tree
-	isolate := s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir)
+	// The checkout is cut from the toplevel, not the subdirectory the session
+	// sits in: adoption applies the child's patch to t.Root, and an edit the
+	// child made above the session's subdirectory only lands when that root is
+	// the repository.
+	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
-		id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
-		var childErr error
+	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
 		// background poll, so it is marked collected the moment it ends.
@@ -284,7 +288,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 		reg.collected(id)
 	}()
 	if isolate {
-		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
+		if wt, err := worktree.New(ctx, repo, subagentType); err != nil {
 			reportf(progress, "  (sharing the working tree: %v)", err)
 		} else {
 			tree, dir = wt, filepath.Join(wt.Dir, sub)
@@ -493,7 +497,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 
 	go func() {
 		defer cancel()
-		workingDir := repo
+		workingDir := filepath.Join(repo, sub)
 		var tree *worktree.Tree
 		if isolate {
 			wt, err := worktree.New(ctx, repo, subagentType)
@@ -556,8 +560,10 @@ func (s *Spawner) childRepo(spec ChildSpec) (repo, sub string, prov repoProvenan
 			return dir, "", repoProvenance{Repo: dir}, nil
 		}
 		repo, prov = top, repoOf(top)
+		return repo, sub, prov, nil
 	}
-	if top := repoToplevel(repo); top != "" && top != canonical(repo) {
+	top := repoToplevel(repo)
+	if top != "" && top != canonical(repo) {
 		rel, relErr := filepath.Rel(top, canonical(repo))
 		if relErr == nil && rel != "." {
 			sub = rel
