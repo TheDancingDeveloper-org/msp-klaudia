@@ -34,7 +34,7 @@ type Emitter func(event Event)
 // Event is a streaming event emitted during a run (stream-json mode).
 type Event struct {
 	Type      string `json:"type"`                  // "assistant" | "tool_use" | "tool_progress" | "tool_result" | "usage" | "compaction" | "warning" | "notice" | "permission_mode" | "subagent_started" | "subagent_finished"
-	Text      string `json:"text,omitempty"`        // assistant text
+	Text      string `json:"text,omitempty"`        // assistant text; subagent_started label; subagent_finished status
 	ToolName  string `json:"tool_name,omitempty"`   // tool_use / tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"` // tool_use / tool_result
 	Input     any    `json:"input,omitempty"`       // tool_use input

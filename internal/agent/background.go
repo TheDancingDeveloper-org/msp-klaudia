@@ -140,7 +140,7 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 		cancel: cancel,
 	}
 	r.order = append(r.order, id)
-	r.events = append(r.events, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Content: label})
+	r.events = append(r.events, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Text: label})
 	return id
 }
 
@@ -191,7 +191,7 @@ func (r *BackgroundRegistry) finish(id, result string, usage *tools.ChildUsage, 
 		e.agent.Status = BackgroundSucceeded
 		e.agent.Result = result
 	}
-	r.events = append(r.events, Event{Type: "subagent_finished", ToolUseID: id, ToolName: e.agent.Type, Content: status})
+	r.events = append(r.events, Event{Type: "subagent_finished", ToolUseID: id, ToolName: e.agent.Type, Text: status})
 }
 
 // Get returns a snapshot of one agent.

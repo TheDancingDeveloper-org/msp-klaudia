@@ -37,6 +37,45 @@ func askPermission(m *Model, req agent.ApprovalRequest) chan permission.Decision
 	return reply
 }
 
+func TestQueuedPermissionAskIsNotDropped(t *testing.T) {
+	m := newTestModel()
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	second := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm b"})
+
+	if m.pending != first {
+		t.Fatal("the second ask replaced the one on screen")
+	}
+	if len(m.askQueue) != 1 {
+		t.Fatalf("queued = %d, want 1", len(m.askQueue))
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	select {
+	case d := <-first:
+		if d.Behavior != permission.Allow {
+			t.Errorf("first answer = %v", d.Behavior)
+		}
+	default:
+		t.Fatal("the first ask was never answered")
+	}
+	if m.pending != second {
+		t.Fatal("answering did not bring the queued ask on screen")
+	}
+
+	m.answer(permission.Decision{Behavior: permission.Deny})
+	select {
+	case d := <-second:
+		if d.Behavior != permission.Deny {
+			t.Errorf("second answer = %v", d.Behavior)
+		}
+	default:
+		t.Fatal("the queued ask was never answered")
+	}
+	if m.pending != nil || len(m.askQueue) != 0 {
+		t.Fatalf("pending = %v, queued = %d; want both clear", m.pending, len(m.askQueue))
+	}
+}
+
 func TestPermissionPromptDescribesTheAction(t *testing.T) {
 	cases := []struct {
 		name string

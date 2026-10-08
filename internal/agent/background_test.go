@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -455,6 +456,47 @@ func TestRegistryListReportsStates(t *testing.T) {
 	id3 := r.register("", "Explore", "slow", false, "", true, nil)
 	if a, _ := r.Get(id3); a.Done() || a.Elapsed() < 0 {
 		t.Errorf("running agent: done=%v elapsed=%v", a.Done(), a.Elapsed())
+	}
+}
+
+// Lifecycle events carry their payload in `text`, the field docs/embedding.md
+// names for subagent_started and subagent_finished. `content` is the tool
+// result's field; a driver written against the contract reads `text`.
+func TestSubagentEventsUseTheDocumentedTextField(t *testing.T) {
+	r := NewBackgroundRegistry()
+	id := r.register("", "Explore", "search the tree", false, "", true, nil)
+	r.finish(id, "done", nil, fmt.Errorf("boom"))
+
+	evs := r.TakeEvents()
+	if len(evs) != 2 {
+		t.Fatalf("events = %d, want 2", len(evs))
+	}
+	want := []Event{
+		{Type: "subagent_started", ToolUseID: id, ToolName: "Explore", Text: "search the tree"},
+		{Type: "subagent_finished", ToolUseID: id, ToolName: "Explore", Text: "failed"},
+	}
+	for i, w := range want {
+		got := evs[i]
+		if got.Type != w.Type || got.ToolUseID != w.ToolUseID || got.ToolName != w.ToolName || got.Text != w.Text || got.Content != "" {
+			t.Errorf("event %d = %+v, want %+v", i, got, w)
+		}
+		b, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		if m["text"] != w.Text {
+			t.Errorf("event %d wire text = %v, want %q: %s", i, m["text"], w.Text, b)
+		}
+		if _, ok := m["content"]; ok {
+			t.Errorf("event %d carries content, which the contract does not name: %s", i, b)
+		}
+	}
+	if again := r.TakeEvents(); len(again) != 0 {
+		t.Errorf("TakeEvents did not drain: %+v", again)
 	}
 }
 
