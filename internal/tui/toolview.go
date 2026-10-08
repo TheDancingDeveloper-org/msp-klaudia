@@ -312,7 +312,7 @@ func (m *Model) statusLine() string {
 	}
 	segments = append(segments,
 		hintStyle.Render(fmt.Sprintf("%d turns", m.statTurns)),
-		hintStyle.Render(fmt.Sprintf("%s tokens", humanTokens(m.statIn+m.statOut))))
+		hintStyle.Render(fmt.Sprintf("%s in+out", humanTokens(m.statIn+m.statOut))))
 	// Running cost, when the model has a known price. Lowest priority (appended
 	// last) so fitSegments drops it first on a narrow terminal.
 	if seg := m.costSegment(); seg != "" {
