@@ -92,7 +92,7 @@ func TestSpawnBackgroundReturnsHandleImmediately(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir, &fakeWorktrees{})
 
-	id, err := s.SpawnBackground("Explore", "read it", "read the notes", nil)
+	id, err := s.SpawnBackground("", "Explore", "read it", "read the notes", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir, &fakeWorktrees{})
 
-	id, err := s.SpawnBackground("Explore", "read it", "task", nil)
+	id, err := s.SpawnBackground("", "Explore", "read it", "task", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestWriterIsIsolatedAndCleanedUp(t *testing.T) {
 	s := backgroundSpawner(t, provider, dir, wt)
 
 	// Explore is read-only: no worktree.
-	roID, _ := s.SpawnBackground("Explore", "read", "ro", nil)
+	roID, _ := s.SpawnBackground("", "Explore", "read", "ro", nil)
 	waitFor(t, func() bool { a, _ := s.Background().Get(roID); return a.Done() })
 	if got := wt.createdIDs(); len(got) != 0 {
 		t.Errorf("a read-only agent was isolated: %v", got)
@@ -162,7 +162,7 @@ func TestWriterIsIsolatedAndCleanedUp(t *testing.T) {
 	}
 
 	// general-purpose has the wildcard toolset: a writer, so it is isolated.
-	wID, _ := s.SpawnBackground("general-purpose", "write", "rw", nil)
+	wID, _ := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
 	waitFor(t, func() bool { a, _ := s.Background().Get(wID); return a.Done() })
 	if got := wt.createdIDs(); len(got) != 1 || got[0] != wID {
 		t.Errorf("writer not isolated exactly once: %v", got)
@@ -186,7 +186,7 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	wt := &fakeWorktrees{failWith: errors.New("not a git repo")}
 	s := backgroundSpawner(t, provider, dir, wt)
 
-	id, _ := s.SpawnBackground("general-purpose", "write", "rw", nil)
+	id, _ := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
 	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
 	a, _ := s.Background().Get(id)
 	if a.Status != BackgroundFailed {
@@ -200,7 +200,7 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 // An unknown type is rejected before anything is registered.
 func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 	s := backgroundSpawner(t, &scriptedProvider{}, t.TempDir(), &fakeWorktrees{})
-	if _, err := s.SpawnBackground("bogus", "x", "l", nil); err == nil {
+	if _, err := s.SpawnBackground("", "bogus", "x", "l", nil); err == nil {
 		t.Fatal("expected an unknown type to be rejected")
 	}
 	if got := s.Background().List(); len(got) != 0 {
@@ -212,8 +212,8 @@ func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 // as running with a growing elapsed time, finished ones keep their result.
 func TestRegistryListReportsStates(t *testing.T) {
 	r := NewBackgroundRegistry()
-	id1 := r.register("Explore", "search", false, nil)
-	id2 := r.register("general-purpose", "build", true, nil)
+	id1 := r.register("", "Explore", "search", false, nil)
+	id2 := r.register("", "general-purpose", "build", true, nil)
 
 	r.finish(id1, "found it", nil)
 	r.finish(id2, "", fmt.Errorf("boom"))
@@ -232,7 +232,7 @@ func TestRegistryListReportsStates(t *testing.T) {
 		t.Error("writer should be marked isolated in the listing")
 	}
 	// A still-running agent reports a non-negative elapsed and Done()==false.
-	id3 := r.register("Explore", "slow", false, nil)
+	id3 := r.register("", "Explore", "slow", false, nil)
 	if a, _ := r.Get(id3); a.Done() || a.Elapsed() < 0 {
 		t.Errorf("running agent: done=%v elapsed=%v", a.Done(), a.Elapsed())
 	}
@@ -247,7 +247,7 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			id := r.register("Explore", fmt.Sprintf("t%d", n), false, nil)
+			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, nil)
 			r.setActivity(id, "Read x")
 			r.finish(id, "done", nil)
 		}(i)
@@ -269,5 +269,55 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 	}
 	if len(seen) != 20 {
 		t.Errorf("registered %d agents, want 20", len(seen))
+	}
+}
+
+// The registry is per process and an ACP server runs several conversations in
+// one: a result must reach the conversation that launched the agent, and only
+// that one (#276).
+func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
+	r := NewBackgroundRegistry()
+	a := r.register("thread-a", "Explore", "a's search", false, nil)
+	b := r.register("thread-b", "Explore", "b's search", false, nil)
+	r.finish(a, "found in a", nil)
+	r.finish(b, "found in b", nil)
+
+	if got := r.PendingReport(); got != "" {
+		t.Errorf("the default conversation collected another conversation's result: %q", got)
+	}
+	gotA := r.PendingReportFor("thread-a")
+	if !strings.Contains(gotA, "found in a") || strings.Contains(gotA, "found in b") {
+		t.Errorf("thread-a report = %q", gotA)
+	}
+	if again := r.PendingReportFor("thread-a"); again != "" {
+		t.Errorf("thread-a's result delivered twice: %q", again)
+	}
+	if gotB := r.PendingReportFor("thread-b"); !strings.Contains(gotB, "found in b") {
+		t.Errorf("thread-b report = %q", gotB)
+	}
+}
+
+// Undelivered is what a headless run waits on: running agents, and finished
+// ones whose result has not been collected yet. Once collected, nothing is left.
+func TestRegistryUndelivered(t *testing.T) {
+	r := NewBackgroundRegistry()
+	slow := r.register("", "Explore", "slow", false, nil)
+	fast := r.register("", "Explore", "fast", false, nil)
+	_ = r.register("other", "Explore", "elsewhere", false, nil)
+	r.finish(fast, "quick answer", nil)
+
+	running, ready := r.Undelivered("")
+	if len(running) != 1 || running[0].ID != slow {
+		t.Errorf("running = %+v, want only %s", running, slow)
+	}
+	if len(ready) != 1 || ready[0].ID != fast {
+		t.Errorf("ready = %+v, want only %s", ready, fast)
+	}
+
+	_ = r.PendingReport()
+	r.finish(slow, "slow answer", nil)
+	_ = r.PendingReport()
+	if running, ready := r.Undelivered(""); len(running)+len(ready) != 0 {
+		t.Errorf("after delivery: running=%v ready=%v", running, ready)
 	}
 }

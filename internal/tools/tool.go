@@ -113,6 +113,11 @@ type Context struct {
 	// per-file, so routing them through it would mean asking the editor for
 	// every candidate.
 	ReadText func(ctx context.Context, path string, line, limit int) (string, error)
+	// Conversation identifies the conversation this call belongs to, for a
+	// frontend that runs more than one (ACP). The Agent tool tags a background
+	// launch with it so the result is delivered back to the same conversation;
+	// "" is the only conversation of every other frontend.
+	Conversation string
 }
 
 // Tool is the contract implemented by every local tool (Read, Write, Bash, …).

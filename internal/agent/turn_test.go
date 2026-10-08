@@ -41,6 +41,7 @@ func fullTurn() Turn {
 		ReadText: func(context.Context, string, int, int) (string, error) {
 			return "", nil
 		},
+		Conversation: "acp-session-1",
 	}
 }
 
@@ -49,18 +50,19 @@ func TestTurnApplyCopiesEveryField(t *testing.T) {
 	// the one exception and is named here rather than left out, so that "not
 	// copied" is a decision the test records rather than an omission it shares.
 	optionsField := map[string]string{
-		"Prompt":     "Prompt",
-		"Images":     "PromptImages",
-		"History":    "InitialMessages",
-		"Emit":       "", // passed to Loop.Run alongside Options, not through it
-		"Approver":   "Approver",
-		"Asker":      "Asker",
-		"Planner":    "Planner",
-		"Interject":  "Interject",
-		"BeforeEdit": "BeforeEdit",
-		"Mode":       "Permission",
-		"Recorder":   "Recorder",
-		"ReadText":   "ReadText",
+		"Prompt":       "Prompt",
+		"Images":       "PromptImages",
+		"History":      "InitialMessages",
+		"Emit":         "", // passed to Loop.Run alongside Options, not through it
+		"Approver":     "Approver",
+		"Asker":        "Asker",
+		"Planner":      "Planner",
+		"Interject":    "Interject",
+		"BeforeEdit":   "BeforeEdit",
+		"Mode":         "Permission",
+		"Recorder":     "Recorder",
+		"ReadText":     "ReadText",
+		"Conversation": "Conversation",
 	}
 
 	var opts Options

@@ -90,6 +90,17 @@ type Turn struct {
 	// unsaved edits is how the model ends up reasoning about text that is no
 	// longer there. Nil — every other frontend — reads disk.
 	ReadText func(ctx context.Context, path string, line, limit int) (string, error)
+	// Conversation identifies the conversation this turn belongs to, for a
+	// frontend that runs more than one at once. It scopes background
+	// sub-agents: one launched in this turn reports back only to a later turn
+	// of the same conversation.
+	//
+	// The ACP frontend sets it to the editor session id. Every other frontend
+	// has a single conversation and leaves it "", which is also what its
+	// background launches are tagged with. Without it, the process-wide
+	// registry would hand one editor thread's results to whichever thread
+	// polled first.
+	Conversation string
 }
 
 // Apply copies the turn onto opts, leaving every other field of opts alone.
@@ -107,6 +118,7 @@ func (t Turn) Apply(opts *Options) {
 	opts.Interject = t.Interject
 	opts.BeforeEdit = t.BeforeEdit
 	opts.ReadText = t.ReadText
+	opts.Conversation = t.Conversation
 	// Overridden, not cleared: a nil Mode leaves whatever permission context
 	// the caller built, so a frontend with one fixed mode need not restate it
 	// on every turn.

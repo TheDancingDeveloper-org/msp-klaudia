@@ -51,6 +51,21 @@ Where they met this fork's own work, the fork resolved them as follows:
   that already ran.
 
 ### Fixed
+- **Background sub-agents deliver outside the TUI** (#276). An `Agent` call
+  with `background: true` reports "on a later turn", but only the TUI
+  collected results, so over `-p`, stream-json and ACP the result never
+  reached the model. A `-p` run also exited while the agents were still
+  running, with the model promising to report them. Collection is now set
+  once, on the shared path, for every frontend. A stream-json or ACP session
+  gets the result at the start of its next turn, and an ACP result goes back
+  to the editor thread that launched the agent, not to any other. A `-p` run
+  now waits for outstanding background agents before it prints `result`, then
+  hands their results to the model as a follow-up turn. That turn counts
+  toward `--max-turns` and `--max-budget-usd`, and the whole wait is capped
+  at 10 minutes. If the run stops waiting (a cap, a failure, the timeout, an
+  interrupt), it stops the agents and prints a `warning` naming each one
+  whose result was dropped. `num_turns`, `usage` and `total_cost_usd` cover
+  every turn.
 - **A provider's 400 is quoted, not guessed at** (#245). An OpenAI-compatible
   host that sends `{"error":"unsupported model: …"}` (error as a string), a
   top-level `message`/`detail`, or plain text used to get "the model rejected

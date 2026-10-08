@@ -20,9 +20,11 @@ type Spawner interface {
 	Spawn(ctx context.Context, subagentType, prompt string, progress func(line string)) (string, error)
 	// SpawnBackground launches a sub-agent that runs independently of this turn
 	// and returns its handle id immediately; the result is delivered on a later
-	// turn. label is the task description, for the status view. It takes no
-	// context because the child must outlive the turn that started it.
-	SpawnBackground(subagentType, prompt, label string, progress func(line string)) (id string, err error)
+	// turn. label is the task description, for the status view; conversation
+	// (Context.Conversation) is the one conversation the result is delivered
+	// to. It takes no context because the child must outlive the turn that
+	// started it.
+	SpawnBackground(conversation, subagentType, prompt, label string, progress func(line string)) (id string, err error)
 }
 
 // AgentTypeInfo is the model-facing summary of a sub-agent type, used to build
@@ -121,7 +123,7 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		return nil, err
 	}
 	if in.Background {
-		id, err := a.spawner.SpawnBackground(in.SubagentType, in.Prompt, in.Description, tctx.Progress)
+		id, err := a.spawner.SpawnBackground(tctx.Conversation, in.SubagentType, in.Prompt, in.Description, tctx.Progress)
 		if err != nil {
 			return []Result{{Content: fmt.Sprintf("Could not launch background sub-agent: %v", err), IsError: true}}, nil
 		}

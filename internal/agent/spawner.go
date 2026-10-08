@@ -290,13 +290,15 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 // turn and returns its handle immediately. The result is delivered later, via
 // the registry (PendingReport → Options.CollectBackground) and shown live by
 // the /agents view. label is the model's task description, for the status view.
+// conversation is the launching turn's Turn.Conversation (tools.Context): the
+// result is delivered only to that conversation.
 //
 // A writer type (subagent.Type.MayWrite) runs in an isolated git worktree when
 // a provider is configured, so concurrent writers cannot corrupt each other's
 // tree; a read-only type shares the parent tree. The child runs on a context
 // detached from the parent turn — it must outlive the turn that started it — so
 // its cancellation is tracked in the registry (Cancel) rather than tied to ctx.
-func (s *Spawner) SpawnBackground(subagentType, prompt, label string, progress func(string)) (string, error) {
+func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label string, progress func(string)) (string, error) {
 	t, ok := subagent.Lookup(subagentType)
 	if !ok {
 		return "", fmt.Errorf("unknown subagent_type %q", subagentType)
@@ -306,7 +308,7 @@ func (s *Spawner) SpawnBackground(subagentType, prompt, label string, progress f
 	isolate := t.MayWrite() && s.worktrees != nil && s.workingDir != ""
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(subagentType, label, isolate, cancel)
+	id := reg.register(conversation, subagentType, label, isolate, cancel)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
