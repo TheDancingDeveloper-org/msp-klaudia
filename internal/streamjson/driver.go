@@ -250,8 +250,8 @@ func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
 		if !ok {
 			return nil // stdin closed and every queued turn run
 		}
-		prompt := decodeUserContent(m.Message)
-		if prompt == "" {
+		prompt, images := decodeUserContent(m.Message)
+		if prompt == "" && len(images) == 0 {
 			continue
 		}
 		start := time.Now()
@@ -276,6 +276,7 @@ func (d *Driver) Run(ctx context.Context, r io.Reader, run RunFunc) error {
 		}
 		res, err := run(turnCtx, agent.Turn{
 			Prompt:   prompt,
+			Images:   images,
 			History:  history,
 			Emit:     emit,
 			Approver: approver,
@@ -721,33 +722,53 @@ func (p *controlPlanner) ExitPlan(ctx context.Context, plan string) (bool, error
 	return ans.Approved, nil
 }
 
-// decodeUserContent extracts the text of a user message whose content is either
-// a string or an array of content blocks.
-func decodeUserContent(raw json.RawMessage) string {
+// imageMediaTypes are the image types the model accepts. Anything else in an
+// inbound image block is dropped rather than sent, since the provider rejects
+// the request.
+var imageMediaTypes = map[string]bool{
+	"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true,
+}
+
+// decodeUserContent extracts the text and any base64 image blocks of a user
+// message whose content is either a string or an array of content blocks. An
+// image block must carry a base64 source; a URL source or an unsupported media
+// type is skipped.
+func decodeUserContent(raw json.RawMessage) (string, []tools.ResultImage) {
 	var msg struct {
 		Content json.RawMessage `json:"content"`
 	}
 	if json.Unmarshal(raw, &msg) != nil {
-		return ""
+		return "", nil
 	}
 	var s string
 	if json.Unmarshal(msg.Content, &s) == nil {
-		return s
+		return s, nil
 	}
 	var blocks []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
 	}
-	if json.Unmarshal(msg.Content, &blocks) == nil {
-		var out string
-		for _, b := range blocks {
-			if b.Type == "text" {
-				out += b.Text
+	if json.Unmarshal(msg.Content, &blocks) != nil {
+		return "", nil
+	}
+	var out string
+	var images []tools.ResultImage
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			out += b.Text
+		case "image":
+			if b.Source.Type == "base64" && b.Source.Data != "" && imageMediaTypes[b.Source.MediaType] {
+				images = append(images, tools.ResultImage{MediaType: b.Source.MediaType, Base64: b.Source.Data})
 			}
 		}
-		return out
 	}
-	return ""
+	return out, images
 }
 
 // resultEvent builds the terminal result line for a turn.
