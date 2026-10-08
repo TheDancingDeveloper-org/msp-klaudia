@@ -26,7 +26,7 @@ func newTestModel() *Model {
 	// renders the running state.
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return &Model{input: in, spin: sp, sess: &Session{Memory: memory.Disabled()}, histPos: 0, stateBeforeAsk: stateRunning}
+	return &Model{input: in, spin: sp, sess: &Session{Memory: memory.Disabled()}, histPos: 0}
 }
 
 func TestHistoryNavigation(t *testing.T) {

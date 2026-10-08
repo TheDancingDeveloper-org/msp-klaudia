@@ -39,6 +39,8 @@ func askPermission(m *Model, req agent.ApprovalRequest) chan permission.Decision
 
 func TestQueuedPermissionAskIsNotDropped(t *testing.T) {
 	m := newTestModel()
+	// The asks arrive during a turn.
+	m.setState(stateRunning)
 	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
 	second := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm b"})
 
@@ -76,6 +78,35 @@ func TestQueuedPermissionAskIsNotDropped(t *testing.T) {
 	}
 	if m.state != stateRunning {
 		t.Errorf("state after the last answer = %v, want running", m.state)
+	}
+}
+
+// An ask during a turn records running and returns there. A later ask that
+// arrives while the TUI is idle — a background child asking after the turn
+// ended — must record idle and return to it. Otherwise the status line says
+// running with no turn, and Enter only queues a follow-up.
+func TestAnsweringAnAskWhileIdleReturnsToIdle(t *testing.T) {
+	m := newTestModel()
+	m.setState(stateRunning)
+	first := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm a"})
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-first
+	if m.state != stateRunning {
+		t.Fatalf("state after the in-turn ask = %v, want running", m.state)
+	}
+
+	m.setState(stateIdle)
+	second := askPermission(m, agent.ApprovalRequest{ToolName: "Bash", Specifier: "rm b"})
+	if m.stateBeforeAsk != stateIdle {
+		t.Fatalf("the idle ask recorded %v, want idle", m.stateBeforeAsk)
+	}
+	m.answer(permission.Decision{Behavior: permission.Allow})
+	<-second
+	if m.state != stateIdle {
+		t.Fatalf("state after the idle ask = %v, want idle: the TUI says running with no turn", m.state)
+	}
+	if m.stateBeforeAsk != stateIdle {
+		t.Errorf("stateBeforeAsk = %v after the queue drained, want it reset", m.stateBeforeAsk)
 	}
 }
 
@@ -215,6 +246,7 @@ func TestPermissionAnswers(t *testing.T) {
 		Input: rawJSON(t, map[string]string{"command": "go vet ./..."})}
 
 	m := slashModel(t)
+	m.setState(stateRunning)
 	reply := askPermission(m, req)
 	m.onKey(runeKey("y"))
 	if d := <-reply; d.Behavior != permission.Allow {

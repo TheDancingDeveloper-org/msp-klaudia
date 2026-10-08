@@ -3275,11 +3275,7 @@ func (m *Model) showAsk(msg askMsg) {
 	m.askOptions = msg.options
 	m.askQuestion = msg.question
 	m.notifyAttention("Klaudia has a question")
-	q := msg.question
-	if msg.question != "" {
-		q = msg.question
-	}
-	m.appendLine(askStyle.Render("? " + q))
+	m.appendLine(askStyle.Render("? " + msg.question))
 	for i, o := range msg.options {
 		line := fmt.Sprintf("  %d) %s", i+1, o.Label)
 		if o.Description != "" {
@@ -3293,10 +3289,11 @@ func (m *Model) showAsk(msg askMsg) {
 
 // rememberAskState records the state to return to, but only for the first
 // ask of a run of them. A queued ask must not record stateAwaitingPermission
-// as the state to restore. Idle is not a state an ask interrupts — a child
-// asks during a turn — so an ask that arrives while idle returns to running.
+// as the state to restore. Idle is recorded too: a background child asks
+// after the turn has ended, and answering it must not leave the TUI saying
+// it is running when nothing is.
 func (m *Model) rememberAskState() {
-	if m.state != stateAwaitingPermission && m.state != stateAwaitingAnswer && m.state != stateIdle {
+	if m.state != stateAwaitingPermission && m.state != stateAwaitingAnswer {
 		m.stateBeforeAsk = m.state
 	}
 }
@@ -3325,7 +3322,11 @@ func (m *Model) showNextAsk() {
 			return
 		}
 	}
+	// The run of asks is over. Forget the recorded state so the next ask
+	// records its own: an ask during a turn records running, and a later
+	// ask while idle must not inherit it.
 	m.setState(m.stateBeforeAsk)
+	m.stateBeforeAsk = stateIdle
 }
 
 // answer resolves the pending permission ask.

@@ -15,6 +15,8 @@ import (
 func askTwo(t *testing.T) (*Model, chan string) {
 	t.Helper()
 	m := newTestModel()
+	// The question arrives during a turn.
+	m.setState(stateRunning)
 	reply := make(chan string, 1)
 	m.update(askMsg{
 		question: "Which problem are you actually trying to solve?",

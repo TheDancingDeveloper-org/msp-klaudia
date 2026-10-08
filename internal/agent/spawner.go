@@ -305,7 +305,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	if progress != nil {
 		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
 	}
-	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, emit)
+	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
 	childErr = err
 	if tree == nil {
 		return prov.note(text), usage, err
@@ -336,8 +336,9 @@ func progressEmitter(progress func(string)) Emitter {
 // runChild runs one sub-agent loop to completion in workingDir and returns its
 // final text plus what it spent, applying the shared turn/context bounds. It
 // is the single body both the synchronous Spawn and the background goroutine
-// drive. usage is nil when the run never started.
-func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir string, emit Emitter) (string, *tools.ChildUsage, error) {
+// drive. id and label name the child on a permission ask, so two children of
+// the same type are distinguishable. usage is nil when the run never started.
+func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
 	model := subagentModel(s.model, t.Model)
 	if spec.Model != "" {
@@ -360,7 +361,13 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		// which with several children running is a question the user cannot
 		// attribute. Name the child on the request before it reaches the UI.
 		inner := approver
-		who := t.Name
+		who := id
+		if t.Name != "" {
+			who = fmt.Sprintf("%s (%s)", id, t.Name)
+		}
+		if label != "" {
+			who += ": " + label
+		}
 		approver = ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			req.Agent = who
 			return inner.Approve(ctx, req)
@@ -528,7 +535,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 			tree, workingDir = wt, filepath.Join(wt.Dir, sub)
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
-		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
+		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, id, label, emit)
 		if tree == nil {
 			reg.finish(id, prov.note(result), usage, err)
 			return

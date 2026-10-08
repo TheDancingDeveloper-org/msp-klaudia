@@ -16,6 +16,9 @@ func pressPermissionKey(t *testing.T, m *Model, key string) permission.Decision 
 	t.Helper()
 	reply := make(chan permission.Decision, 1)
 	m.pending = reply
+	// The ask arrived during a turn. The model is driven directly, so the
+	// state the ask interrupted was never recorded.
+	m.stateBeforeAsk = stateRunning
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 	select {
 	case d := <-reply:
