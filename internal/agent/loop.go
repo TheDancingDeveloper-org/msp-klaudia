@@ -126,6 +126,8 @@ type Options struct {
 	// CollectChildUsage, if set, is polled with CollectBackground and returns
 	// what the children just delivered spent, so the parent can fold it in.
 	CollectChildUsage func() []*tools.ChildUsage
+	// SubagentEvents returns the lifecycle events recorded since the last poll.
+	SubagentEvents func() []Event
 	// Conversation identifies which conversation this run belongs to, for a
 	// frontend with more than one; see Turn.Conversation. It is passed to tools
 	// (tools.Context.Conversation) so a background sub-agent's result is
@@ -451,6 +453,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Deliver any background sub-agent that finished since the last turn, at
 		// the same safe point a steer lands: as a user message before the request
 		// is built, so the model sees the result while deciding what to do next.
+		emitSubagentEvents(opts, emit)
 		if report := pollBackground(opts); report != "" {
 			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
@@ -666,6 +669,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// The second delivery point, mirroring the interjection poll above: a
 		// background agent that finished while this turn's tools ran reaches the
 		// model on the next request rather than a turn later.
+		emitSubagentEvents(opts, emit)
 		if report := pollBackground(opts); report != "" {
 			l.foldDelivered(opts, &res)
 			if msg, ok := backgroundMessage(report); ok {
@@ -1720,4 +1724,13 @@ func (l *Loop) foldDelivered(opts Options, res *Result) {
 		l.noteChild(fmt.Sprintf("bg-%d", i), u)
 	}
 	l.foldChildren(opts, res)
+}
+
+func emitSubagentEvents(opts Options, emit Emitter) {
+	if opts.SubagentEvents == nil || emit == nil {
+		return
+	}
+	for _, ev := range opts.SubagentEvents() {
+		emit(ev)
+	}
 }

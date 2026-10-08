@@ -275,8 +275,8 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
-	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
-	var childErr error
+		id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+		var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
 		// background poll, so it is marked collected the moment it ends.
