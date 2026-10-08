@@ -377,11 +377,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// sits in: adoption applies the child's patch to t.Root, and an edit the
 	// child made above the session's subdirectory only lands when that root is
 	// the repository.
-<<<<<<< HEAD
-	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
-=======
 	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
->>>>>>> 33ec5ff (agent: per-call model, isolation, turns and name on the Agent tool)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
@@ -574,20 +570,24 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 // approver and the sandbox exactly as the child's own commands did. The
 // approver sees it labelled as this child's verify.
 //
-// It does not run at all unless the project is trusted. A verify command
-// comes from the type, and a type can come from the repository's own agent
-// files, so an untrusted checkout must not be able to name a command that
-// runs here. A project is trusted when its hooks are approved (the same
-// decision, once, for everything the repository asks to execute) or when it
-// declares no project hooks, in which case there is nothing to approve and
-// the command is still gated like any other. With no hook runner wired
-// there is no record of that decision, and the command does not run.
+// It does not run at all unless the project may run its own commands. A
+// verify command comes from the type, and a type can come from the
+// repository's own agent files, so an untrusted checkout must not be able
+// to name a command that runs here. A project may run them when its hooks
+// are approved (the same decision, once, for everything the repository asks
+// to execute) or when it declares no project hooks, in which case there is
+// nothing to approve. "May run" is not "trusted": the command is still
+// gated by the guard, the host gate, the approver and the sandbox like any
+// other. With no hook runner wired there is no record of that decision,
+// and the command does not run. In a headless session the approver denies
+// anything that would ask, so a verify that needs approval fails the child
+// and its checkout is left unadopted.
 func (s *Spawner) verify(ctx context.Context, loop *Loop, opts Options, command, dir, who string) (string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", nil
 	}
-	if !s.projectTrusted() {
+	if !s.projectMayRunCommands() {
 		return "", fmt.Errorf("not run: this project's commands are not approved, and a verify command comes from the project")
 	}
 	raw, err := json.Marshal(struct {
@@ -614,12 +614,14 @@ func (s *Spawner) verify(ctx context.Context, loop *Loop, opts Options, command,
 	return "", nil
 }
 
-// projectTrusted reports whether a command that comes from the project may
-// run. Project hooks are the one other thing a repository asks to execute,
-// and they run only once the project is approved, so verify follows that
-// decision: approved, or no project hooks to approve. With no hook runner
-// there is no record of the decision, and the command does not run.
-func (s *Spawner) projectTrusted() bool {
+// projectMayRunCommands reports whether a command that comes from the project
+// may be attempted. Project hooks are the one other thing a repository asks
+// to execute, and they run only once the project is approved, so verify
+// follows that decision: approved, or no project hooks to approve. Neither
+// means the command is trusted; it is still gated like any Bash call. With
+// no hook runner there is no record of the decision, and the command does
+// not run.
+func (s *Spawner) projectMayRunCommands() bool {
 	if s.hooks == nil {
 		return false
 	}
@@ -778,11 +780,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		return "", "", err
 	}
 	reg := s.Background()
-<<<<<<< HEAD
-	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
-=======
 	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
->>>>>>> 33ec5ff (agent: per-call model, isolation, turns and name on the Agent tool)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id, err := reg.registerNamed(conversation, subagentType, spec.Name, firstNonEmpty(label, spec.Name), isolate, prov.String(), true, cancel)

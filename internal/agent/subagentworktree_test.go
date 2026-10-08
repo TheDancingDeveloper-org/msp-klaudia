@@ -392,6 +392,41 @@ func TestUntrustedProjectDoesNotRunVerify(t *testing.T) {
 	}
 }
 
+// The same refusal holds when the verify command comes from the project's own
+// agent file rather than a type built in the test. The file is what an
+// untrusted checkout can actually write, so that is the path that matters.
+func TestUntrustedProjectFileVerifyDoesNotRun(t *testing.T) {
+	root := gitRepo(t)
+	os.MkdirAll(filepath.Join(root, ".klaudia", "agents"), 0o755)
+	os.WriteFile(filepath.Join(root, ".klaudia", "agents", "patcher.md"), []byte(
+		"---\nname: patcher\ndescription: patches\ntools: [Write]\nverify: touch verify-ran\n---\nPatch."), 0o644)
+	loaded := subagent.LoadAll(root, "", nil, []string{"Write"}, nil)
+	found, ok := subagent.Find(loaded, "patcher")
+	if !ok || found.Verify != "touch verify-ran" {
+		t.Fatalf("verify did not load from the file: %+v", found)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	ran := &hookProbeTool{}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, ran), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithHooks(hooks.New(root, "sess", nil, []config.Hook{{Event: "PreToolUse", Command: "true"}})).
+		WithTypes(loaded)
+
+	_, _, err := s.Spawn(context.Background(), nil, "patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("a verify loaded from an untrusted project file was not refused: %v", err)
+	}
+	if ran.calls != 0 {
+		t.Errorf("the file's verify command ran %d times", ran.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("the child's work was adopted though its verify never ran")
+	}
+}
+
 func TestWritesFiles(t *testing.T) {
 	tests := []struct {
 		name  string

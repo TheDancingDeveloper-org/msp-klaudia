@@ -80,16 +80,16 @@ func TestLoadNewerFrontmatter(t *testing.T) {
 	dir := t.TempDir()
 	agents := filepath.Join(dir, ".klaudia", "agents")
 	os.MkdirAll(agents, 0o755)
-	os.WriteFile(filepath.Join(agents, "reviewer.md"), []byte(`---
-name: reviewer
-description: reviews a change
-tools: ["*"]
-maxTurns: 4
-disallowedTools: ["Bash", "NoSuchTool"]
-isolation: none
----
-Review it.
-`), 0o644)
+	os.WriteFile(filepath.Join(agents, "reviewer.md"), []byte("---\n"+
+		"name: reviewer\n"+
+		"description: reviews a change\n"+
+		"tools: [\"*\"]\n"+
+		"maxTurns: 4\n"+
+		"disallowedTools: [\"Bash\", \"NoSuchTool\"]\n"+
+		"isolation: none\n"+
+		"verify: test -s made.txt\n"+
+		"---\n"+
+		"Review it.\n"), 0o644)
 	var warned []string
 	got := LoadAll(dir, "", nil, []string{"Bash"}, func(m string) { warned = append(warned, m) })
 	var reviewer Type
@@ -98,7 +98,7 @@ Review it.
 			reviewer = ty
 		}
 	}
-	if reviewer.MaxTurns != 4 || reviewer.Isolation != "none" || len(reviewer.DisallowedTools) != 2 {
+	if reviewer.MaxTurns != 4 || reviewer.Isolation != "none" || len(reviewer.DisallowedTools) != 2 || reviewer.Verify != "test -s made.txt" {
 		t.Fatalf("frontmatter = %+v", reviewer)
 	}
 	joined := strings.Join(warned, "\n")
