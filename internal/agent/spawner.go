@@ -74,9 +74,6 @@ type ChildSpec struct {
 	// OutputSchema, when set, is a JSON Schema the child's final message must
 	// match. A mismatch gets exactly one more turn, then an error.
 	OutputSchema json.RawMessage
-	// Depth is how deep this child is. The parent is 0, its child is 1, and
-	// a child only gets the Agent tool while its depth is below MaxDepth.
-	Depth int
 	// Conversation is the launching turn's Turn.Conversation, so the child's
 	// registry entry is delivered back to the same conversation. "" for a
 	// frontend with only one.
@@ -133,9 +130,6 @@ func callOverridesOf(spec any) ChildSpec {
 	if r, ok := spec.(interface{ RequestedOutputSchema() json.RawMessage }); ok && r != nil {
 		out.OutputSchema = r.RequestedOutputSchema()
 	}
-	if r, ok := spec.(interface{ RequestedDepth() int }); ok && r != nil {
-		out.Depth = r.RequestedDepth()
-	}
 	return out
 }
 
@@ -165,14 +159,6 @@ type Spawner struct {
 	// fall back to the 200k default on a provider whose parent was given a
 	// larger window.
 	contextWindow int
-
-	// agentTool is the Agent tool a child is handed while it is below
-	// maxDepth. Nil means no child can launch another, which is also what a
-	// maxDepth of 1 means.
-	agentTool tools.Tool
-	// maxDepth is how deep a child may itself launch. 0 means the default of
-	// 1: a child has no Agent tool.
-	maxDepth int
 
 	// background tracks sub-agents launched with SpawnBackground. Created lazily
 	// so a Spawner built without one (older callers, tests) still runs
@@ -259,39 +245,6 @@ func (s *Spawner) WithContextWindow(n int) *Spawner {
 func (s *Spawner) WithHooks(h *hooks.Runner) *Spawner {
 	s.hooks = h
 	return s
-}
-
-// WithAgentTool is the Agent tool a child below maxDepth is handed, and the
-// depth at which it stops being handed one. The tool cannot be passed to
-// NewSpawner: the spawner is built from the registry that excludes it, and
-// the tool is built from the spawner. A depth below 1 is the default of 1.
-func (s *Spawner) WithAgentTool(tool tools.Tool, maxDepth int) *Spawner {
-	s.agentTool = tool
-	if maxDepth < 1 {
-		maxDepth = 1
-	}
-	s.maxDepth = maxDepth
-	return s
-}
-
-// depthCap is the configured depth, or 1 when none was configured.
-func (s *Spawner) depthCap() int {
-	if s.maxDepth < 1 {
-		return 1
-	}
-	return s.maxDepth
-}
-
-// depthAgent is the Agent tool as one child sees it: the same tool, but its
-// context reports the child's depth, so a launch it makes is one level deeper.
-type depthAgent struct {
-	tools.Tool
-	depth int
-}
-
-func (d depthAgent) Execute(ctx context.Context, tctx tools.Context, input json.RawMessage) ([]tools.Result, error) {
-	tctx.Depth = d.depth
-	return d.Tool.Execute(ctx, tctx, input)
 }
 
 // WithWorktrees turns per-sub-agent checkouts on or off for every sub-agent
@@ -445,12 +398,6 @@ func progressEmitter(progress func(string)) Emitter {
 // the same type are distinguishable. usage is nil when the run never started.
 func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
-	// A child gets the Agent tool only while it is below the depth cap, and
-	// the tool it gets reports the child's own depth, so the next level is
-	// one deeper. The default cap of 1 means a child has no Agent tool.
-	if s.agentTool != nil && spec.Depth+1 < s.depthCap() {
-		childTools = tools.NewRegistry(append(childTools.All(), depthAgent{Tool: s.agentTool, depth: spec.Depth + 1})...)
-	}
 	model, notice := s.resolveChildModel(spec, t)
 
 	perm := s.permission
@@ -517,7 +464,6 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		Hooks:         s.hooks,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
-		Registry:      childTools,
 	}
 	res, err := loop.Run(ctx, opts, emit)
 	usage := childUsageOf(string(model), res)

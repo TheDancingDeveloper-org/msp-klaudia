@@ -286,7 +286,6 @@ func (c parentSpecOf) ParentExtraDirs() []string                { return c.Extra
 func (c parentSpecOf) ParentBudget() *float64                   { return c.Budget }
 func (c parentSpecOf) ParentWorkingDir() string                 { return c.WorkingDir }
 func (c parentSpecOf) ParentConversation() string               { return c.Conversation }
-func (c parentSpecOf) ParentDepth() int                         { return Context(c).Depth }
 
 // callOverrides is a ParentContext that also carries one Agent tool call's
 // inputs. The spawner reads them through the methods below. They live on a
@@ -300,7 +299,6 @@ type callOverrides struct {
 	maxTurns     int
 	name         string
 	outputSchema json.RawMessage
-	depth        int
 }
 
 // RequestedWorkingDir is the repository the caller asked the child to be cut
@@ -326,18 +324,6 @@ func (c callOverrides) RequestedName() string { return c.name }
 // match. nil means the answer is not checked.
 func (c callOverrides) RequestedOutputSchema() json.RawMessage { return c.outputSchema }
 
-// parentDepth reads how deep the caller already is, when it says. A context
-// that predates the depth does not, and that is the parent: depth 0.
-func parentDepth(spec ParentContext) int {
-	if d, ok := spec.(interface{ ParentDepth() int }); ok && d != nil {
-		return d.ParentDepth()
-	}
-	return 0
-}
-
-// parent's call is 0; a child calling again reports its own depth.
-func (c callOverrides) RequestedDepth() int { return c.depth }
-
 // withCallOverrides wraps spec so the spawner can see this call's inputs. A
 // call that sets none of them returns spec unchanged, and a nil spec still
 // carries a request: the child then falls back to the spawner's own wiring for
@@ -354,6 +340,5 @@ func withCallOverrides(spec ParentContext, in AgentInput) any {
 		maxTurns:      in.MaxTurns,
 		name:          in.Name,
 		outputSchema:  in.OutputSchema,
-		depth:         parentDepth(spec),
 	}
 }
