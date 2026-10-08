@@ -45,6 +45,9 @@ type BackgroundAgent struct {
 	Result     string    // final text, once succeeded
 	Err        string    // error text, once failed
 	Isolated   bool      // ran in its own git worktree (a writer) vs shared tree
+	// Provenance names the repository, branch and HEAD the child was cut
+	// from ("<repo> on <branch> at <head>"). "" when that is not a repository.
+	Provenance string
 	// Conversation is the Turn.Conversation of the turn that launched it: the
 	// one conversation its result is delivered to. "" for a frontend with only
 	// one conversation (TUI, stream-json, -p).
@@ -104,7 +107,8 @@ func (r *BackgroundRegistry) now() time.Time {
 // register adds a running agent and returns its assigned id. cancel is stored so
 // the entry can be stopped later; it may be nil. conversation is the launching
 // turn's Turn.Conversation, which scopes delivery (see TakeFinishedFor).
-func (r *BackgroundRegistry) register(conversation, subagentType, label string, isolated bool, cancel func()) string {
+// provenance is the one-line repo/branch/HEAD the child was cut from.
+func (r *BackgroundRegistry) register(conversation, subagentType, label string, isolated bool, provenance string, cancel func()) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
@@ -117,6 +121,7 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 			Status:       BackgroundRunning,
 			StartedAt:    r.now(),
 			Isolated:     isolated,
+			Provenance:   provenance,
 			Conversation: conversation,
 		},
 		cancel: cancel,

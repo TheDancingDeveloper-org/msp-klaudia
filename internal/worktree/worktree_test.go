@@ -392,3 +392,28 @@ func TestConcurrentAdoptionOfOneFilePicksAWinner(t *testing.T) {
 		t.Errorf("a.txt = %q, which is neither child's version", got)
 	}
 }
+
+// Two sessions with different config roots must not share a checkout path:
+// reserve keys the directory off KLAUDIA_CONFIG_DIR, so a second session's
+// worktree cannot collide with the first's.
+func TestDifferentConfigDirsDoNotShareAWorktreePath(t *testing.T) {
+	root := repo(t)
+	ctx := context.Background()
+
+	first, err := New(ctx, root, "writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Remove(ctx)
+
+	t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
+	second, err := New(ctx, root, "writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Remove(ctx)
+
+	if first.Dir == second.Dir {
+		t.Fatalf("two config dirs reserved the same checkout: %s", first.Dir)
+	}
+}

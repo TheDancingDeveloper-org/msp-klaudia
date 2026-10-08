@@ -37,12 +37,19 @@ func (r *captureRecorder) snapshot() []string {
 
 // scriptedProvider returns each preset message in turn, then synthesises an
 // empty end_turn so the loop exits cleanly. Implements api.Provider.
+//
+// mu guards n. A background child calls StreamTurn from its own goroutine while
+// the test goroutine may still be reading the provider, and -race treats an
+// unsynchronised counter as a race even when the test never looks at it.
 type scriptedProvider struct {
+	mu    sync.Mutex
 	turns []anthropic.BetaMessage
 	n     int
 }
 
 func (p *scriptedProvider) StreamTurn(_ context.Context, _ anthropic.BetaMessageNewParams, _ api.StreamSink) (anthropic.BetaMessage, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.n >= len(p.turns) {
 		return anthropic.BetaMessage{StopReason: "end_turn"}, nil
 	}

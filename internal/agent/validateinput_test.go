@@ -74,7 +74,7 @@ func TestInvalidInputSkipsGateAndApproval(t *testing.T) {
 	tu := anthropic.BetaToolUseBlock{
 		ID: "t1", Name: "Bash", Input: json.RawMessage(bashInput("sudo systemctl restart nginx")),
 	}
-	res := l.dispatch(context.Background(), tu, opts, nil, nil, newFailureState())
+	res := l.dispatch(context.Background(), tu, opts, 0, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "Input validation error") {
@@ -108,7 +108,7 @@ func TestInvalidInputStillCountsAsAFailure(t *testing.T) {
 		ID: "t1", Name: "Bash", Input: json.RawMessage(bashInput("sudo reboot")),
 	}
 	fs := newFailureState()
-	l.dispatch(context.Background(), tu, opts, nil, nil, fs)
+	l.dispatch(context.Background(), tu, opts, 0, nil, nil, fs)
 
 	key := "Bash\x00" + string(bashInput("sudo reboot"))
 	if n := fs.count(key); n != 1 {

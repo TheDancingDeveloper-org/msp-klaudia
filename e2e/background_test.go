@@ -1,6 +1,9 @@
 package e2e
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -146,5 +149,69 @@ func TestStreamJSONDeliversBackgroundSubagentNextTurn(t *testing.T) {
 	}
 	if !strings.Contains(parent[2].Raw(), "C-RESULT: 7 files") {
 		t.Errorf("the next turn's request does not carry the background result:\n%s", parent[2].Raw())
+	}
+}
+
+// A background writer launched with working_dir inside an additional directory
+// writes into that repository, not the session's. This is the path the unit
+// tests cannot see: the --add-dir flag has to reach the validation, and the
+// child's checkout has to be cut from the other repository.
+func TestBackgroundWriterHonoursWorkingDir(t *testing.T) {
+	e := NewEnv(t, nil)
+	initRepo(t, e.Dir)
+	other := filepath.Join(e.Home, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initRepo(t, other)
+
+	m := NewFakeModel(t,
+		Turn{Tools: []fakeapi.ToolCall{{Name: "Agent", Input: map[string]any{
+			"subagent_type": "general-purpose",
+			"prompt":        "WRITE-IN-B: write the file",
+			"description":   "write b",
+			"background":    true,
+			"working_dir":   other,
+		}}}},
+		Say("launched"),
+	)
+	m.Route("WRITE-IN-B", Use("Write", map[string]any{
+		"file_path": filepath.Join(other, "from-b.txt"),
+		"content":   "landed in B\n",
+	}), Say("wrote it"))
+	e.Model = m
+
+	r := e.Headless("USER-PROMPT write it over there", "--add-dir", other, "--dangerously-skip-permissions")
+	if r.ExitCode != 0 {
+		t.Fatalf("exit %d\n%s", r.ExitCode, r.dump())
+	}
+	if got, err := os.ReadFile(filepath.Join(other, "from-b.txt")); err != nil || string(got) != "landed in B\n" {
+		t.Fatalf("other repo's file = %q, %v\n%s", got, err, r.dump())
+	}
+	if _, err := os.Stat(e.Path("from-b.txt")); err == nil {
+		t.Fatal("the session's repository received the child's file")
+	}
+}
+
+// initRepo makes dir a one-commit repository, which is what a working_dir has
+// to be before a writer can be cut from it.
+func initRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"config", "user.name", "e2e"},
+		{"config", "user.email", "e2e@example.invalid"},
+		{"commit", "--quiet", "--allow-empty", "-m", "first"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = []string{
+			"GIT_CONFIG_NOSYSTEM=1", "HOME=" + t.TempDir(), "PATH=" + os.Getenv("PATH"),
+			"GIT_AUTHOR_NAME=e2e", "GIT_AUTHOR_EMAIL=e2e@example.invalid",
+			"GIT_COMMITTER_NAME=e2e", "GIT_COMMITTER_EMAIL=e2e@example.invalid",
+		}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s in %s: %v: %s", strings.Join(args, " "), dir, err, out)
+		}
 	}
 }

@@ -182,7 +182,7 @@ func TestGateRunsBeforeThePermissionCheck(t *testing.T) {
 		WorkingDir: proj,
 		Host:       g,
 		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
-	}, nil, nil, newFailureState())
+	}, 0, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "RequestHostChange") {
@@ -207,7 +207,7 @@ func TestBypassSkipsTheGate(t *testing.T) {
 		WorkingDir: proj,
 		Host:       g,
 		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeBypassPermissions)},
-	}, nil, nil, newFailureState())
+	}, 0, nil, nil, newFailureState())
 	if len(bash.ran) != 1 {
 		t.Fatalf("bypassPermissions did not run the command: %v", bash.ran)
 	}
@@ -235,7 +235,7 @@ func TestApprovalMintsAGrant(t *testing.T) {
 	}
 	run := func(cmd string) {
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(bashInput(cmd))}
-		l.dispatch(context.Background(), tu, opts, nil, nil, newFailureState())
+		l.dispatch(context.Background(), tu, opts, 0, nil, nil, newFailureState())
 	}
 	run("sudo systemctl restart nginx")
 	run("sudo systemctl stop nginx")
@@ -261,7 +261,7 @@ func TestDeclinedHostChangeFailsOnlyThatCall(t *testing.T) {
 		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
 			return permission.Decision{Behavior: permission.Deny}
 		}),
-	}, nil, nil, newFailureState())
+	}, 0, nil, nil, newFailureState())
 
 	body := resultText(res)
 	if !strings.Contains(body, "declined") {

@@ -60,7 +60,7 @@ func dispatchGusher(t *testing.T, g *gusherTool, emit Emitter) anthropic.BetaCon
 	t.Helper()
 	l := New(nil, tools.NewRegistry(g))
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "Gusher", Input: map[string]any{}}
-	return l.dispatch(context.Background(), tu, Options{}, emit,
+	return l.dispatch(context.Background(), tu, Options{}, 0, emit,
 		func(...string) {}, newFailureState())
 }
 
@@ -154,7 +154,7 @@ func TestBackstopLeavesSelfClampedToolsAlone(t *testing.T) {
 	self := strings.Repeat("already trimmed to size\n", 50)
 	l := New(nil, tools.NewRegistry(&clampedTool{content: self, full: strings.Repeat("x\n", 100000)}))
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "SelfClamped", Input: map[string]any{}}
-	blk := l.dispatch(context.Background(), tu, Options{}, nil,
+	blk := l.dispatch(context.Background(), tu, Options{}, 0, nil,
 		func(...string) {}, newFailureState())
 
 	if got := toolResultText(t, blk); got != self {

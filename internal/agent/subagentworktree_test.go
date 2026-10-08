@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -26,7 +27,19 @@ import (
 type relWriteTool struct {
 	rel  string
 	body string
+
+	mu   *sync.Mutex
 	dirs []string // the working directories it was actually handed
+}
+
+// wrote reports the working directories the tool was handed so far. The tool
+// runs on the child's goroutine, and tests poll this from the test goroutine,
+// so the slice is only ever read under the lock. The lock is a pointer because
+// the registry calls the tool's methods by value, which copies the receiver.
+func (w *relWriteTool) wrote() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.dirs...)
 }
 
 func (relWriteTool) Name() string                                { return "Write" }
@@ -42,7 +55,9 @@ func (relWriteTool) CheckPermissions(permission.Context, permission.PermissionRe
 	return permission.Decision{Behavior: permission.Allow}
 }
 func (w *relWriteTool) Execute(_ context.Context, tctx tools.Context, _ json.RawMessage) ([]tools.Result, error) {
+	w.mu.Lock()
 	w.dirs = append(w.dirs, tctx.WorkingDir)
+	w.mu.Unlock()
 	path := filepath.Join(tctx.WorkingDir, w.rel)
 	if err := os.WriteFile(path, []byte(w.body), 0o644); err != nil {
 		return nil, err
@@ -113,22 +128,22 @@ func writingSpawner(t *testing.T, w *relWriteTool, dir string) *Spawner {
 // tree when it finishes, or isolation would just be a way to lose it.
 func TestWritingSubAgentWorksInItsOwnCheckoutAndTheWorkComesBack(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "the child's work\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "the child's work\n"}
 
 	text, err := writingSpawner(t, w, root).WithWorktrees(true).
-		Spawn(context.Background(), "general-purpose", "write it", nil)
+		Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	if len(w.dirs) != 1 {
-		t.Fatalf("tool ran %d times, want 1", len(w.dirs))
+	if len(w.wrote()) != 1 {
+		t.Fatalf("tool ran %d times, want 1", len(w.wrote()))
 	}
-	if w.dirs[0] == root {
+	if w.wrote()[0] == root {
 		t.Fatal("the child wrote straight into the user's tree; nothing was isolated")
 	}
-	if _, err := os.Stat(w.dirs[0]); err == nil {
-		t.Errorf("the checkout at %s outlived the sub-agent", w.dirs[0])
+	if _, err := os.Stat(w.wrote()[0]); err == nil {
+		t.Errorf("the checkout at %s outlived the sub-agent", w.wrote()[0])
 	}
 	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
 	if err != nil {
@@ -156,7 +171,7 @@ func (p *reportProvider) StreamTurn(_ context.Context, _ anthropic.BetaMessageNe
 	if p.n == 1 {
 		return toolUseTurn(p.t, "tu1", "Write", map[string]any{}), nil
 	}
-	text := "wrote " + filepath.Join(p.w.dirs[0], p.w.rel)
+	text := "wrote " + filepath.Join(p.w.wrote()[0], p.w.rel)
 	if sink.OnText != nil {
 		sink.OnText(text)
 	}
@@ -184,15 +199,15 @@ func textTurn(t *testing.T, text string) anthropic.BetaMessage {
 // translated back to the project on the way out.
 func TestSubAgentResultNamesPathsInTheUsersTree(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "x\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 	s := NewSpawner(&reportProvider{t: t, w: w}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 3).WithWorkingDir(root).WithWorktrees(true)
 
-	text, err := s.Spawn(context.Background(), "general-purpose", "write it", nil)
+	text, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if checkout := w.dirs[0]; strings.Contains(text, checkout) {
+	if checkout := w.wrote()[0]; strings.Contains(text, checkout) {
 		t.Errorf("the child's report cites the checkout, which is gone:\n%s", text)
 	}
 	if want := filepath.Join(root, "made.txt"); !strings.Contains(text, want) {
@@ -229,7 +244,7 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 				t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
 			}
 
-			w := &relWriteTool{rel: "made.txt", body: "x\n"}
+			w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 			capture := &captureTool{}
 			reg, toolName := tools.NewRegistry(capture), "Capture"
 			if tt.canWrite {
@@ -240,15 +255,15 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 			}}, reg, "claude-opus-4-8", bypassPerm(), nil, 2).
 				WithWorkingDir(root).WithWorktrees(tt.worktrees)
 
-			if _, err := s.Spawn(context.Background(), "general-purpose", "go", nil); err != nil {
+			if _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
 				t.Fatalf("Spawn: %v", err)
 			}
 			got := capture.got.WorkingDir
 			if tt.canWrite {
-				if len(w.dirs) != 1 {
-					t.Fatalf("tool ran %d times, want 1", len(w.dirs))
+				if len(w.wrote()) != 1 {
+					t.Fatalf("tool ran %d times, want 1", len(w.wrote()))
 				}
-				got = w.dirs[0]
+				got = w.wrote()[0]
 			}
 			if got != root {
 				t.Errorf("child ran in %q, want the project root %q", got, root)
@@ -262,11 +277,11 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 // prevent, so the work is kept and the error says where.
 func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "half-finished\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "half-finished\n"}
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	_, err := s.Spawn(context.Background(), "general-purpose", "go", nil)
+	_, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
 	if err == nil {
 		t.Fatal("expected the provider's error")
 	}
@@ -305,5 +320,87 @@ func TestWritesFiles(t *testing.T) {
 				t.Errorf("writesFiles(%v) = %v, want %v", tt.tools, got, tt.want)
 			}
 		})
+	}
+}
+
+// requestedDirSpec is the test double for the Agent tool's working_dir input:
+// the launching turn's state plus the requested directory childSpecFrom reads.
+type requestedDirSpec struct {
+	workingDir string
+	extraDirs  []string
+	dir        string
+}
+
+func (s requestedDirSpec) ParentApprover() any                      { return nil }
+func (s requestedDirSpec) ParentMode() func() permission.Mode       { return nil }
+func (s requestedDirSpec) ParentModel() string                      { return "" }
+func (s requestedDirSpec) ParentEffort() string                     { return "" }
+func (s requestedDirSpec) ParentThinking() string                   { return "" }
+func (s requestedDirSpec) ParentBeforeEdit() func(string, []string) { return nil }
+func (s requestedDirSpec) ParentExtraDirs() []string                { return s.extraDirs }
+func (s requestedDirSpec) ParentBudget() *float64                   { return nil }
+func (s requestedDirSpec) ParentWorkingDir() string                 { return s.workingDir }
+func (s requestedDirSpec) RequestedWorkingDir() string              { return s.dir }
+
+// A working_dir inside an additional directory is resolved to that repository's
+// toplevel, and both the seed and the adoption happen there rather than in the
+// session's repository. The launch result names the repo, branch and HEAD.
+func TestWorkingDirInsideExtraDirSeedsFromThatRepo(t *testing.T) {
+	rootA := gitRepo(t)
+	rootB := gitRepo(t)
+	nested := filepath.Join(rootB, "sub")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from B\n"}
+
+	text, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{
+			workingDir: rootA, extraDirs: []string{rootB}, dir: nested,
+		}, "general-purpose", "write it", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+
+	if len(w.wrote()) != 1 || w.wrote()[0] == rootA {
+		t.Fatalf("child wrote %v, want a checkout of %s", w.wrote(), rootB)
+	}
+	body, err := os.ReadFile(filepath.Join(rootB, "made.txt"))
+	if err != nil {
+		t.Fatalf("the child's work never reached repo B: %v", err)
+	}
+	if string(body) != "from B\n" {
+		t.Errorf("made.txt in B = %q", body)
+	}
+	if _, err := os.Stat(filepath.Join(rootA, "made.txt")); err == nil {
+		t.Error("repo A received the child's file")
+	}
+	head := gitOut(rootB, "rev-parse", "--short", "HEAD")
+	for _, want := range []string{"Cut from " + rootB, "on master", "at " + head} {
+		if !strings.Contains(text, want) {
+			t.Errorf("launch result missing %q:\n%s", want, text)
+		}
+	}
+}
+
+// A working_dir outside the session's directory and its additional directories
+// is refused before anything is cut, and the refusal says why.
+func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
+	rootA := gitRepo(t)
+	elsewhere := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "nope\n"}
+
+	_, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{
+			workingDir: rootA, dir: elsewhere,
+		}, "general-purpose", "write it", nil)
+	if err == nil {
+		t.Fatal("a working_dir outside the session was accepted")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("error does not say the directory is outside the session: %v", err)
+	}
+	if len(w.wrote()) != 0 {
+		t.Errorf("the child ran anyway: %v", w.wrote())
 	}
 }

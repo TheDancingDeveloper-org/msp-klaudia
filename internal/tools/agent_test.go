@@ -19,7 +19,7 @@ type fakeSpawner struct {
 	bgID               string // returned by SpawnBackground ("" defaults to "agent-1")
 }
 
-func (f *fakeSpawner) Spawn(_ context.Context, subagentType, prompt string, progress func(string)) (string, error) {
+func (f *fakeSpawner) Spawn(_ context.Context, _ any, subagentType, prompt string, progress func(string)) (string, error) {
 	f.gotType, f.gotPrompt, f.gotProgress = subagentType, prompt, progress
 	if progress != nil {
 		progress("Read main.go") // a child tool call, as the real spawner relays
@@ -27,12 +27,12 @@ func (f *fakeSpawner) Spawn(_ context.Context, subagentType, prompt string, prog
 	return f.result, f.err
 }
 
-func (f *fakeSpawner) SpawnBackground(conversation, subagentType, prompt, label string, _ func(string)) (string, error) {
+func (f *fakeSpawner) SpawnBackground(conversation string, _ any, subagentType, prompt, label string, _ func(string)) (string, string, error) {
 	f.bgConversation, f.bgType, f.bgPrompt, f.bgLabel = conversation, subagentType, prompt, label
 	if f.bgID == "" {
-		return "agent-1", nil
+		return "agent-1", "", nil
 	}
-	return f.bgID, nil
+	return f.bgID, "", nil
 }
 
 func newTestAgent(t *testing.T, sp Spawner) *Agent {

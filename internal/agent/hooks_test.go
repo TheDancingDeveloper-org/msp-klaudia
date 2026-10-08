@@ -58,7 +58,7 @@ func dispatchProbe(t *testing.T, probe *hookProbeTool, opts Options, emit Emitte
 	t.Helper()
 	l := New(nil, tools.NewRegistry(probe))
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "Probe", Input: map[string]any{"path": "x.go"}}
-	return l.dispatch(context.Background(), tu, opts, emit, func(...string) {}, newFailureState())
+	return l.dispatch(context.Background(), tu, opts, 0, emit, func(...string) {}, newFailureState())
 }
 
 func TestPreToolUseHookStopsTheCall(t *testing.T) {
@@ -242,7 +242,7 @@ func TestPreToolUseDoesNotSeeARefusedCall(t *testing.T) {
 
 	l := New(nil, tools.NewRegistry(&denyingTool{}))
 	tu := anthropic.BetaToolUseBlock{ID: "t1", Name: "Denied", Input: map[string]any{}}
-	l.dispatch(context.Background(), tu, opts, nil, func(...string) {}, newFailureState())
+	l.dispatch(context.Background(), tu, opts, 0, nil, func(...string) {}, newFailureState())
 
 	if _, err := os.Stat(fired); err == nil {
 		t.Error("a PreToolUse hook ran for a call the permission check had already refused")

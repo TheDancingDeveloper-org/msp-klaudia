@@ -40,7 +40,7 @@ func launch(t *testing.T, provider api.Provider) *agent.BackgroundRegistry {
 	t.Helper()
 	perm := permission.Context{Mode: permission.StaticMode(permission.ModeBypassPermissions)}
 	s := agent.NewSpawner(provider, tools.NewRegistry(), "claude-opus-4-8", perm, nil, 0)
-	if _, err := s.SpawnBackground("", "Explore", "look", "look around", nil); err != nil {
+	if _, _, err := s.SpawnBackground("", nil, "Explore", "look", "look around", nil); err != nil {
 		t.Fatal(err)
 	}
 	return s.Background()
