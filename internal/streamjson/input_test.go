@@ -13,10 +13,11 @@ import (
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
 // A user message's text is taken from string content or from its text blocks;
-// anything else yields no prompt.
+// an image block without a base64 source yields no prompt and no image.
 func TestDecodeUserContent(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw, want string
@@ -28,9 +29,43 @@ func TestDecodeUserContent(t *testing.T) {
 		{"not an object", `"just a string"`, ""},
 		{"missing", ``, ""},
 	} {
-		if got := decodeUserContent(json.RawMessage(tc.raw)); got != tc.want {
-			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		got, imgs := decodeUserContent(json.RawMessage(tc.raw))
+		if got != tc.want || len(imgs) != 0 {
+			t.Errorf("%s: got %q (%d images), want %q and no images", tc.name, got, len(imgs), tc.want)
 		}
+	}
+}
+
+// A base64 image block rides along with the text; an image-only message is a
+// prompt in its own right. A URL source or an unsupported media type is dropped.
+func TestDecodeUserContentImages(t *testing.T) {
+	raw := `{"content":[{"type":"text","text":"see"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}},{"type":"image","source":{"type":"url","url":"https://x/a.png"}},{"type":"image","source":{"type":"base64","media_type":"image/bmp","data":"Qk0"}}]}`
+	got, imgs := decodeUserContent(json.RawMessage(raw))
+	if got != "see" || len(imgs) != 1 || imgs[0].MediaType != "image/png" || imgs[0].Base64 != "iVBOR" {
+		t.Fatalf("got %q %+v, want text %q and one png", got, imgs, "see")
+	}
+	_, only := decodeUserContent(json.RawMessage(`{"content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"zzz"}}]}`))
+	if len(only) != 1 || only[0].MediaType != "image/jpeg" {
+		t.Fatalf("image-only: %+v", only)
+	}
+}
+
+// An image-only user message starts a turn, and its image reaches the loop.
+func TestRunImageOnlyMessage(t *testing.T) {
+	input := `{"type":"user","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}]}}` + "\n"
+	var got []tools.ResultImage
+	runFn := func(_ context.Context, turn agent.Turn) (agent.Result, error) {
+		if turn.Prompt != "" {
+			t.Errorf("prompt = %q, want empty", turn.Prompt)
+		}
+		got = turn.Images
+		return agent.Result{}, nil
+	}
+	if err := NewDriver(&lineSink{}).Run(context.Background(), strings.NewReader(input), runFn); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].MediaType != "image/png" || got[0].Base64 != "iVBOR" {
+		t.Fatalf("images = %+v", got)
 	}
 }
 
