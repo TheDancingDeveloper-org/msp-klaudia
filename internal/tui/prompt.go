@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/lipgloss"
@@ -96,6 +97,9 @@ func newPromptInput() textarea.Model {
 		}
 		return "  "
 	})
+	// Steady, not blinking: a blink is a repaint twice a second for as long as
+	// the prompt waits, which is forever (idle.go). New opts back in.
+	in.Cursor.SetMode(cursor.CursorStatic)
 	in.Focus()
 	return in
 }

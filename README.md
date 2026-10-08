@@ -266,6 +266,23 @@ does not disturb scrollback or selection), the notification fires only while the
 window is unfocused; a terminal that does not report focus is notified either
 way.
 
+### A quiet prompt and a state title
+
+An idle prompt writes nothing to the terminal: the cursor is steady and no timer
+runs while Klaudia waits, so a multiplexer, a remote viewer or a program driving
+Klaudia in a pseudo-terminal sees output stop when the work does. Klaudia also
+sets the terminal title to its state — `klaudia: ready`, `klaudia: working`,
+`klaudia: awaiting approval`, `klaudia: goal-loop` — each time the state
+changes ([docs/embedding.md](docs/embedding.md#the-interactive-tui-in-a-terminal)).
+
+```toml
+[tui]
+cursor = "steady"   # default; "blink" repaints the input twice a second while idle
+title = "on"        # default; "off" leaves the terminal title alone
+```
+
+`KLAUDIA_CURSOR_BLINK=1` (or `0`) overrides `cursor` for one run.
+
 **Klaudia renders inline, not full-screen.** Finished output is printed into
 your terminal's real scrollback and only the input and status bar are redrawn in
 place, so scrolling, drag-to-select, your terminal's own search and tmux copy
@@ -736,6 +753,8 @@ extraHeadersEnv = { "CF-Access-Client-Id" = "CF_ID", "CF-Access-Client-Secret" =
 # "Attention notifications" above.
 # [tui]
 # notify = "bell,osc9"
+# cursor = "blink"   # default "steady": a blinking cursor never lets the terminal go quiet
+# title = "off"      # default "on": the terminal title tracks ready/working/awaiting approval
 ```
 
 Create a commented starter config with `./klaudia --create-config=global` for

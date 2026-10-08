@@ -1982,6 +1982,8 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			PromptHistory:       session.NewPromptHistory(session.PromptHistoryPath(cwd), tui.MaxInputHistory),
 			Notify:              tui.ParseNotify(cfg.TUI.Notify, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			NoTagline:           strings.EqualFold(strings.TrimSpace(cfg.Banner.Tagline), "off"),
+			CursorBlink:         tui.CursorBlinks(cfg.TUI.Cursor, os.Getenv("KLAUDIA_CURSOR_BLINK"), func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
+			NoTitle:             tui.TitleOff(cfg.TUI.Title, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) }),
 			Memory:              memStore,
 			Goal:                restoredGoal,
 			InitialPrompt:       opts.promptInteractive,
@@ -2173,6 +2175,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// Autonomous goal loop: iterate against the spec until complete or capped.
 	if opts.loop {
 		return runGoalLoop(ctx, cmd, loopRun{
+			noTitle:      tui.TitleOff(cfg.TUI.Title, nil),
 			loop:         loop,
 			cwd:          cwd,
 			mode:         mode,

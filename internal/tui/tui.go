@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/stopwatch"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -25,6 +27,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/term"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
@@ -64,6 +67,8 @@ type Session struct {
 	EnterInserts  bool           // Return inserts a newline; alt+Return/ctrl+j submit
 	Notify        NotifyModes    // terminal-attention mechanisms (bell/OSC9/OSC777)
 	NoTagline     bool           // [banner] tagline = "off": no rotating subtitle after the logo
+	CursorBlink   bool           // [tui] cursor = "blink" / KLAUDIA_CURSOR_BLINK: blink the input cursor (default steady; see idle.go)
+	NoTitle       bool           // [tui] title = "off": never set the terminal title (see idle.go)
 	Skills        []SkillCommand // user-defined skills dispatched as /<name>
 
 	// Render-only context for /config and /context (set once at startup).
@@ -584,6 +589,15 @@ type Model struct {
 	// pendingOSC, but kept separate so a queued /copy and a notification in the
 	// same frame don't clobber each other.
 	pendingNotify string
+	// title is the state title last sent to the terminal (idle.go), so it is
+	// sent again only on a transition; titleOut is where it is written — the
+	// program's output, or nil to keep it to the model.
+	title    string
+	titleOut io.Writer
+	// spinning is true while the spinner's tick loop is armed. It runs only
+	// while the running state shows it (idle.go), so an idle prompt has no
+	// timer at all.
+	spinning bool
 	// focused tracks terminal focus when the terminal reports it (DECSET 1004,
 	// enabled by tea.WithReportFocus). focusKnown is false until the first
 	// focus/blur event proves the terminal supports it; while it is false the
@@ -668,6 +682,9 @@ func New(ctx context.Context, run RunFunc, history []anthropic.BetaMessageParam,
 	}
 	in := newPromptInput()
 	in.KeyMap.InsertNewline = newlineBinding(sess.EnterInserts)
+	if sess.CursorBlink {
+		in.Cursor.SetMode(cursor.CursorBlink)
+	}
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -848,7 +865,7 @@ func (m *Model) beginOtherAnswer(seed string) tea.Cmd {
 	}
 	m.input.Focus()
 	m.syncInputHeight()
-	return textarea.Blink
+	return m.blinkCmd()
 }
 
 // updateInput is the single choke point for feeding a key to the textarea while
@@ -916,7 +933,7 @@ func (s *Session) displayModel() string {
 
 func (m *Model) Init() tea.Cmd {
 	// Drain here too: New queued the intro banner before the program started.
-	return tea.Batch(textarea.Blink, m.waitForEvent(), m.out.drainCmd())
+	return tea.Batch(m.blinkCmd(), m.waitForEvent(), m.out.drainCmd())
 }
 
 // waitForEvent yields the next message from the agent goroutine.
@@ -937,6 +954,10 @@ func (m *Model) waitForEvent() tea.Cmd {
 // return can never silently swallow output.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
+	m.syncTitle()
+	if spin := m.syncSpinner(); spin != nil {
+		cmd = tea.Batch(cmd, spin)
+	}
 	if out := m.out.drainCmd(); out != nil {
 		return model, tea.Batch(cmd, out)
 	}
@@ -1150,7 +1171,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.settleState(stateIdle)
 		m.input.Focus()
-		return m, tea.Batch(textarea.Blink, m.waitForEvent(), stopSW)
+		return m, tea.Batch(m.blinkCmd(), m.waitForEvent(), stopSW)
 
 	case modelsMsg:
 		if msg.err != nil {
@@ -1188,9 +1209,15 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.settleState(stateIdle)
 		m.input.Focus()
-		return m, tea.Batch(textarea.Blink, m.waitForEvent())
+		return m, tea.Batch(m.blinkCmd(), m.waitForEvent())
 
 	case spinner.TickMsg:
+		// Off screen, a tick is a wake-up that draws nothing; let the loop
+		// lapse, and syncSpinner re-arms it when the running state returns.
+		if m.state != stateRunning {
+			m.spinning = false
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
@@ -2603,7 +2630,7 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 			newHist, summary, err := m.sess.Compact(m.ctx, hist, focus)
 			m.events <- compactDoneMsg{history: newHist, summary: summary, err: err}
 		}(m.history, focus)
-		return m, m.spin.Tick
+		return m, m.syncSpinner()
 	case "/summary":
 		return m.summaryCommand(args)
 	case "/plan":
@@ -3463,7 +3490,7 @@ func (m *Model) startTurn(prompt string, images []tools.ResultImage) tea.Cmd {
 		res, err := m.run(ctx, turn)
 		m.events <- doneMsg{res: res, err: err}
 	}()
-	return tea.Batch(m.spin.Tick, m.sw.Reset(), m.sw.Start())
+	return tea.Batch(m.sw.Reset(), m.sw.Start()) // the spinner is armed by syncSpinner
 }
 
 func (m *Model) renderEvent(ev agent.Event) {
@@ -4217,7 +4244,13 @@ func Run(ctx context.Context, run RunFunc, history []anthropic.BetaMessageParam,
 	// rendering, scrollback or click-drag selection the way alt-screen and mouse
 	// capture would; a terminal that ignores it simply never sends focus events,
 	// and the notifier then fires regardless (see Model.focusKnown).
-	p := tea.NewProgram(New(ctx, run, history, sess), tea.WithReportFocus())
+	m := New(ctx, run, history, sess)
+	// Titles go to the program's output (tea.NewProgram's default), and only
+	// when that is a terminal. The terminal's own title comes back on exit.
+	out, restoreTitle := StartTitle(os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), sess != nil && sess.NoTitle)
+	m.titleOut = out
+	defer restoreTitle() // deferred, so a panic out of the program still gives the title back
+	p := tea.NewProgram(m, tea.WithReportFocus())
 	defer quietStandardLogger()()
 	_, err := p.Run()
 	return err

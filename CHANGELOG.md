@@ -12,6 +12,22 @@ port mirrors (see `internal/version`).
   turn), which is why the Vogt Klaudia template's brief ended its session after
   one reply. Combining it with `-p`, a positional prompt, `--loop` or an
   embedding input format is a usage error.
+- **A state title for hosts.** The TUI sets the terminal title (OSC 2) to
+  `klaudia: ready`, `klaudia: working`, `klaudia: awaiting approval` or
+  `klaudia: goal-loop` on every change of state, and only then — a stable
+  signal for a program driving Klaudia in a pseudo-terminal
+  (docs/embedding.md). The terminal's own title is saved at start and restored
+  on exit, and nothing is written when the output is not a terminal.
+  `[tui] title = "off"` disables it.
+
+### Fixed
+- **An idle prompt no longer writes to the terminal.** The input cursor blinked,
+  repainting the input box about twice a second for as long as the prompt
+  waited, so a host watching for output to stop never saw it stop and a
+  recorded session grew by megabytes an hour. The cursor is now steady
+  (`[tui] cursor = "blink"` or `KLAUDIA_CURSOR_BLINK=1` restores the blink),
+  and the spinner's tick loop, which also never stopped after the first turn,
+  now runs only while the spinner is on screen.
 
 ### Merged from upstream (greenthread-ai/klaudia 2e644c9, 0fa00a6)
 
