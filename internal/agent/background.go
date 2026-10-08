@@ -48,6 +48,10 @@ type BackgroundAgent struct {
 	// Provenance names the repository, branch and HEAD the child was cut
 	// from ("<repo> on <branch> at <head>"). "" when that is not a repository.
 	Provenance string
+	// Background is false for a foreground child: it blocks the parent turn,
+	// so it is never delivered through TakeFinishedFor, but it is listed and
+	// cancellable like any other child.
+	Background bool
 	// Conversation is the Turn.Conversation of the turn that launched it: the
 	// one conversation its result is delivered to. "" for a frontend with only
 	// one conversation (TUI, stream-json, -p).
@@ -77,7 +81,7 @@ type BackgroundRegistry struct {
 	seq       int
 	byID      map[string]*backgroundEntry
 	order     []string
-	collected map[string]bool // ids whose result has been delivered to the parent
+	delivered map[string]bool // ids whose result has been delivered to the parent
 	clock     func() time.Time
 }
 
@@ -92,7 +96,7 @@ type backgroundEntry struct {
 func NewBackgroundRegistry() *BackgroundRegistry {
 	return &BackgroundRegistry{
 		byID:      map[string]*backgroundEntry{},
-		collected: map[string]bool{},
+		delivered: map[string]bool{},
 		clock:     time.Now,
 	}
 }
@@ -108,7 +112,9 @@ func (r *BackgroundRegistry) now() time.Time {
 // the entry can be stopped later; it may be nil. conversation is the launching
 // turn's Turn.Conversation, which scopes delivery (see TakeFinishedFor).
 // provenance is the one-line repo/branch/HEAD the child was cut from.
-func (r *BackgroundRegistry) register(conversation, subagentType, label string, isolated bool, provenance string, cancel func()) string {
+// background is false for a foreground child, which is tracked but never
+// delivered as a background result.
+func (r *BackgroundRegistry) register(conversation, subagentType, label string, isolated bool, provenance string, background bool, cancel func()) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seq++
@@ -122,6 +128,7 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 			StartedAt:    r.now(),
 			Isolated:     isolated,
 			Provenance:   provenance,
+			Background:   background,
 			Conversation: conversation,
 		},
 		cancel: cancel,
@@ -130,7 +137,14 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 	return id
 }
 
-// setActivity records the child's most recent tool call for the live view.
+// collected marks an agent's result as already delivered, so TakeFinishedFor
+// and Undelivered skip it. A foreground child's result goes back through the
+// tool result, and collecting it here stops it being reported twice.
+func (r *BackgroundRegistry) collected(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.delivered[id] = true
+}
 func (r *BackgroundRegistry) setActivity(id, activity string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -215,8 +229,8 @@ func (r *BackgroundRegistry) TakeFinishedFor(conversation string) []BackgroundAg
 	// Deliver in the order they were launched, for a stable report.
 	for _, id := range r.order {
 		e := r.byID[id]
-		if e.agent.Conversation == conversation && e.agent.Done() && !r.collected[id] {
-			r.collected[id] = true
+		if e.agent.Conversation == conversation && e.agent.Background && e.agent.Done() && !r.delivered[id] {
+			r.delivered[id] = true
 			out = append(out, e.agent)
 		}
 	}
@@ -232,7 +246,7 @@ func (r *BackgroundRegistry) Undelivered(conversation string) (running, ready []
 	defer r.mu.Unlock()
 	for _, id := range r.order {
 		e := r.byID[id]
-		if e.agent.Conversation != conversation || r.collected[id] {
+		if e.agent.Conversation != conversation || !e.agent.Background || r.delivered[id] {
 			continue
 		}
 		if e.agent.Done() {

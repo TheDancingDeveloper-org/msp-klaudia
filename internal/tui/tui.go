@@ -2543,11 +2543,7 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 	case "/config":
 		m.appendLine(bannerStyle.Render(m.renderConfig()))
 	case "/agents":
-		out := m.renderAgents()
-		if bg := m.backgroundAgentsSection(); bg != "" {
-			out += "\n\n" + bg
-		}
-		m.appendLine(bannerStyle.Render(out))
+		m.appendLine(bannerStyle.Render(m.agentsCommand(args)))
 	case "/context":
 		m.appendLine(bannerStyle.Render(m.renderContext()))
 	case "/pin":

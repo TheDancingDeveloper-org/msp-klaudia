@@ -53,6 +53,10 @@ type ChildSpec struct {
 	// child should be cut from, instead of the session's. "" means the
 	// session's. It is validated against WorkingDir and ExtraDirs.
 	RequestedDir string
+	// Conversation is the launching turn's Turn.Conversation, so the child's
+	// registry entry is delivered back to the same conversation. "" for a
+	// frontend with only one.
+	Conversation string
 }
 
 // childSpecFrom reads the launching turn's state off a tools.ParentContext.
@@ -82,6 +86,7 @@ func childSpecFrom(spec any) ChildSpec {
 		ExtraDirs:    pc.ParentExtraDirs(),
 		Budget:       pc.ParentBudget(),
 		WorkingDir:   pc.ParentWorkingDir(),
+		Conversation: pc.ParentConversation(),
 		RequestedDir: requested,
 	}
 }
@@ -266,7 +271,19 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	dir := repo
 	var tree *worktree.Tree
-	if s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir) {
+	isolate := s.isolate && dir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, dir)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	reg := s.Background()
+	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	var childErr error
+	defer func() {
+		// A foreground child is delivered by the tool result, not by the
+		// background poll, so it is marked collected the moment it ends.
+		reg.finish(id, "", childErr)
+		reg.collected(id)
+	}()
+	if isolate {
 		if wt, err := worktree.New(ctx, dir, subagentType); err != nil {
 			reportf(progress, "  (sharing the working tree: %v)", err)
 		} else {
@@ -285,6 +302,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
 	}
 	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, emit)
+	childErr = err
 	if tree == nil {
 		return prov.note(text), usage, err
 	}
@@ -455,7 +473,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 	isolate := s.isolate && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(conversation, subagentType, label, isolate, prov.String(), cancel)
+	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which

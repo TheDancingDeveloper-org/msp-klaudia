@@ -75,8 +75,11 @@ type Options struct {
 	System    string
 	MaxTurns  int   // 0 = unlimited
 	MaxTokens int64 // 0 = model-aware default via api.MaxOutputTokensFor
-	// MaxBudgetUSD stops the run once cumulative cost reaches this many USD,
-	// the same way MaxTurns stops it on turn count. 0 = unlimited. It can only
+	// MaxConcurrent bounds how many Agent launches one turn runs at once. 0 means
+	// the default of 3. Other tools keep their own cap.
+	MaxConcurrent int
+	// MaxBudgetUSD stops the run once cumulative cost reaches this many USD, the
+	// same way MaxTurns stops it on turn count. 0 = unlimited. It can only
 	// fire for a model with a known price (see api.CostUSD); an unpriced model
 	// (e.g. an OpenAI-compatible endpoint) has cost 0 and is never budget-stopped.
 	MaxBudgetUSD float64

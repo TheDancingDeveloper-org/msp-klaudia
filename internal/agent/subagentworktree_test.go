@@ -340,6 +340,7 @@ func (s requestedDirSpec) ParentBeforeEdit() func(string, []string) { return nil
 func (s requestedDirSpec) ParentExtraDirs() []string                { return s.extraDirs }
 func (s requestedDirSpec) ParentBudget() *float64                   { return nil }
 func (s requestedDirSpec) ParentWorkingDir() string                 { return s.workingDir }
+func (s requestedDirSpec) ParentConversation() string               { return "" }
 func (s requestedDirSpec) RequestedWorkingDir() string              { return s.dir }
 
 // A working_dir inside an additional directory is resolved to that repository's

@@ -432,8 +432,8 @@ func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 // as running with a growing elapsed time, finished ones keep their result.
 func TestRegistryListReportsStates(t *testing.T) {
 	r := NewBackgroundRegistry()
-	id1 := r.register("", "Explore", "search", false, "", nil)
-	id2 := r.register("", "general-purpose", "build", true, "", nil)
+	id1 := r.register("", "Explore", "search", false, "", true, nil)
+	id2 := r.register("", "general-purpose", "build", true, "", true, nil)
 
 	r.finish(id1, "found it", nil)
 	r.finish(id2, "", fmt.Errorf("boom"))
@@ -452,7 +452,7 @@ func TestRegistryListReportsStates(t *testing.T) {
 		t.Error("writer should be marked isolated in the listing")
 	}
 	// A still-running agent reports a non-negative elapsed and Done()==false.
-	id3 := r.register("", "Explore", "slow", false, "", nil)
+	id3 := r.register("", "Explore", "slow", false, "", true, nil)
 	if a, _ := r.Get(id3); a.Done() || a.Elapsed() < 0 {
 		t.Errorf("running agent: done=%v elapsed=%v", a.Done(), a.Elapsed())
 	}
@@ -467,7 +467,7 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", nil)
+			id := r.register("", "Explore", fmt.Sprintf("t%d", n), false, "", true, nil)
 			r.setActivity(id, "Read x")
 			r.finish(id, "done", nil)
 		}(i)
@@ -497,8 +497,8 @@ func TestBackgroundRegistryConcurrency(t *testing.T) {
 // that one (#276).
 func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 	r := NewBackgroundRegistry()
-	a := r.register("thread-a", "Explore", "a's search", false, "", nil)
-	b := r.register("thread-b", "Explore", "b's search", false, "", nil)
+	a := r.register("thread-a", "Explore", "a's search", false, "", true, nil)
+	b := r.register("thread-b", "Explore", "b's search", false, "", true, nil)
 	r.finish(a, "found in a", nil)
 	r.finish(b, "found in b", nil)
 
@@ -521,9 +521,9 @@ func TestRegistryDeliversOnlyToLaunchingConversation(t *testing.T) {
 // ones whose result has not been collected yet. Once collected, nothing is left.
 func TestRegistryUndelivered(t *testing.T) {
 	r := NewBackgroundRegistry()
-	slow := r.register("", "Explore", "slow", false, "", nil)
-	fast := r.register("", "Explore", "fast", false, "", nil)
-	_ = r.register("other", "Explore", "elsewhere", false, "", nil)
+	slow := r.register("", "Explore", "slow", false, "", true, nil)
+	fast := r.register("", "Explore", "fast", false, "", true, nil)
+	_ = r.register("other", "Explore", "elsewhere", false, "", true, nil)
 	r.finish(fast, "quick answer", nil)
 
 	running, ready := r.Undelivered("")
@@ -539,5 +539,32 @@ func TestRegistryUndelivered(t *testing.T) {
 	_ = r.PendingReport()
 	if running, ready := r.Undelivered(""); len(running)+len(ready) != 0 {
 		t.Errorf("after delivery: running=%v ready=%v", running, ready)
+	}
+}
+
+// A foreground child is registered while it runs and collected when it returns,
+// so /agents can see it without its result also arriving as a background report.
+func TestForegroundChildIsRegisteredAndCollected(t *testing.T) {
+	dir := t.TempDir()
+	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
+		{StopReason: "end_turn", Content: []anthropic.BetaContentBlockUnion{{Type: "text", Text: "done"}}},
+	}}
+	sp := readOnlySpawner(t, provider, dir, 0)
+	_, _, err := sp.Spawn(context.Background(), nil, "Explore", "look", nil)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	list := sp.Background().List()
+	if len(list) != 1 {
+		t.Fatalf("registry has %d entries, want the foreground child", len(list))
+	}
+	if list[0].Background {
+		t.Error("a foreground child was recorded as background")
+	}
+	if !list[0].Done() {
+		t.Error("the child is still running after Spawn returned")
+	}
+	if got := sp.Background().PendingReport(); got != "" {
+		t.Errorf("the foreground result was also delivered as a background report:\n%s", got)
 	}
 }

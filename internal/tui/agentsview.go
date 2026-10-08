@@ -19,6 +19,11 @@ import (
 // the TUI owning the registry. *agent.BackgroundRegistry satisfies it.
 type BackgroundAgentLister interface {
 	List() []agent.BackgroundAgent
+	// Get returns one agent by id. *agent.BackgroundRegistry satisfies it.
+	Get(id string) (agent.BackgroundAgent, bool)
+	// Cancel stops a running agent. Returns false when the id is unknown or
+	// already finished.
+	Cancel(id string) bool
 }
 
 // renderBackgroundAgents formats the running/finished background sub-agents:
@@ -40,7 +45,7 @@ func renderBackgroundAgents(agents []agent.BackgroundAgent) string {
 	})
 
 	var b strings.Builder
-	b.WriteString("Background sub-agents:")
+	b.WriteString("Sub-agents:")
 	for _, a := range sorted {
 		fmt.Fprintf(&b, "\n  %-9s %-16s %-9s %s",
 			a.ID, a.Type, a.Status, fmtAgentElapsed(a.Elapsed()))
@@ -89,4 +94,72 @@ func (m *Model) backgroundAgentsSection() string {
 		return ""
 	}
 	return renderBackgroundAgents(m.sess.BackgroundAgents.List())
+}
+
+// agentsCommand handles /agents, /agents show <id> and /agents cancel <id>.
+// Bare /agents lists the types and every child, foreground and background.
+func (m *Model) agentsCommand(args []string) string {
+	if len(args) == 0 {
+		out := m.renderAgents()
+		if bg := m.backgroundAgentsSection(); bg != "" {
+			out += "\n\n" + bg
+		}
+		return out
+	}
+	if m.sess == nil || m.sess.BackgroundAgents == nil {
+		return "No sub-agents are tracked in this session."
+	}
+	switch args[0] {
+	case "show":
+		if len(args) < 2 {
+			return "/agents show <id>"
+		}
+		a, ok := m.sess.BackgroundAgents.Get(args[1])
+		if !ok {
+			return "No sub-agent " + args[1]
+		}
+		return renderAgentDetail(a)
+	case "cancel":
+		if len(args) < 2 {
+			return "/agents cancel <id>"
+		}
+		if !m.sess.BackgroundAgents.Cancel(args[1]) {
+			return "Cannot cancel " + args[1] + " (unknown, or already finished)"
+		}
+		return "Cancelling " + args[1]
+	default:
+		return "Unknown /agents command " + args[0] + ". Try /agents show <id> or /agents cancel <id>."
+	}
+}
+
+// renderAgentDetail is the /agents show view: the status line plus the result
+// or the error, which the list truncates.
+func renderAgentDetail(a agent.BackgroundAgent) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s  %s  %s  %s", a.ID, a.Type, a.Status, fmtAgentElapsed(a.Elapsed()))
+	if a.Label != "" {
+		fmt.Fprintf(&b, "  %s", a.Label)
+	}
+	if !a.Background {
+		b.WriteString("\nforeground")
+	}
+	if a.Provenance != "" {
+		fmt.Fprintf(&b, "\ncut from %s", a.Provenance)
+	}
+	switch a.Status {
+	case agent.BackgroundFailed:
+		if a.Err != "" {
+			fmt.Fprintf(&b, "\n\n%s", a.Err)
+		}
+		if a.Result != "" {
+			fmt.Fprintf(&b, "\n\n%s", a.Result)
+		}
+	default:
+		if a.Result != "" {
+			fmt.Fprintf(&b, "\n\n%s", a.Result)
+		} else if a.Activity != "" {
+			fmt.Fprintf(&b, "\n\n… %s", a.Activity)
+		}
+	}
+	return b.String()
 }

@@ -1,5 +1,7 @@
 package tools
 
+import "encoding/json"
+
 // Concurrency safety is opt-in, by implementing ConcurrencySafe.
 //
 // The agent loop runs a batch of tool calls one at a time by default, and that
@@ -28,10 +30,28 @@ type ConcurrencySafe interface {
 	ConcurrencySafe() bool
 }
 
+// ConcurrencySafeFor is the per-call form. A tool implements it when the
+// answer depends on the input: the Agent tool's background launch returns
+// immediately and shares nothing, while its foreground launch blocks the
+// parent and must stay serial. When a tool implements both, this wins.
+type ConcurrencySafeFor interface {
+	ConcurrencySafeFor(input json.RawMessage) bool
+}
+
 // IsConcurrencySafe reports whether t has opted in. The default is false:
 // adding a tool is not meant to require thinking about parallelism, and the
 // cost of forgetting should be a slow batch rather than a race.
 func IsConcurrencySafe(t Tool) bool {
 	cs, ok := t.(ConcurrencySafe)
 	return ok && cs.ConcurrencySafe()
+}
+
+// IsConcurrencySafeFor reports whether this particular call may run alongside
+// its neighbours. A tool that implements ConcurrencySafeFor decides from the
+// input; otherwise the tool-level answer stands.
+func IsConcurrencySafeFor(t Tool, input json.RawMessage) bool {
+	if cs, ok := t.(ConcurrencySafeFor); ok {
+		return cs.ConcurrencySafeFor(input)
+	}
+	return IsConcurrencySafe(t)
 }
