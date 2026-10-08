@@ -64,11 +64,17 @@ type agentWiring struct {
 
 // withAgentTool returns a registry that is the base tools plus the Agent tool,
 // wired to a sub-agent spawner that draws from the base tools.
-func withAgentTool(base *tools.Registry, provider api.Provider, model anthropic.Model, perm permission.Context, approver agent.Approver, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type, worktrees bool) (*agentWiring, error) {
+//
+// The spawner no longer carries the session's approver, model or permission
+// mode. Those are the launching turn's, and they change after wiring (/model,
+// /mode, a frontend's own approver), so the Agent tool captures them per call
+// from tools.Context. What is fixed for the process — the provider, the tool
+// registry, the working dir, the trust gate — still lives here.
+func withAgentTool(base *tools.Registry, provider api.Provider, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type, worktrees bool) (*agentWiring, error) {
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
-	spawner := agent.NewSpawnerWithDeferred(provider, base, model, perm, approver, maxTurns, deferred).
+	spawner := agent.NewSpawnerWithDeferred(provider, base, "", permission.Context{}, nil, maxTurns, deferred).
 		WithWorkingDir(workingDir).
 		WithHostGate(host).
 		WithTypes(types).
@@ -1735,7 +1741,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// do rather than only what failed.
 	approver := agent.HeadlessApprover(opts.allowHostChanges)
 	agentTypes := subagent.Load(cwd, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
-	wiring, err := withAgentTool(base, provider, model, permCtx, approver, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
+	wiring, err := withAgentTool(base, provider, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
 	if err != nil {
 		return err
 	}

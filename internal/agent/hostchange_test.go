@@ -41,7 +41,7 @@ func TestDeclareOnceThenSilence(t *testing.T) {
 	run := func(name string, input any) string {
 		raw, _ := json.Marshal(input)
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: name, Input: json.RawMessage(raw)}
-		return resultText(l.dispatch(context.Background(), tu, opts, nil, nil,
+		return resultText(l.dispatch(context.Background(), tu, opts, 0, nil, nil,
 			newFailureState()))
 	}
 
@@ -106,7 +106,7 @@ func TestDriftAsksAgainAndSaysSo(t *testing.T) {
 	run := func(name string, input any) string {
 		raw, _ := json.Marshal(input)
 		tu := anthropic.BetaToolUseBlock{ID: "t", Name: name, Input: json.RawMessage(raw)}
-		return resultText(l.dispatch(context.Background(), tu, opts, nil, nil,
+		return resultText(l.dispatch(context.Background(), tu, opts, 0, nil, nil,
 			newFailureState()))
 	}
 
@@ -153,7 +153,7 @@ func TestDeclinedDeclarationDoesNotMintAGrant(t *testing.T) {
 	})
 	body := resultText(l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t", Name: "RequestHostChange", Input: json.RawMessage(raw)},
-		opts, nil, nil, newFailureState()))
+		opts, 0, nil, nil, newFailureState()))
 
 	if !strings.Contains(body, "declined") {
 		t.Fatalf("result did not report the decline: %s", body)

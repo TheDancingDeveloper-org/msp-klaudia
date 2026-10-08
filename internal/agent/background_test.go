@@ -55,7 +55,7 @@ func TestSpawnBackgroundReturnsHandleImmediately(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir)
 
-	id, err := s.SpawnBackground("", "Explore", "read it", "read the notes", nil)
+	id, err := s.SpawnBackground("", nil, "Explore", "read it", "read the notes", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 	}}
 	s := backgroundSpawner(t, provider, dir)
 
-	id, err := s.SpawnBackground("", "Explore", "read it", "task", nil)
+	id, err := s.SpawnBackground("", nil, "Explore", "read it", "task", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,10 +108,10 @@ func TestBackgroundResultIsDeliveredOnce(t *testing.T) {
 // lands in the parent tree once it finishes. The checkout does not outlive it.
 func TestBackgroundWriterLandsInParentTree(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "from the background child\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from the background child\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -124,11 +124,11 @@ func TestBackgroundWriterLandsInParentTree(t *testing.T) {
 	if !a.Isolated {
 		t.Error("writer not marked isolated")
 	}
-	if len(w.dirs) != 1 || w.dirs[0] == root {
-		t.Fatalf("tool dirs = %v, want a checkout other than %s", w.dirs, root)
+	if len(w.wrote()) != 1 || w.wrote()[0] == root {
+		t.Fatalf("tool dirs = %v, want a checkout other than %s", w.wrote(), root)
 	}
-	if _, err := os.Stat(w.dirs[0]); err == nil {
-		t.Errorf("the checkout at %s outlived the sub-agent", w.dirs[0])
+	if _, err := os.Stat(w.wrote()[0]); err == nil {
+		t.Errorf("the checkout at %s outlived the sub-agent", w.wrote()[0])
 	}
 	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
 	if err != nil {
@@ -149,16 +149,16 @@ func TestBackgroundWriterKeepsCheckoutOnConflict(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "made.txt"), []byte("parent's version\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := &relWriteTool{rel: "made.txt", body: "child's version\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "child's version\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The child writes into its checkout before adoption. Wait until it has,
 	// then change the parent file so the patch no longer fits.
-	waitFor(t, func() bool { return len(w.dirs) == 1 })
+	waitFor(t, func() bool { return len(w.wrote()) == 1 })
 	if err := os.WriteFile(filepath.Join(root, "made.txt"), []byte("parent moved on\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -168,10 +168,10 @@ func TestBackgroundWriterKeepsCheckoutOnConflict(t *testing.T) {
 	if a.Status != BackgroundSucceeded {
 		t.Fatalf("status = %q, err = %q", a.Status, a.Err)
 	}
-	if !strings.Contains(a.Result, "NOT applied") || !strings.Contains(a.Result, w.dirs[0]) {
+	if !strings.Contains(a.Result, "NOT applied") || !strings.Contains(a.Result, w.wrote()[0]) {
 		t.Errorf("result does not keep and name the checkout:\n%s", a.Result)
 	}
-	if _, err := os.Stat(w.dirs[0]); err != nil {
+	if _, err := os.Stat(w.wrote()[0]); err != nil {
 		t.Errorf("conflict removed the checkout: %v", err)
 	}
 	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
@@ -184,11 +184,11 @@ func TestBackgroundWriterKeepsCheckoutOnConflict(t *testing.T) {
 // outcome isolation exists to prevent. The failure names the checkout.
 func TestBackgroundWriterKeepsCheckoutOnFailure(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "half done\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "half done\n"}
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", "general-purpose", "write it", "rw", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "write it", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,10 +215,10 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	if err := os.WriteFile(blocked, []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	w := &relWriteTool{rel: "made.txt", body: "x\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 	s := writingSpawner(t, w, root).WithWorktrees(true)
 
-	id, err := s.SpawnBackground("", "general-purpose", "write", "rw", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "write", "rw", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,8 +230,8 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	if !strings.Contains(a.Err, "isolate") {
 		t.Errorf("error does not explain the failure: %q", a.Err)
 	}
-	if len(w.dirs) != 0 {
-		t.Errorf("the writer ran in the shared tree: %v", w.dirs)
+	if len(w.wrote()) != 0 {
+		t.Errorf("the writer ran in the shared tree: %v", w.wrote())
 	}
 	if _, err := os.Stat(filepath.Join(root, "made.txt")); err == nil {
 		t.Error("a file landed in the parent tree from a writer that should have failed")
@@ -249,7 +249,7 @@ func TestBackgroundReadOnlySharesTree(t *testing.T) {
 		WithWorkingDir(root).WithWorktrees(true).
 		WithTypes([]subagent.Type{{Name: "Explore", Tools: []string{"Capture"}}})
 
-	id, err := s.SpawnBackground("", "Explore", "look", "ro", nil)
+	id, err := s.SpawnBackground("", nil, "Explore", "look", "ro", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestBackgroundLaunchesCustomType(t *testing.T) {
 	}}, tools.NewRegistry(capture), "claude-opus-4-8", bypassPerm(), nil, 2).
 		WithWorkingDir(dir).WithTypes([]subagent.Type{custom})
 
-	id, err := s.SpawnBackground("", "reviewer", "review it", "custom", nil)
+	id, err := s.SpawnBackground("", nil, "reviewer", "review it", "custom", nil)
 	if err != nil {
 		t.Fatalf("SpawnBackground: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestBackgroundSystemPromptCarriesProjectContext(t *testing.T) {
 	s := NewSpawner(seen, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 1).
 		WithWorkingDir(dir)
 
-	id, err := s.SpawnBackground("", "general-purpose", "go", "ctx", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "go", "ctx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +370,7 @@ func TestBackgroundChildHonoursCommandGuard(t *testing.T) {
 		WithWorkingDir(root).WithWorktrees(false).
 		WithCommandGuard(base.CheckTool)
 
-	id, err := s.SpawnBackground("", "general-purpose", "tidy up", "guard", nil)
+	id, err := s.SpawnBackground("", nil, "general-purpose", "tidy up", "guard", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +396,7 @@ func TestBackgroundProgressIsReported(t *testing.T) {
 
 	var mu sync.Mutex
 	var lines []string
-	id, err := s.SpawnBackground("", "Explore", "read it", "prog", func(line string) {
+	id, err := s.SpawnBackground("", nil, "Explore", "read it", "prog", func(line string) {
 		mu.Lock()
 		lines = append(lines, line)
 		mu.Unlock()
@@ -420,7 +420,7 @@ func TestBackgroundProgressIsReported(t *testing.T) {
 // An unknown type is rejected before anything is registered.
 func TestSpawnBackgroundRejectsUnknownType(t *testing.T) {
 	s := backgroundSpawner(t, &scriptedProvider{}, t.TempDir())
-	if _, err := s.SpawnBackground("", "bogus", "x", "l", nil); err == nil {
+	if _, err := s.SpawnBackground("", nil, "bogus", "x", "l", nil); err == nil {
 		t.Fatal("expected an unknown type to be rejected")
 	}
 	if got := s.Background().List(); len(got) != 0 {

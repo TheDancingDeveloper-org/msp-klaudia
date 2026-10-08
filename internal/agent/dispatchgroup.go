@@ -38,6 +38,7 @@ func (l *Loop) dispatchAll(
 	ctx context.Context,
 	toolUses []anthropic.BetaToolUseBlock,
 	opts Options,
+	spentUSD float64,
 	emit Emitter,
 	reveal func(...string),
 	fs *failureState,
@@ -56,12 +57,12 @@ func (l *Loop) dispatchAll(
 			if msg, ok := preempt(tu); ok {
 				blocks[start] = shortCircuit(emit, tu, msg)
 			} else {
-				blocks[start] = l.dispatch(ctx, tu, opts, emit, reveal, fs)
+				blocks[start] = l.dispatch(ctx, tu, opts, spentUSD, emit, reveal, fs)
 			}
 			start = end
 			continue
 		}
-		l.dispatchGroup(ctx, toolUses[start:end], blocks[start:end], opts, emit, reveal, fs)
+		l.dispatchGroup(ctx, toolUses[start:end], blocks[start:end], opts, spentUSD, emit, reveal, fs)
 		start = end
 	}
 	return blocks
@@ -106,6 +107,7 @@ func (l *Loop) dispatchGroup(
 	group []anthropic.BetaToolUseBlock,
 	out []anthropic.BetaContentBlockParamUnion,
 	opts Options,
+	spentUSD float64,
 	emit Emitter,
 	reveal func(...string),
 	fs *failureState,
@@ -119,7 +121,7 @@ func (l *Loop) dispatchGroup(
 		go func(i int, tu anthropic.BetaToolUseBlock) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			out[i] = l.dispatch(ctx, tu, opts, oe.emitter(i), reveal, fs)
+			out[i] = l.dispatch(ctx, tu, opts, spentUSD, oe.emitter(i), reveal, fs)
 			oe.done(i)
 		}(i, tu)
 	}

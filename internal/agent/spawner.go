@@ -17,6 +17,59 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/worktree"
 )
 
+// ChildSpec is the launching turn's state, captured at the moment the Agent
+// tool fires rather than at process wiring. A child that ran on the wiring-time
+// snapshot could never ask the user, never saw a /mode or /model change, and
+// its edits were invisible to /undo. The zero value means "nothing was
+// captured" and falls back to what the Spawner was built with, which is what
+// every caller that predates the per-call capture still does.
+type ChildSpec struct {
+	// Approver resolves the child's permission asks. Nil falls back to the
+	// Spawner's approver.
+	Approver Approver
+	// Mode is the live permission mode of the launching turn. Nil falls back to
+	// the Spawner's permission context.
+	Mode func() permission.Mode
+	// Model is the launching turn's model id. "" keeps the Spawner's model.
+	Model string
+	// Effort and Thinking are the launching turn's reasoning settings.
+	Effort   string
+	Thinking string
+	// BeforeEdit is the launching turn's pre-edit checkpoint. The child calls
+	// it before its own writes, and adoption calls it with the files it is
+	// about to apply.
+	BeforeEdit func(tool string, paths []string)
+	// ExtraDirs are the session's additional working directories, named in the
+	// child's system prompt.
+	ExtraDirs []string
+	// Budget, when non-nil, bounds the child's own spend in USD. Nil means the
+	// launching turn has no budget, so the child is not bounded by one either.
+	Budget *float64
+}
+
+// childSpecFrom reads the launching turn's state off a tools.ParentContext.
+// nil — a caller that predates the per-call capture — is the zero spec, which
+// falls back to what the Spawner was built with. Anything else that does not
+// implement the interface is the zero spec too: a spec the spawner cannot
+// read is no better than none.
+func childSpecFrom(spec any) ChildSpec {
+	pc, ok := spec.(tools.ParentContext)
+	if !ok || pc == nil {
+		return ChildSpec{}
+	}
+	approver, _ := pc.ParentApprover().(Approver)
+	return ChildSpec{
+		Approver:   approver,
+		Mode:       pc.ParentMode(),
+		Model:      pc.ParentModel(),
+		Effort:     pc.ParentEffort(),
+		Thinking:   pc.ParentThinking(),
+		BeforeEdit: pc.ParentBeforeEdit(),
+		ExtraDirs:  pc.ParentExtraDirs(),
+		Budget:     pc.ParentBudget(),
+	}
+}
+
 // Spawner runs sub-agents. It implements tools.Spawner so the Agent tool can
 // launch a child loop with a filtered toolset and the type's system prompt.
 type Spawner struct {
@@ -172,7 +225,13 @@ const defaultSubagentMaxTurns = 50
 //
 // progress, when non-nil, receives a short line per child tool call. Passing
 // nil (as headless callers do) restores the previous silent behaviour.
-func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progress func(string)) (string, error) {
+func (s *Spawner) Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(string)) (string, error) {
+	return s.spawn(ctx, childSpecFrom(spec), subagentType, prompt, progress)
+}
+
+// spawn is Spawn with the spec already converted. The exported signature takes
+// an any because tools.Spawner cannot name ChildSpec (agent imports tools).
+func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, prompt string, progress func(string)) (string, error) {
 	types := s.types
 	if len(types) == 0 {
 		types = subagent.Builtin()
@@ -183,7 +242,7 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 	}
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
-	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir)
+	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
 	// A child that can write gets a checkout of its own, seeded with the
 	// user's uncommitted work and adopted back when it finishes: two writers in
@@ -209,7 +268,7 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 	if progress != nil {
 		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
 	}
-	text, err := s.runChild(ctx, t, prompt, dir, emit)
+	text, err := s.runChild(ctx, spec, t, prompt, dir, emit)
 	if tree == nil {
 		return text, err
 	}
@@ -220,7 +279,7 @@ func (s *Spawner) Spawn(ctx context.Context, subagentType, prompt string, progre
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
-	return s.collect(done, tree, tree.Rewrite(text), progress), nil
+	return s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress), nil
 }
 
 // progressEmitter adapts a per-line progress callback into a child Emitter.
@@ -239,9 +298,28 @@ func progressEmitter(progress func(string)) Emitter {
 // runChild runs one sub-agent loop to completion in workingDir and returns its
 // final text, applying the shared turn/context bounds. It is the single body
 // both the synchronous Spawn and the background goroutine drive.
-func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, workingDir string, emit Emitter) (string, error) {
+func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir string, emit Emitter) (string, error) {
 	childTools := subagentTools(t.Filter(s.base))
 	model := subagentModel(s.model, t.Model)
+	if spec.Model != "" {
+		// The launching turn's model wins over the wiring-time one: /model
+		// between startup and this launch has to reach the child. A type that
+		// names its own model still wins over both.
+		model = subagentModel(anthropic.Model(spec.Model), t.Model)
+	}
+
+	perm := s.permission
+	if spec.Mode != nil {
+		perm = permission.Context{Mode: spec.Mode}
+	}
+	approver := s.approver
+	if spec.Approver != nil {
+		approver = spec.Approver
+	}
+	var budget float64
+	if spec.Budget != nil {
+		budget = *spec.Budget
+	}
 
 	maxTurns := s.maxTurns
 	if maxTurns <= 0 {
@@ -259,10 +337,14 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 		Model:         model,
 		System:        t.SystemPrompt,
 		MaxTurns:      maxTurns,
-		Permission:    s.permission,
+		MaxBudgetUSD:  budget,
+		Permission:    perm,
 		Host:          s.hostGate,
 		WorkingDir:    workingDir,
-		Approver:      s.approver,
+		Approver:      approver,
+		BeforeEdit:    spec.BeforeEdit,
+		Effort:        spec.Effort,
+		Thinking:      spec.Thinking,
 		ContextWindow: ctxWindow,
 		ProviderName:  s.providerName,
 		DeferredTools: filterDeferred(s.deferred(), childTools),
@@ -307,7 +389,11 @@ func (s *Spawner) runChild(ctx context.Context, t subagent.Type, prompt, working
 // The child runs on a context detached from the parent turn — it must outlive
 // the turn that started it — so its cancellation is tracked in the registry
 // (Cancel) rather than tied to ctx.
-func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label string, progress func(string)) (string, error) {
+func (s *Spawner) SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(string)) (string, error) {
+	return s.spawnBackground(conversation, childSpecFrom(spec), subagentType, prompt, label, progress)
+}
+
+func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentType, prompt, label string, progress func(string)) (string, error) {
 	types := s.types
 	if len(types) == 0 {
 		types = subagent.Builtin()
@@ -318,7 +404,7 @@ func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label stri
 	}
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
-	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir)
+	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
 
 	reg := s.Background()
 	isolate := s.isolate && s.workingDir != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), s.workingDir)
@@ -352,7 +438,7 @@ func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label stri
 			tree, workingDir = wt, wt.Dir
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
-		result, err := s.runChild(ctx, t, prompt, workingDir, emit)
+		result, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
 		if tree == nil {
 			reg.finish(id, result, err)
 			return
@@ -365,7 +451,7 @@ func (s *Spawner) SpawnBackground(conversation, subagentType, prompt, label stri
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
 		defer stop()
-		reg.finish(id, s.collect(done, tree, tree.Rewrite(result), progress), nil)
+		reg.finish(id, s.collect(done, tree, tree.Rewrite(result), spec.BeforeEdit, progress), nil)
 	}()
 
 	return id, nil
@@ -383,12 +469,18 @@ const worktreeCleanupTimeout = 2 * time.Minute
 // The model is told because it has to be: it asked a child to change files, and
 // "b.txt was not applied" changes what it should do next. A silent conflict
 // would have it carry on describing work that is not in the tree.
-func (s *Spawner) collect(ctx context.Context, tree *worktree.Tree, text string, progress func(string)) string {
+func (s *Spawner) collect(ctx context.Context, tree *worktree.Tree, text string, beforeEdit func(string, []string), progress func(string)) string {
 	rep, err := tree.Adopt(ctx)
 	if err != nil {
 		reportf(progress, "  (could not apply the sub-agent's changes: %v)", err)
 		return text + fmt.Sprintf("\n\n[The sub-agent's file changes could not be applied to the "+
 			"working tree (%v). They are in %s.]", err, tree.Dir)
+	}
+	if beforeEdit != nil && len(rep.Adopted) > 0 {
+		// Adoption applies the child's diff in one shot, so there is no moment
+		// before each file to snapshot — but the files still have to be reported,
+		// or a child's edits stay invisible to /undo, /changes and /commit.
+		beforeEdit("Agent", rep.Adopted)
 	}
 	if len(rep.Conflicted) > 0 {
 		// The conflicting version exists only in the checkout, so removing it

@@ -151,11 +151,11 @@ func TestLSPToolsValidateInput(t *testing.T) {
 
 type failingSpawner struct{}
 
-func (failingSpawner) Spawn(context.Context, string, string, func(string)) (string, error) {
+func (failingSpawner) Spawn(context.Context, any, string, string, func(string)) (string, error) {
 	return "", errors.New("model unavailable")
 }
 
-func (failingSpawner) SpawnBackground(string, string, string, string, func(string)) (string, error) {
+func (failingSpawner) SpawnBackground(string, any, string, string, string, func(string)) (string, error) {
 	return "", errors.New("model unavailable")
 }
 

@@ -31,7 +31,7 @@ func TestHeadlessRunsProjectWork(t *testing.T) {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		l.dispatch(context.Background(),
 			anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(raw)},
-			opts, nil, nil, newFailureState())
+			opts, 0, nil, nil, newFailureState())
 	}
 	if len(bash.ran) != 3 {
 		t.Fatalf("headless refused ordinary work: ran %v", bash.ran)
@@ -63,7 +63,7 @@ func TestHeadlessRefusesHostChangesAndNamesTheFlag(t *testing.T) {
 	})
 	body := resultText(l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t", Name: "RequestHostChange", Input: json.RawMessage(raw)},
-		opts, nil, nil, newFailureState()))
+		opts, 0, nil, nil, newFailureState()))
 
 	if !strings.Contains(body, "--allow-host-changes") {
 		t.Errorf("the refusal does not name the flag that would permit it: %s", body)
@@ -76,7 +76,7 @@ func TestHeadlessRefusesHostChangesAndNamesTheFlag(t *testing.T) {
 	cmdRaw, _ := json.Marshal(map[string]string{"command": "sudo apt-get install -y nginx"})
 	l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t2", Name: "Bash", Input: json.RawMessage(cmdRaw)},
-		opts, nil, nil, newFailureState())
+		opts, 0, nil, nil, newFailureState())
 	if len(bash.ran) != 0 {
 		t.Fatalf("the host change ran anyway: %v", bash.ran)
 	}
@@ -103,7 +103,7 @@ func TestAllowHostChangesPermitsThem(t *testing.T) {
 	})
 	body := resultText(l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t", Name: "RequestHostChange", Input: json.RawMessage(raw)},
-		opts, nil, nil, newFailureState()))
+		opts, 0, nil, nil, newFailureState()))
 	if !strings.Contains(body, "Approved") {
 		t.Fatalf("--allow-host-changes did not approve: %s", body)
 	}
@@ -111,7 +111,7 @@ func TestAllowHostChangesPermitsThem(t *testing.T) {
 	cmdRaw, _ := json.Marshal(map[string]string{"command": "sudo apt-get install -y nginx"})
 	l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t2", Name: "Bash", Input: json.RawMessage(cmdRaw)},
-		opts, nil, nil, newFailureState())
+		opts, 0, nil, nil, newFailureState())
 	if len(bash.ran) != 1 {
 		t.Fatalf("the approved install did not run: %v", bash.ran)
 	}
@@ -137,12 +137,12 @@ func TestAllowHostChangesStillScopesToTheDeclaration(t *testing.T) {
 	})
 	l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t", Name: "RequestHostChange", Input: json.RawMessage(raw)},
-		opts, nil, nil, newFailureState())
+		opts, 0, nil, nil, newFailureState())
 
 	cmdRaw, _ := json.Marshal(map[string]string{"command": "sudo reboot"})
 	body := resultText(l.dispatch(context.Background(),
 		anthropic.BetaToolUseBlock{ID: "t2", Name: "Bash", Input: json.RawMessage(cmdRaw)},
-		opts, nil, nil, newFailureState()))
+		opts, 0, nil, nil, newFailureState()))
 	if !strings.Contains(body, "RequestHostChange") {
 		t.Errorf("an undeclared reboot was not stopped: %s", body)
 	}

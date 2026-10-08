@@ -118,6 +118,41 @@ type Context struct {
 	// launch with it so the result is delivered back to the same conversation;
 	// "" is the only conversation of every other frontend.
 	Conversation string
+
+	// The fields below are the launching turn's own state, captured so a child
+	// the Agent tool starts runs as the session is *now* rather than as it was
+	// when the process was wired. A child that kept the wiring-time approver
+	// could never ask the user anything, and one that kept the startup model
+	// ignored every /model and /mode change since. Only the Agent tool reads
+	// them; every other tool ignores them.
+	//
+	// Approver resolves a child's permission asks. It is an `any` because the
+	// approver type lives in agent, which imports this package — the concrete
+	// value is an agent.Approver, and the Agent tool type-asserts it.
+	Approver any
+	// Mode is the live permission mode function of the launching turn. A child
+	// holds the function, not a snapshot of its value, so a /mode change
+	// mid-run reaches the child too.
+	Mode func() permission.Mode
+	// Model is the launching turn's model id. "" means the caller did not
+	// know one, and the child keeps whatever model it was wired with.
+	Model string
+	// Effort and Thinking are the launching turn's reasoning settings
+	// (Options.Effort, Options.Thinking). "" means "send none".
+	Effort   string
+	Thinking string
+	// BeforeEdit is the launching turn's pre-edit checkpoint hook. A child
+	// that shares the parent's tree calls it before its own writes, and
+	// adoption of an isolated checkout calls it with the files it is about to
+	// apply, so a child's edits are visible to /undo the way the parent's are.
+	BeforeEdit func(tool string, paths []string)
+	// ExtraDirs are the session's additional working directories, so a child's
+	// prompt can name them the way the parent's does.
+	ExtraDirs []string
+	// Budget, when non-nil, is what is left of the launching turn's budget in
+	// USD after the parent's own spend so far. Nil means the turn has no
+	// budget; a pointer at 0 means it is already spent.
+	Budget *float64
 }
 
 // Tool is the contract implemented by every local tool (Read, Write, Bash, …).

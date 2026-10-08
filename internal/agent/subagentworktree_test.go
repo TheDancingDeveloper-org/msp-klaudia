@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -26,7 +27,19 @@ import (
 type relWriteTool struct {
 	rel  string
 	body string
+
+	mu   *sync.Mutex
 	dirs []string // the working directories it was actually handed
+}
+
+// wrote reports the working directories the tool was handed so far. The tool
+// runs on the child's goroutine, and tests poll this from the test goroutine,
+// so the slice is only ever read under the lock. The lock is a pointer because
+// the registry calls the tool's methods by value, which copies the receiver.
+func (w *relWriteTool) wrote() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.dirs...)
 }
 
 func (relWriteTool) Name() string                                { return "Write" }
@@ -42,7 +55,9 @@ func (relWriteTool) CheckPermissions(permission.Context, permission.PermissionRe
 	return permission.Decision{Behavior: permission.Allow}
 }
 func (w *relWriteTool) Execute(_ context.Context, tctx tools.Context, _ json.RawMessage) ([]tools.Result, error) {
+	w.mu.Lock()
 	w.dirs = append(w.dirs, tctx.WorkingDir)
+	w.mu.Unlock()
 	path := filepath.Join(tctx.WorkingDir, w.rel)
 	if err := os.WriteFile(path, []byte(w.body), 0o644); err != nil {
 		return nil, err
@@ -113,22 +128,22 @@ func writingSpawner(t *testing.T, w *relWriteTool, dir string) *Spawner {
 // tree when it finishes, or isolation would just be a way to lose it.
 func TestWritingSubAgentWorksInItsOwnCheckoutAndTheWorkComesBack(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "the child's work\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "the child's work\n"}
 
 	text, err := writingSpawner(t, w, root).WithWorktrees(true).
-		Spawn(context.Background(), "general-purpose", "write it", nil)
+		Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
 
-	if len(w.dirs) != 1 {
-		t.Fatalf("tool ran %d times, want 1", len(w.dirs))
+	if len(w.wrote()) != 1 {
+		t.Fatalf("tool ran %d times, want 1", len(w.wrote()))
 	}
-	if w.dirs[0] == root {
+	if w.wrote()[0] == root {
 		t.Fatal("the child wrote straight into the user's tree; nothing was isolated")
 	}
-	if _, err := os.Stat(w.dirs[0]); err == nil {
-		t.Errorf("the checkout at %s outlived the sub-agent", w.dirs[0])
+	if _, err := os.Stat(w.wrote()[0]); err == nil {
+		t.Errorf("the checkout at %s outlived the sub-agent", w.wrote()[0])
 	}
 	body, err := os.ReadFile(filepath.Join(root, "made.txt"))
 	if err != nil {
@@ -156,7 +171,7 @@ func (p *reportProvider) StreamTurn(_ context.Context, _ anthropic.BetaMessageNe
 	if p.n == 1 {
 		return toolUseTurn(p.t, "tu1", "Write", map[string]any{}), nil
 	}
-	text := "wrote " + filepath.Join(p.w.dirs[0], p.w.rel)
+	text := "wrote " + filepath.Join(p.w.wrote()[0], p.w.rel)
 	if sink.OnText != nil {
 		sink.OnText(text)
 	}
@@ -184,15 +199,15 @@ func textTurn(t *testing.T, text string) anthropic.BetaMessage {
 // translated back to the project on the way out.
 func TestSubAgentResultNamesPathsInTheUsersTree(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "x\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 	s := NewSpawner(&reportProvider{t: t, w: w}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 3).WithWorkingDir(root).WithWorktrees(true)
 
-	text, err := s.Spawn(context.Background(), "general-purpose", "write it", nil)
+	text, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
-	if checkout := w.dirs[0]; strings.Contains(text, checkout) {
+	if checkout := w.wrote()[0]; strings.Contains(text, checkout) {
 		t.Errorf("the child's report cites the checkout, which is gone:\n%s", text)
 	}
 	if want := filepath.Join(root, "made.txt"); !strings.Contains(text, want) {
@@ -229,7 +244,7 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 				t.Setenv("KLAUDIA_CONFIG_DIR", t.TempDir())
 			}
 
-			w := &relWriteTool{rel: "made.txt", body: "x\n"}
+			w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "x\n"}
 			capture := &captureTool{}
 			reg, toolName := tools.NewRegistry(capture), "Capture"
 			if tt.canWrite {
@@ -240,15 +255,15 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 			}}, reg, "claude-opus-4-8", bypassPerm(), nil, 2).
 				WithWorkingDir(root).WithWorktrees(tt.worktrees)
 
-			if _, err := s.Spawn(context.Background(), "general-purpose", "go", nil); err != nil {
+			if _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
 				t.Fatalf("Spawn: %v", err)
 			}
 			got := capture.got.WorkingDir
 			if tt.canWrite {
-				if len(w.dirs) != 1 {
-					t.Fatalf("tool ran %d times, want 1", len(w.dirs))
+				if len(w.wrote()) != 1 {
+					t.Fatalf("tool ran %d times, want 1", len(w.wrote()))
 				}
-				got = w.dirs[0]
+				got = w.wrote()[0]
 			}
 			if got != root {
 				t.Errorf("child ran in %q, want the project root %q", got, root)
@@ -262,11 +277,11 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 // prevent, so the work is kept and the error says where.
 func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	root := gitRepo(t)
-	w := &relWriteTool{rel: "made.txt", body: "half-finished\n"}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "half-finished\n"}
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	_, err := s.Spawn(context.Background(), "general-purpose", "go", nil)
+	_, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
 	if err == nil {
 		t.Fatal("expected the provider's error")
 	}

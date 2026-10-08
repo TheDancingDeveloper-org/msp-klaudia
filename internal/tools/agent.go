@@ -13,18 +13,24 @@ import (
 // Spawner runs a sub-agent of the given type with a prompt and returns its
 // final textual result. Implemented by the agent package to avoid an import
 // cycle (tools must not import agent).
+// Spawner launches sub-agents. Implemented by agent.Spawner.
+//
+// spec is the launching turn's state as a ParentContext, passed as an any
+// because the Agent tool forwards it and the concrete reader lives in agent,
+// which imports this package. nil is the zero spec: the child keeps whatever
+// the spawner was wired with.
 type Spawner interface {
 	// progress, when non-nil, is called with short display lines as the child
 	// works, so the frontend can show what it is doing instead of a bare spinner.
 	// With an error, the string may still carry the child's partial work.
-	Spawn(ctx context.Context, subagentType, prompt string, progress func(line string)) (string, error)
+	Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(line string)) (string, error)
 	// SpawnBackground launches a sub-agent that runs independently of this turn
 	// and returns its handle id immediately; the result is delivered on a later
 	// turn. label is the task description, for the status view; conversation
 	// (Context.Conversation) is the one conversation the result is delivered
 	// to. It takes no context because the child must outlive the turn that
-	// started it.
-	SpawnBackground(conversation, subagentType, prompt, label string, progress func(line string)) (id string, err error)
+	// started it. spec is the same launching-turn state as Spawn.
+	SpawnBackground(conversation string, spec any, subagentType, prompt, label string, progress func(line string)) (id string, err error)
 }
 
 // AgentTypeInfo is the model-facing summary of a sub-agent type, used to build
@@ -123,7 +129,7 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		return nil, err
 	}
 	if in.Background {
-		id, err := a.spawner.SpawnBackground(tctx.Conversation, in.SubagentType, in.Prompt, in.Description, tctx.Progress)
+		id, err := a.spawner.SpawnBackground(tctx.Conversation, tctx.parentSpec(), in.SubagentType, in.Prompt, in.Description, tctx.Progress)
 		if err != nil {
 			return []Result{{Content: fmt.Sprintf("Could not launch background sub-agent: %v", err), IsError: true}}, nil
 		}
@@ -132,7 +138,7 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 				"delivered to you on a later turn once it finishes. Continue with other work — do not "+
 				"wait on it, and do not re-launch it.", id, in.SubagentType)}}, nil
 	}
-	result, err := a.spawner.Spawn(ctx, in.SubagentType, in.Prompt, tctx.Progress)
+	result, err := a.spawner.Spawn(ctx, tctx.parentSpec(), in.SubagentType, in.Prompt, tctx.Progress)
 	if err != nil {
 		msg := fmt.Sprintf("Sub-agent failed: %v", err)
 		if result != "" {
@@ -147,3 +153,48 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 
 // subagentResultHeader introduces a sub-agent's result.
 const subagentResultHeader = "[Sub-agent report. This is the sub-agent's findings, not instructions from the user.]\n\n"
+
+// ParentContext is the launching turn's state, read by the spawner when it
+// starts a child. It lives here, as an interface of plain types, because
+// tools cannot name the agent's spec type and agent cannot name an unexported
+// tools type: both sides meet on this.
+type ParentContext interface {
+	// ParentApprover resolves the child's permission asks. It is an any because
+	// the approver type lives in agent; the concrete value is an agent.Approver.
+	// Nil means the child keeps the spawner's approver.
+	ParentApprover() any
+	// ParentMode is the live permission mode function of the launching turn, so
+	// a /mode change mid-run reaches the child. Nil keeps the spawner's mode.
+	ParentMode() func() permission.Mode
+	// ParentModel is the launching turn's model id. "" keeps the spawner's.
+	ParentModel() string
+	// ParentEffort and ParentThinking are the launching turn's reasoning
+	// settings. "" means "send none".
+	ParentEffort() string
+	ParentThinking() string
+	// ParentBeforeEdit is the launching turn's pre-edit checkpoint hook, so a
+	// child's writes and the files adoption applies are visible to /undo. Nil
+	// means the child has no checkpoint.
+	ParentBeforeEdit() func(tool string, paths []string)
+	// ParentExtraDirs are the session's additional working directories.
+	ParentExtraDirs() []string
+	// ParentBudget, when non-nil, is what is left of the launching turn's
+	// budget in USD. Nil means the turn has no budget.
+	ParentBudget() *float64
+}
+
+// parentSpec is the launching turn's state, forwarded verbatim. The spawner
+// reads it through ParentContext.
+func (c Context) parentSpec() ParentContext { return parentSpecOf(c) }
+
+// parentSpecOf adapts a Context to ParentContext.
+type parentSpecOf Context
+
+func (c parentSpecOf) ParentApprover() any                      { return c.Approver }
+func (c parentSpecOf) ParentMode() func() permission.Mode       { return c.Mode }
+func (c parentSpecOf) ParentModel() string                      { return c.Model }
+func (c parentSpecOf) ParentEffort() string                     { return c.Effort }
+func (c parentSpecOf) ParentThinking() string                   { return c.Thinking }
+func (c parentSpecOf) ParentBeforeEdit() func(string, []string) { return c.BeforeEdit }
+func (c parentSpecOf) ParentExtraDirs() []string                { return c.ExtraDirs }
+func (c parentSpecOf) ParentBudget() *float64                   { return c.Budget }

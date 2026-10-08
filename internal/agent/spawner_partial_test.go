@@ -42,7 +42,7 @@ func TestSpawnFailureKeepsPartialWork(t *testing.T) {
 	}
 	provider := &textThenFailProvider{turn: turn}
 
-	got, err := readOnlySpawner(t, provider, dir, 0).Spawn(context.Background(), "Explore", "find the config", nil)
+	got, err := readOnlySpawner(t, provider, dir, 0).Spawn(context.Background(), nil, "Explore", "find the config", nil)
 	if err == nil {
 		t.Fatal("want the child's error returned")
 	}

@@ -31,7 +31,7 @@ func TestShapeStreakDoesNotLatchTheTool(t *testing.T) {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		out := l.dispatch(context.Background(),
 			anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(raw)},
-			opts, nil, nil, fs)
+			opts, 0, nil, nil, fs)
 		return resultText(out)
 	}
 
@@ -75,7 +75,7 @@ func TestShapeStreakRefiresAfterMoreFailures(t *testing.T) {
 		raw, _ := json.Marshal(map[string]string{"command": cmd})
 		return resultText(l.dispatch(context.Background(),
 			anthropic.BetaToolUseBlock{ID: "t", Name: "Bash", Input: json.RawMessage(raw)},
-			opts, nil, nil, fs))
+			opts, 0, nil, nil, fs))
 	}
 
 	run("a")

@@ -138,7 +138,7 @@ func noPreempt(anthropic.BetaToolUseBlock) (string, bool) { return "", false }
 func runBatch(t *testing.T, reg *tools.Registry, opts Options, emit Emitter, names ...string) []string {
 	t.Helper()
 	l := New(nil, reg)
-	blocks := l.dispatchAll(context.Background(), callsTo(names...), opts, emit,
+	blocks := l.dispatchAll(context.Background(), callsTo(names...), opts, 0, emit,
 		func(...string) {}, newFailureState(), noPreempt)
 	got := make([]string, len(blocks))
 	for i, b := range blocks {
@@ -367,7 +367,7 @@ func TestGroupedFailuresDoNotRaceTheCounters(t *testing.T) {
 	for i := range names {
 		names[i] = "Peek"
 	}
-	blocks := l.dispatchAll(context.Background(), callsTo(names...), Options{}, nil,
+	blocks := l.dispatchAll(context.Background(), callsTo(names...), Options{}, 0, nil,
 		func(...string) {}, fs, noPreempt)
 
 	ran, refused := 0, 0
@@ -404,7 +404,7 @@ func TestATruncatedCallIsNotGrouped(t *testing.T) {
 		}
 		return "", false
 	}
-	blocks := l.dispatchAll(context.Background(), calls, Options{}, nil,
+	blocks := l.dispatchAll(context.Background(), calls, Options{}, 0, nil,
 		func(...string) {}, newFailureState(), preempt)
 
 	if got := toolResultText(t, blocks[1]); got != "cut off" {

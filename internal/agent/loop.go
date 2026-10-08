@@ -158,6 +158,10 @@ type Options struct {
 	// adjusted per model by api.ApplyReasoning.
 	Effort   string
 	Thinking string
+	// ExtraDirs are the session's additional working directories. They ride
+	// here so a child the Agent tool launches can be told about them; the
+	// parent's own prompt already carries them (cli.withExtraDirs).
+	ExtraDirs []string
 	// ProviderName is the configured provider ("" = anthropic). The
 	// model-aware MaxTokens default comes from Claude's table only on
 	// Anthropic; any other provider gets the conservative unknown-model cap.
@@ -584,7 +588,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			}
 			return "", false
 		}
-		resultBlocks := l.dispatchAll(ctx, toolUses, opts, emit, reveal, fs, preempt)
+		resultBlocks := l.dispatchAll(ctx, toolUses, opts, res.CostUSD, emit, reveal, fs, preempt)
 		// The aggregate cap, after the per-result one. Results that each pass
 		// the 30 KB budget still add up, and a turn is not limited to a few
 		// calls; see batchcap.go.
@@ -1036,6 +1040,19 @@ func truncatedToolNote(maxTokens int64) string {
 		"then continue.", maxTokens)
 }
 
+// budgetLeft is what a child launched during this dispatch may still spend.
+// Nil means the turn has no budget, so the child is not bounded by one either.
+func budgetLeft(opts Options, spentUSD float64) *float64 {
+	if opts.MaxBudgetUSD <= 0 {
+		return nil
+	}
+	left := opts.MaxBudgetUSD - spentUSD
+	if left < 0 {
+		left = 0
+	}
+	return &left
+}
+
 func shortCircuit(emit Emitter, tu anthropic.BetaToolUseBlock, msg string) anthropic.BetaContentBlockParamUnion {
 	if emit != nil {
 		emit(Event{Type: "tool_result", ToolName: tu.Name, ToolUseID: tu.ID, Content: msg, IsError: true})
@@ -1043,7 +1060,7 @@ func shortCircuit(emit Emitter, tu anthropic.BetaToolUseBlock, msg string) anthr
 	return anthropic.NewBetaToolResultBlock(tu.ID, msg, true)
 }
 
-func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts Options, emit Emitter, reveal func(...string), fs *failureState) anthropic.BetaContentBlockParamUnion {
+func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts Options, spentUSD float64, emit Emitter, reveal func(...string), fs *failureState) anthropic.BetaContentBlockParamUnion {
 	raw, _ := json.Marshal(tu.Input)
 	if emit != nil {
 		emit(Event{Type: "tool_use", ToolName: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
@@ -1249,6 +1266,14 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		ReadText:     opts.ReadText,
 		Diagnostics:  opts.Diagnostics,
 		Conversation: opts.Conversation,
+		Approver:     opts.Approver,
+		Mode:         opts.Permission.Mode,
+		Model:        string(opts.Model),
+		Effort:       opts.Effort,
+		Thinking:     opts.Thinking,
+		BeforeEdit:   opts.BeforeEdit,
+		ExtraDirs:    opts.ExtraDirs,
+		Budget:       budgetLeft(opts, spentUSD),
 	}, raw)
 	if err != nil {
 		return errResult(fmt.Sprintf("Tool execution error: %v", err))

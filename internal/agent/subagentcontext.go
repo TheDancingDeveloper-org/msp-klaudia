@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/greenthread-ai/klaudia/internal/prompt"
@@ -9,10 +10,18 @@ import (
 )
 
 // subagentSystem is a sub-agent's system prompt: its type's prompt followed by
-// the environment and project context (see prompt.Subagent). A function here
-// rather than a call in Spawn, whose prompt parameter shadows the package.
-func subagentSystem(typePrompt, workingDir string) string {
-	return prompt.Subagent(typePrompt, workingDir)
+// the environment and project context (see prompt.Subagent). extraDirs names
+// the session's additional working directories, which the parent's prompt
+// carries (cli.withExtraDirs) and a child would otherwise never hear about. A
+// function here rather than a call in Spawn, whose prompt parameter shadows
+// the package.
+func subagentSystem(typePrompt, workingDir string, extraDirs []string) string {
+	sys := prompt.Subagent(typePrompt, workingDir)
+	if len(extraDirs) == 0 {
+		return sys
+	}
+	return sys + "\n\nAdditional working directories the user has made available:\n- " +
+		strings.Join(extraDirs, "\n- ")
 }
 
 // subagentTools adjusts a sub-agent's filtered registry for a child that runs
