@@ -805,6 +805,21 @@ func (d *Driver) resultEvent(res agent.Result, err error, dur time.Duration, int
 			"cache_creation_input_tokens": res.CacheCreationInputTokens,
 		},
 	}
+	if len(res.Children) > 0 {
+		children := make([]map[string]any, 0, len(res.Children))
+		for _, c := range res.Children {
+			children = append(children, map[string]any{
+				"model":                       c.Model,
+				"cost_usd":                    c.CostUSD,
+				"num_turns":                   c.NumTurns,
+				"input_tokens":                c.InputTokens,
+				"output_tokens":               c.OutputTokens,
+				"cache_read_input_tokens":     c.CacheReadInputTokens,
+				"cache_creation_input_tokens": c.CacheCreationInputTokens,
+			})
+		}
+		m["children"] = children
+	}
 	switch {
 	case interrupted:
 		m["subtype"] = "error_during_execution"

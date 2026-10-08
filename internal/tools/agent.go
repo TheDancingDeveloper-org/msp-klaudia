@@ -23,7 +23,8 @@ type Spawner interface {
 	// progress, when non-nil, is called with short display lines as the child
 	// works, so the frontend can show what it is doing instead of a bare spinner.
 	// With an error, the string may still carry the child's partial work.
-	Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(line string)) (string, error)
+	// usage is what the child spent, nil when it never reached a request.
+	Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(line string)) (text string, usage *ChildUsage, err error)
 	// SpawnBackground launches a sub-agent that runs independently of this turn
 	// and returns its handle id immediately; the result is delivered on a later
 	// turn. label is the task description, for the status view; conversation
@@ -153,17 +154,17 @@ func (a *Agent) Execute(ctx context.Context, tctx Context, raw json.RawMessage) 
 		}
 		return []Result{{Content: msg}}, nil
 	}
-	result, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
+	result, usage, err := a.spawner.Spawn(ctx, withRequestedDir(tctx.parentSpec(), in.WorkingDir), in.SubagentType, in.Prompt, tctx.Progress)
 	if err != nil {
 		msg := fmt.Sprintf("Sub-agent failed: %v", err)
 		if result != "" {
 			msg += "\n\n" + result
 		}
-		return []Result{{Content: msg, IsError: true}}, nil
+		return []Result{{Content: msg, IsError: true, Child: usage}}, nil
 	}
 	// Framed, so the sub-agent's report reads as a report: text it quotes from
 	// files or web pages it read is not the user speaking.
-	return []Result{{Content: subagentResultHeader + result}}, nil
+	return []Result{{Content: subagentResultHeader + result, Child: usage}}, nil
 }
 
 // subagentResultHeader introduces a sub-agent's result.

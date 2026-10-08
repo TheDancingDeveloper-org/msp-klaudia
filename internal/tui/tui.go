@@ -503,6 +503,9 @@ type Model struct {
 	statTurns int
 	statIn    int64
 	statOut   int64
+	// statChildCost is sub-agent spend in USD, priced against the children's
+	// own models. Their tokens are not in statIn/statOut.
+	statChildCost float64
 	// Cumulative cache tokens for the session, tracked separately from statIn/
 	// statOut because cost prices them at different rates. Live "usage" events
 	// carry no cache deltas, so these are updated only at doneMsg from the
@@ -1065,6 +1068,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (each turn is one loop.Run, so its Cache* fields are that turn's cost).
 		m.statCacheRead += msg.res.CacheReadInputTokens
 		m.statCacheWrite += msg.res.CacheCreationInputTokens
+		// A child's tokens are priced against its own model and are not in
+		// the Result's token totals, so the cost it already computed is
+		// kept beside the session's own.
+		for _, c := range msg.res.Children {
+			m.statChildCost += c.CostUSD
+		}
 		m.turnLiveTurns, m.turnLiveIn, m.turnLiveOut = 0, 0, 0
 		// Clear phase state too so a queued-message follow-up turn starts
 		// fresh — a stale "running Bash" or "quiet for 90s" would otherwise
@@ -2469,7 +2478,7 @@ func (m *Model) handleSlash(input string) (tea.Model, tea.Cmd) {
 	case "/stats":
 		resident := compaction.EstimateTokens(m.history)
 		m.appendLine(bannerStyle.Render(formatStats(m.statTurns, m.statIn, m.statOut, resident, m.sess.ContextWindow, m.sess.ContextWindowSource)))
-		m.appendLine(bannerStyle.Render(formatCostStats(m.sessionModel(), m.sessionUsage())))
+		m.appendLine(bannerStyle.Render(formatCostStats(m.sessionModel(), m.sessionUsage(), m.statChildCost)))
 	case "/status":
 		model := m.sess.Model
 		if model == "" {

@@ -218,16 +218,42 @@ type Result struct {
 	// either "free" or "unpriced" — callers that must tell them apart re-query
 	// api.CostUSD for the known flag.
 	CostUSD float64
+	// Children is what the sub-agents this run launched spent. Their cost is
+	// already inside CostUSD — a parent under a budget cannot spend past it
+	// by delegating — and the breakdown is here so /cost and the stream-json
+	// result can show it rather than only the total.
+	Children []ChildUsage
 	// Messages is the full conversation after the run (initial + this turn's
 	// exchanges), so a caller can carry it forward as InitialMessages for the
 	// next turn (used by the stream-json embedding frontend).
 	Messages []anthropic.BetaMessageParam
 }
 
+// ChildUsage is one sub-agent's spend, folded into the parent's totals.
+// Model is the model the child ran on, since the parent's price table does
+// not price a child that ran on a different one.
+type ChildUsage struct {
+	Model                    string
+	InputTokens              int64
+	OutputTokens             int64
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
+	APIDuration              time.Duration
+	CostUSD                  float64
+	NumTurns                 int
+}
+
 // Loop drives the agentic loop against an API client and a tool registry.
 type Loop struct {
 	provider api.Provider
 	tools    *tools.Registry
+
+	// childUsage holds the spend of sub-agents dispatched this run, keyed by
+	// the tool-use id of the Agent call, so the loop can fold it into the
+	// parent's totals after dispatch returns its opaque blocks. Guarded by
+	// childMu: a grouped dispatch runs calls concurrently.
+	childMu    sync.Mutex
+	childUsage map[string]*tools.ChildUsage
 
 	// compactFailures counts automatic compactions that failed in a row. After
 	// maxCompactFailures the threshold-driven compaction stops trying — each
@@ -516,6 +542,12 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			CacheReadInputTokens:     res.CacheReadInputTokens,
 			CacheCreationInputTokens: res.CacheCreationInputTokens,
 		})
+		// The children's cost was priced against their own models and is not
+		// in the token totals above, so it has to be added back each time the
+		// parent's own cost is recomputed.
+		for _, c := range res.Children {
+			res.CostUSD += c.CostUSD
+		}
 		res.Text = finalText
 		// Live usage tick: emit per inner LLM call so frontends can update
 		// counters during long iterations. TurnDelta=1 mirrors res.NumTurns
@@ -589,6 +621,9 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			return "", false
 		}
 		resultBlocks := l.dispatchAll(ctx, toolUses, opts, res.CostUSD, emit, reveal, fs, preempt)
+		// A sub-agent's spend lands here, before the budget check, so a parent
+		// cannot delegate its way past MaxBudgetUSD.
+		l.foldChildren(opts, &res)
 		// The aggregate cap, after the per-result one. Results that each pass
 		// the 30 KB budget still add up, and a turn is not limited to a few
 		// calls; see batchcap.go.
@@ -1040,7 +1075,71 @@ func truncatedToolNote(maxTokens int64) string {
 		"then continue.", maxTokens)
 }
 
-// budgetLeft is what a child launched during this dispatch may still spend.
+// noteChild records one sub-agent's spend against the tool call that
+// launched it. An Agent call yields one result, so the first wins.
+func (l *Loop) noteChild(toolUseID string, u *tools.ChildUsage) {
+	l.childMu.Lock()
+	defer l.childMu.Unlock()
+	if l.childUsage == nil {
+		l.childUsage = map[string]*tools.ChildUsage{}
+	}
+	if _, ok := l.childUsage[toolUseID]; !ok {
+		l.childUsage[toolUseID] = u
+	}
+}
+
+// takeChildren returns and forgets the sub-agent spend recorded since the
+// last call, in no particular order.
+func (l *Loop) takeChildren() []*tools.ChildUsage {
+	l.childMu.Lock()
+	defer l.childMu.Unlock()
+	if len(l.childUsage) == 0 {
+		return nil
+	}
+	out := make([]*tools.ChildUsage, 0, len(l.childUsage))
+	for _, u := range l.childUsage {
+		out = append(out, u)
+	}
+	l.childUsage = nil
+	return out
+}
+
+// foldChildren adds the sub-agents launched by the dispatch just finished
+// into the parent's result and recomputes cost, so a budget check made
+// after this sees the children's spend.
+//
+// The children's tokens stay out of the parent's token totals: those are
+// priced against the parent's model, and a child may have run on another.
+// Their cost, already priced against their own model, is added on top.
+func (l *Loop) foldChildren(opts Options, res *Result) {
+	children := l.takeChildren()
+	if len(children) == 0 {
+		return
+	}
+	for _, u := range children {
+		res.Children = append(res.Children, ChildUsage{
+			Model:                    u.Model,
+			InputTokens:              u.InputTokens,
+			OutputTokens:             u.OutputTokens,
+			CacheReadInputTokens:     u.CacheReadInputTokens,
+			CacheCreationInputTokens: u.CacheCreationInputTokens,
+			APIDuration:              u.APIDuration,
+			CostUSD:                  u.CostUSD,
+			NumTurns:                 u.NumTurns,
+		})
+	}
+	own, _ := api.CostUSD(string(opts.Model), api.Usage{
+		InputTokens:              res.InputTokens,
+		OutputTokens:             res.OutputTokens,
+		CacheReadInputTokens:     res.CacheReadInputTokens,
+		CacheCreationInputTokens: res.CacheCreationInputTokens,
+	})
+	for _, c := range res.Children {
+		own += c.CostUSD
+	}
+	res.CostUSD = own
+}
+
 // Nil means the turn has no budget, so the child is not bounded by one either.
 func budgetLeft(opts Options, spentUSD float64) *float64 {
 	if opts.MaxBudgetUSD <= 0 {
@@ -1289,6 +1388,9 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 	clamped := false
 	var images []tools.ResultImage
 	for i, r := range results {
+		if r.Child != nil {
+			l.noteChild(tu.ID, r.Child)
+		}
 		if i > 0 && r.Content != "" {
 			content += "\n"
 			full += "\n"

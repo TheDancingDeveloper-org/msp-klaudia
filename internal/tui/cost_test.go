@@ -23,7 +23,7 @@ func TestFormatCostUSD(t *testing.T) {
 
 func TestFormatCostStats(t *testing.T) {
 	// Known model: the total plus the per-dimension breakdown that produced it.
-	got := formatCostStats("claude-opus-5", api.Usage{InputTokens: 1000, OutputTokens: 2000})
+	got := formatCostStats("claude-opus-5", api.Usage{InputTokens: 1000, OutputTokens: 2000}, 0)
 	if !strings.Contains(got, "Cost: $") {
 		t.Errorf("expected a dollar cost: %q", got)
 	}
@@ -31,7 +31,7 @@ func TestFormatCostStats(t *testing.T) {
 		t.Errorf("expected token breakdown: %q", got)
 	}
 	// Unknown model: say so rather than print a misleading $0.00.
-	unknown := formatCostStats("openai/gpt-oss-120b", api.Usage{OutputTokens: 5000})
+	unknown := formatCostStats("openai/gpt-oss-120b", api.Usage{OutputTokens: 5000}, 0)
 	if !strings.Contains(unknown, "unknown") {
 		t.Errorf("expected unknown-model note: %q", unknown)
 	}

@@ -56,7 +56,7 @@ func TestSpawnRelaysChildToolCallsAsProgress(t *testing.T) {
 	}}
 
 	var lines []string
-	_, err := readOnlySpawner(t, provider, dir, 0).
+	_, _, err := readOnlySpawner(t, provider, dir, 0).
 		Spawn(context.Background(), nil, "Explore", "read it", func(l string) { lines = append(lines, l) })
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -80,7 +80,7 @@ func TestSpawnWithoutProgressIsSafe(t *testing.T) {
 	provider := &scriptedProvider{turns: []anthropic.BetaMessage{
 		toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path}),
 	}}
-	if _, err := readOnlySpawner(t, provider, dir, 0).
+	if _, _, err := readOnlySpawner(t, provider, dir, 0).
 		Spawn(context.Background(), nil, "Explore", "read it", nil); err != nil {
 		t.Fatalf("Spawn with nil progress: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSpawnIsBoundedWhenNoMaxTurnsIsSet(t *testing.T) {
 	dir, path := fixtureFile(t)
 	provider := &repeatProvider{turn: toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path})}
 
-	out, err := readOnlySpawner(t, provider, dir, 0).
+	out, _, err := readOnlySpawner(t, provider, dir, 0).
 		Spawn(context.Background(), nil, "Explore", "loop forever", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -111,7 +111,7 @@ func TestSpawnIsBoundedWhenNoMaxTurnsIsSet(t *testing.T) {
 func TestSpawnHonoursExplicitMaxTurns(t *testing.T) {
 	dir, path := fixtureFile(t)
 	provider := &repeatProvider{turn: toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path})}
-	if _, err := readOnlySpawner(t, provider, dir, 2).
+	if _, _, err := readOnlySpawner(t, provider, dir, 2).
 		Spawn(context.Background(), nil, "Explore", "loop", nil); err != nil {
 		t.Fatal(err)
 	}

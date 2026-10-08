@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/greenthread-ai/klaudia/internal/permission"
 )
@@ -33,6 +34,25 @@ type Result struct {
 	// it so the UI can still show everything the command actually printed;
 	// leaving it empty means Content is already complete.
 	Full string
+	// Child is what a sub-agent this result launched spent, so the parent loop
+	// can fold it into its own totals and budget check. Nil for every tool that
+	// does not launch one. A background launch has no usage yet — it reports
+	// through the registry when it finishes.
+	Child *ChildUsage
+}
+
+// ChildUsage is one sub-agent's spend, in the same units as the parent's
+// Result. Model is the model the child ran on, which the cost was priced for;
+// a parent that re-prices from its own model would get the wrong figure.
+type ChildUsage struct {
+	Model                    string
+	InputTokens              int64
+	OutputTokens             int64
+	CacheReadInputTokens     int64
+	CacheCreationInputTokens int64
+	APIDuration              time.Duration
+	CostUSD                  float64
+	NumTurns                 int
 }
 
 // Display returns the text a local frontend should show: the untruncated output

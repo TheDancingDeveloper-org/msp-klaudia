@@ -241,20 +241,20 @@ const defaultSubagentMaxTurns = 50
 //
 // progress, when non-nil, receives a short line per child tool call. Passing
 // nil (as headless callers do) restores the previous silent behaviour.
-func (s *Spawner) Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(string)) (string, error) {
+func (s *Spawner) Spawn(ctx context.Context, spec any, subagentType, prompt string, progress func(string)) (string, *tools.ChildUsage, error) {
 	return s.spawn(ctx, childSpecFrom(spec), subagentType, prompt, progress)
 }
 
 // spawn is Spawn with the spec already converted. The exported signature takes
 // an any because tools.Spawner cannot name ChildSpec (agent imports tools).
-func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, prompt string, progress func(string)) (string, error) {
+func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, prompt string, progress func(string)) (string, *tools.ChildUsage, error) {
 	types := s.types
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
 	t, ok := subagent.Find(types, subagentType)
 	if !ok {
-		return "", fmt.Errorf("unknown subagent_type %q", subagentType)
+		return "", nil, fmt.Errorf("unknown subagent_type %q", subagentType)
 	}
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
@@ -262,7 +262,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 
 	repo, prov, err := s.childRepo(spec)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	dir := repo
 	var tree *worktree.Tree
@@ -284,18 +284,18 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	if progress != nil {
 		emit = progressEmitter(func(line string) { progress(tree.Rewrite(line)) })
 	}
-	text, err := s.runChild(ctx, spec, t, prompt, dir, emit)
+	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, emit)
 	if tree == nil {
-		return prov.note(text), err
+		return prov.note(text), usage, err
 	}
 	if err != nil {
 		// Whatever the child wrote stays where it is: applying half a change to
 		// the user's tree is the one outcome isolation exists to prevent.
-		return tree.Rewrite(text), fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
+		return tree.Rewrite(text), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
-	return prov.note(s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress)), nil
+	return prov.note(s.collect(done, tree, tree.Rewrite(text), spec.BeforeEdit, progress)), usage, nil
 }
 
 // progressEmitter adapts a per-line progress callback into a child Emitter.
@@ -312,9 +312,10 @@ func progressEmitter(progress func(string)) Emitter {
 }
 
 // runChild runs one sub-agent loop to completion in workingDir and returns its
-// final text, applying the shared turn/context bounds. It is the single body
-// both the synchronous Spawn and the background goroutine drive.
-func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir string, emit Emitter) (string, error) {
+// final text plus what it spent, applying the shared turn/context bounds. It
+// is the single body both the synchronous Spawn and the background goroutine
+// drive. usage is nil when the run never started.
+func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
 	model := subagentModel(s.model, t.Model)
 	if spec.Model != "" {
@@ -368,26 +369,50 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
 	}, emit)
+	usage := childUsageOf(string(model), res)
 	if err != nil {
 		// What the sub-agent had already worked out is not lost with it: the
 		// last reply it completed goes back with the error, marked as partial.
 		// Returning "" threw away everything it found before a stream error
 		// or an overload ended its run.
 		if res.Text != "" {
-			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), err
+			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
 		}
-		return "", err
+		return "", usage, err
 	}
 	// Say so rather than passing back a truncated answer as if it were complete.
-	if res.StopReason == "max_turns" {
+	if res.StopReason == "max_turns" || res.StopReason == "max_budget" {
 		note := fmt.Sprintf("[Sub-agent stopped at its %d-turn limit before finishing. "+
 			"The result below may be incomplete.]", maxTurns)
-		if res.Text == "" {
-			return note + subagentUsage(res, time.Since(start)), nil
+		if res.StopReason == "max_budget" {
+			note = "[Sub-agent stopped because it reached its budget before finishing. " +
+				"The result below may be incomplete.]"
 		}
-		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), nil
+		if res.Text == "" {
+			return note + subagentUsage(res, time.Since(start)), usage, nil
+		}
+		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 	}
-	return res.Text + subagentUsage(res, time.Since(start)), nil
+	return res.Text + subagentUsage(res, time.Since(start)), usage, nil
+}
+
+// childUsageOf is the child's spend in the shape the parent folds into its
+// own totals. Nil when the child never made a request, so a launch that
+// failed before the loop does not add a zero row.
+func childUsageOf(model string, res Result) *tools.ChildUsage {
+	if res.NumTurns == 0 && res.CostUSD == 0 && res.InputTokens == 0 && res.OutputTokens == 0 {
+		return nil
+	}
+	return &tools.ChildUsage{
+		Model:                    model,
+		InputTokens:              res.InputTokens,
+		OutputTokens:             res.OutputTokens,
+		CacheReadInputTokens:     res.CacheReadInputTokens,
+		CacheCreationInputTokens: res.CacheCreationInputTokens,
+		APIDuration:              res.APIDuration,
+		CostUSD:                  res.CostUSD,
+		NumTurns:                 res.NumTurns,
+	}
 }
 
 // SpawnBackground launches a sub-agent that runs independently of the parent
@@ -458,7 +483,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 			tree, workingDir = wt, wt.Dir
 			reportf(progress, "  ↳ isolated checkout %s", wt.Dir)
 		}
-		result, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
+		result, _, err := s.runChild(ctx, spec, t, prompt, workingDir, emit)
 		if tree == nil {
 			reg.finish(id, prov.note(result), err)
 			return

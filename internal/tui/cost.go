@@ -50,15 +50,25 @@ func (m *Model) costSegment() string {
 	return formatCostUSD(usd)
 }
 
+// statChildCost is what sub-agents spent, priced against their own models.
+// The session's token counters do not include them.
+func (m *Model) sessionChildCost() float64 { return m.statChildCost }
+
 // formatCostStats renders the /stats cost line: the total plus the per-dimension
-// token breakdown that produced it. Returns "" for an unpriced model so /stats
-// shows only the token line rather than a misleading "$0.00". Standalone (no
-// Model) so a test can pin the format.
-func formatCostStats(model string, u api.Usage) string {
+// token breakdown that produced it. childUSD is sub-agent spend already priced
+// against the children's own models, added on top. Returns "" for an unpriced
+// model so /stats shows only the token line rather than a misleading "$0.00".
+// Standalone (no Model) so a test can pin the format.
+func formatCostStats(model string, u api.Usage, childUSD float64) string {
 	usd, known := api.CostUSD(model, u)
 	if !known {
 		return fmt.Sprintf("Cost: unknown (no price for model %q)", model)
 	}
-	return fmt.Sprintf("Cost: %s  (input=%d  output=%d  cache_read=%d  cache_write=%d)",
+	usd += childUSD
+	line := fmt.Sprintf("Cost: %s  (input=%d  output=%d  cache_read=%d  cache_write=%d)",
 		formatCostUSD(usd), u.InputTokens, u.OutputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens)
+	if childUSD > 0 {
+		line += fmt.Sprintf("  incl. sub-agents %s", formatCostUSD(childUSD))
+	}
+	return line
 }

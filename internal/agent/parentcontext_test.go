@@ -77,7 +77,7 @@ func TestChildBashReachesTheTurnsApprover(t *testing.T) {
 	sp := NewSpawner(provider, tools.NewRegistry(gatingBash{}), "claude-opus-4-8",
 		permission.Context{}, wired, 0).WithWorkingDir(proj).WithHostGate(gate)
 
-	if _, err := sp.spawn(context.Background(), ChildSpec{
+	if _, _, err := sp.spawn(context.Background(), ChildSpec{
 		Approver: turn,
 		Mode:     func() permission.Mode { return permission.ModeAutonomous },
 	}, "general-purpose", "do it", nil); err != nil {
@@ -108,7 +108,7 @@ func TestChildObservesAModeThatFlipsMidRun(t *testing.T) {
 	sp := NewSpawner(provider, tools.NewRegistry(gatingBash{}), "claude-opus-4-8",
 		bypassPerm(), nil, 0).WithWorkingDir(t.TempDir())
 
-	out, err := sp.spawn(context.Background(), ChildSpec{Mode: func() permission.Mode {
+	out, _, err := sp.spawn(context.Background(), ChildSpec{Mode: func() permission.Mode {
 		m := mode
 		mode = permission.ModePlan
 		return m
@@ -135,7 +135,7 @@ func TestChildUsesTheTurnsModel(t *testing.T) {
 	}}
 	sp := NewSpawner(provider, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 0)
 
-	if _, err := sp.spawn(context.Background(), ChildSpec{Model: "claude-sonnet-4-6"}, "general-purpose", "do it", nil); err != nil {
+	if _, _, err := sp.spawn(context.Background(), ChildSpec{Model: "claude-sonnet-4-6"}, "general-purpose", "do it", nil); err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
 	if len(provider.sent) != 1 {
@@ -168,7 +168,7 @@ func TestBeforeEditFiresForSharedAndAdoptedWrites(t *testing.T) {
 		var got []string
 		sp := NewSpawner(provider, tools.NewRegistry(write), "claude-opus-4-8",
 			bypassPerm(), nil, 0).WithWorkingDir(dir).WithWorktrees(false)
-		if _, err := sp.spawn(context.Background(), ChildSpec{BeforeEdit: func(tool string, paths []string) {
+		if _, _, err := sp.spawn(context.Background(), ChildSpec{BeforeEdit: func(tool string, paths []string) {
 			got = append(got, tool)
 			got = append(got, paths...)
 		}}, "general-purpose", "do it", nil); err != nil {
@@ -192,7 +192,7 @@ func TestBeforeEditFiresForSharedAndAdoptedWrites(t *testing.T) {
 		var gotPaths []string
 		sp := NewSpawner(provider, tools.NewRegistry(w), "claude-opus-4-8",
 			bypassPerm(), nil, 0).WithWorkingDir(dir).WithWorktrees(true)
-		if _, err := sp.spawn(context.Background(), ChildSpec{BeforeEdit: func(tool string, paths []string) {
+		if _, _, err := sp.spawn(context.Background(), ChildSpec{BeforeEdit: func(tool string, paths []string) {
 			gotTool = tool
 			gotPaths = append(gotPaths, paths...)
 		}}, "general-purpose", "do it", nil); err != nil {

@@ -130,7 +130,7 @@ func TestWritingSubAgentWorksInItsOwnCheckoutAndTheWorkComesBack(t *testing.T) {
 	root := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "the child's work\n"}
 
-	text, err := writingSpawner(t, w, root).WithWorktrees(true).
+	text, _, err := writingSpawner(t, w, root).WithWorktrees(true).
 		Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
@@ -203,7 +203,7 @@ func TestSubAgentResultNamesPathsInTheUsersTree(t *testing.T) {
 	s := NewSpawner(&reportProvider{t: t, w: w}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 3).WithWorkingDir(root).WithWorktrees(true)
 
-	text, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
+	text, _, err := s.Spawn(context.Background(), nil, "general-purpose", "write it", nil)
 	if err != nil {
 		t.Fatalf("Spawn: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestSubAgentSharesTheTreeWhenItShould(t *testing.T) {
 			}}, reg, "claude-opus-4-8", bypassPerm(), nil, 2).
 				WithWorkingDir(root).WithWorktrees(tt.worktrees)
 
-			if _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
+			if _, _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil); err != nil {
 				t.Fatalf("Spawn: %v", err)
 			}
 			got := capture.got.WorkingDir
@@ -281,7 +281,7 @@ func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	s := NewSpawner(&errorProvider{}, tools.NewRegistry(w), "claude-opus-4-8",
 		bypassPerm(), nil, 2).WithWorkingDir(root).WithWorktrees(true)
 
-	_, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
+	_, _, err := s.Spawn(context.Background(), nil, "general-purpose", "go", nil)
 	if err == nil {
 		t.Fatal("expected the provider's error")
 	}
@@ -354,7 +354,7 @@ func TestWorkingDirInsideExtraDirSeedsFromThatRepo(t *testing.T) {
 	}
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "from B\n"}
 
-	text, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+	text, _, err := writingSpawner(t, w, rootA).WithWorktrees(true).
 		Spawn(context.Background(), requestedDirSpec{
 			workingDir: rootA, extraDirs: []string{rootB}, dir: nested,
 		}, "general-purpose", "write it", nil)
@@ -390,7 +390,7 @@ func TestWorkingDirOutsideSessionIsRefused(t *testing.T) {
 	elsewhere := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "nope\n"}
 
-	_, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+	_, _, err := writingSpawner(t, w, rootA).WithWorktrees(true).
 		Spawn(context.Background(), requestedDirSpec{
 			workingDir: rootA, dir: elsewhere,
 		}, "general-purpose", "write it", nil)
