@@ -14,8 +14,10 @@ import (
 
 // GlobInput is the Glob tool's input.
 type GlobInput struct {
-	Pattern string `json:"pattern" jsonschema:"description=The glob pattern to match files against (e.g. **/*.go)"`
-	Path    string `json:"path,omitempty" jsonschema:"description=The directory to search in (defaults to the current working directory)"`
+	Pattern  string `json:"pattern" jsonschema:"description=The glob pattern to match files against (e.g. **/*.go)"`
+	Path     string `json:"path,omitempty" jsonschema:"description=The directory to search in (defaults to the current working directory)"`
+	Hidden   bool   `json:"hidden,omitempty" jsonschema:"description=Also match hidden (dot) files and directories such as .github"`
+	NoIgnore bool   `json:"no_ignore,omitempty" jsonschema:"description=Also match paths excluded by .gitignore/.ignore and the default skip list (node_modules, vendor, __pycache__)"`
 }
 
 // Glob finds files matching a glob pattern, sorted by modification time.
@@ -39,9 +41,12 @@ func (g *Glob) ConcurrencySafe() bool { return true }
 
 func (g *Glob) Description(context.Context) (string, error) {
 	return "Fast file pattern matching. Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\". " +
-		"Returns matching file paths sorted by modification time (newest first). " +
-		"Skips files ignored by .gitignore/.ignore and hidden (dot) files unless the pattern " +
-		"or path names them (e.g. \".github/**/*.yml\", \"dist/*.js\", \".env*\").", nil
+		"Returns matching file paths sorted by modification time (newest first).\n" +
+		"By default, hidden (dot) files and directories, and paths excluded by .gitignore/.ignore " +
+		"(plus node_modules, vendor, __pycache__), are NOT matched. Include them with hidden: true / " +
+		"no_ignore: true, or by naming them in the pattern or path (e.g. \".github/**/*.yml\", \"dist/*.js\", " +
+		"\".env*\"). Credential locations (~/.ssh, ~/.aws, ~/.netrc, …) are never matched from above; " +
+		"pass one as path to list it (that asks first). When something relevant was skipped the result says what.", nil
 }
 
 func (g *Glob) InputSchema() json.RawMessage { return g.schema.Raw }
@@ -76,12 +81,17 @@ func (g *Glob) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		root = resolvePath(tctx, root)
 	}
 	hidden := 0
-	files, err := search.Glob(search.GlobOptions{Root: root, Pattern: in.Pattern, Ctx: ctx, Skip: tctx.Hidden, Skipped: &hidden})
+	var skipped search.SkipReport
+	files, err := search.Glob(search.GlobOptions{
+		Root: root, Pattern: in.Pattern, Ctx: ctx, Skip: tctx.Hidden, Skipped: &hidden,
+		Hidden: in.Hidden, NoIgnore: in.NoIgnore, Private: credentialGuard(root), Report: &skipped,
+	})
+	scope := skipScope{root: root, pattern: in.Pattern}
 	if err != nil {
 		return []Result{{Content: fmt.Sprintf("Error: %v", err), IsError: true}}, nil
 	}
 	if len(files) == 0 {
-		return []Result{{Content: "No files found" + hiddenNote(hidden)}}, nil
+		return []Result{{Content: "No files found" + hiddenNote(hidden) + skipNote(&skipped, true, scope)}}, nil
 	}
 	var note string
 	if len(files) > maxSearchResults {
@@ -91,5 +101,5 @@ func (g *Glob) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	for i, f := range files {
 		files[i] = displayPath(tctx, f) // relative to the working dir, like Write/Edit results
 	}
-	return []Result{CapResult(Result{Content: strings.Join(files, "\n") + note + hiddenNote(hidden)})}, nil
+	return []Result{CapResult(Result{Content: strings.Join(files, "\n") + note + hiddenNote(hidden) + skipNote(&skipped, false, scope)})}, nil
 }
