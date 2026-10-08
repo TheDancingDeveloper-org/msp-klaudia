@@ -21,7 +21,7 @@ import (
 // terminal grew by megabytes an hour of nothing happening.
 //
 // So nothing at the prompt runs on a timer. The cursor is steady unless the
-// user opts into blinking ([tui] cursorBlink, KLAUDIA_CURSOR_BLINK); the
+// user opts into blinking ([tui] cursor = "blink", KLAUDIA_CURSOR_BLINK); the
 // spinner's tick loop runs only while the running state draws it; the
 // stopwatch stops with the turn. What remains is follow mode (/jobs follow),
 // which polls a running job and prints only what the job wrote — output the
@@ -147,6 +147,28 @@ func TitleOff(setting string, warn func(string)) bool {
 		}
 		return false
 	}
+}
+
+// The title stack (XTWINOPS): 22;0 pushes the terminal's own title and 23;0
+// pops it. Restoring clears the title first, so a terminal without the stack
+// is left with its default title rather than the state of a session that has
+// exited — a tab or tmux pane_title reading "klaudia: ready" over a dead
+// process is the one wrong answer the title can give.
+const (
+	titlePush    = "\x1b[22;0t"
+	titleRestore = "\x1b]2;\x07" + "\x1b[23;0t"
+)
+
+// StartTitle prepares out for state titles. When out is a terminal and titles
+// are on, it saves the terminal's title and returns out, and a restore to call
+// once the session is over; otherwise it returns nil — a pipe or a log gets no
+// title escapes — and a restore that does nothing.
+func StartTitle(out io.Writer, isTerminal, noTitle bool) (io.Writer, func()) {
+	if out == nil || !isTerminal || noTitle {
+		return nil, func() {}
+	}
+	_, _ = io.WriteString(out, titlePush)
+	return out, func() { _, _ = io.WriteString(out, titleRestore) }
 }
 
 // GoalLoopTitle is the escape that sets the terminal title to TitleGoalLoop,

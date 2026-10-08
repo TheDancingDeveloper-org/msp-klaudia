@@ -113,9 +113,13 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 	errOut := cmd.ErrOrStderr()
 	// The same state title the TUI sets during /goal run, so a host watching
 	// the terminal sees an unattended run the same way whichever started it.
-	// Only on a terminal: in a pipe or a log it is noise.
-	if f, ok := errOut.(*os.File); ok && !p.noTitle && term.IsTerminal(int(f.Fd())) {
-		fmt.Fprint(f, tui.GoalLoopTitle())
+	// Only on a terminal: in a pipe or a log it is noise. The terminal's own
+	// title comes back when the loop returns, however it returns.
+	if f, ok := errOut.(*os.File); ok {
+		if out, restore := tui.StartTitle(f, term.IsTerminal(int(f.Fd())), p.noTitle); out != nil {
+			fmt.Fprint(out, tui.GoalLoopTitle())
+			defer restore()
+		}
 	}
 
 	// The git model: a branch and a commit per iteration for code goals; the

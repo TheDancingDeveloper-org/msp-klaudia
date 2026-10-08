@@ -16,7 +16,9 @@ port mirrors (see `internal/version`).
   `klaudia: ready`, `klaudia: working`, `klaudia: awaiting approval` or
   `klaudia: goal-loop` on every change of state, and only then — a stable
   signal for a program driving Klaudia in a pseudo-terminal
-  (docs/embedding.md). `[tui] title = "off"` disables it.
+  (docs/embedding.md). The terminal's own title is saved at start and restored
+  on exit, and nothing is written when the output is not a terminal.
+  `[tui] title = "off"` disables it.
 
 ### Fixed
 - **An idle prompt no longer writes to the terminal.** The input cursor blinked,

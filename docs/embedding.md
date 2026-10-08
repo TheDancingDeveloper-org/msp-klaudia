@@ -303,12 +303,17 @@ title. The titles are exactly:
 | --- | --- |
 | `klaudia: ready` | At the prompt, waiting for input. Also while the user has a picker or confirmation open at the prompt. |
 | `klaudia: working` | A turn (or `/compact`) is running. |
-| `klaudia: awaiting approval` | A turn is stalled on the user: a permission prompt, a question (`AskUserQuestion`) or a plan approval — including one inside a goal loop. |
-| `klaudia: goal-loop` | `/goal run` is iterating, between and during its turns. The headless `klaudia --loop` writes it once at start, to stderr, when stderr is a terminal. |
+| `klaudia: awaiting approval` | A turn is stalled on the user: a permission prompt, a question (`AskUserQuestion`, including typing a free-text "Other" answer) or a plan approval — including one inside a goal loop. |
+| `klaudia: goal-loop` | `/goal run` is iterating, between and during its turns. The headless `klaudia --loop` writes it once at start, to stderr, when stderr is a terminal, and restores the terminal's title when it ends. |
 
 The first title is written with the first frame, so a host sees `klaudia: ready`
-as soon as the prompt is up. The title is not reset on exit; a host should treat
-the process ending as the end of the session. `[tui] title = "off"` disables it.
+as soon as the prompt is up. On exit the terminal's own title comes back: Klaudia
+pushes it onto the terminal's title stack (`CSI 22 ; 0 t`) at start, and at exit
+writes an empty title and pops the stack (`CSI 23 ; 0 t`); a terminal without a
+title stack is left with an empty title, its default. The headless `--loop`
+does the same around its run. A host should still treat the process ending as
+the end of the session. Titles are written only when the output is a terminal;
+`[tui] title = "off"` disables them.
 Hosts that read the title — tmux `#{pane_title}`, xterm.js `onTitleChange`, a
 VT parser's OSC hook — should match the whole string; a new state would arrive
 as a new title, which a host ignores as it ignores any unknown line.

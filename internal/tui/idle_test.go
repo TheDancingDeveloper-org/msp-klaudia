@@ -56,10 +56,20 @@ func (w *wire) waitFor(t *testing.T, want string, count int) {
 	t.Fatalf("never saw %q ×%d on the wire:\n%q", want, count, w.String())
 }
 
-// quietFor reports what the program wrote during d, starting after a short
-// settle so the frame for the last state change has been flushed.
+// quietFor reports what the program wrote during d, starting once the wire has
+// settled — 100ms with no new bytes, so the frame for the last state change
+// has been flushed whatever the machine's speed. A program that never settles
+// (a blinking cursor) is measured from the settle deadline instead.
 func (w *wire) quietFor(d time.Duration) string {
-	time.Sleep(150 * time.Millisecond)
+	last, still := len(w.String()), time.Now()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		if n := len(w.String()); n != last {
+			last, still = n, time.Now()
+		} else if time.Since(still) >= 100*time.Millisecond {
+			break
+		}
+	}
 	before := len(w.String())
 	time.Sleep(d)
 	return w.String()[before:]
@@ -328,5 +338,34 @@ func TestCursorBlinksResolution(t *testing.T) {
 	}
 	if !TitleOff("off", nil) || TitleOff("", nil) || TitleOff("on", nil) {
 		t.Error("TitleOff: off suppresses, unset and on do not")
+	}
+}
+
+// A session must not leave its state in the terminal's title after it exits:
+// a pane reading "klaudia: ready" over a dead process is the one wrong answer.
+// The title stack is pushed at start; on exit the title is cleared and popped,
+// so a terminal without the stack falls back to its default.
+func TestStartTitleSavesAndRestores(t *testing.T) {
+	var b bytes.Buffer
+	out, restore := StartTitle(&b, true, false)
+	if out == nil || b.String() != "\x1b[22;0t" {
+		t.Fatalf("start wrote %q (out nil: %v); want the title-stack push", b.String(), out == nil)
+	}
+	b.Reset()
+	restore()
+	if b.String() != "\x1b]2;\x07\x1b[23;0t" {
+		t.Errorf("restore wrote %q; want an empty title, then the pop", b.String())
+	}
+
+	for _, c := range []struct {
+		name              string
+		terminal, noTitle bool
+	}{{"not a terminal", false, false}, {"titles off", true, true}} {
+		b.Reset()
+		out, restore := StartTitle(&b, c.terminal, c.noTitle)
+		restore()
+		if out != nil || b.Len() != 0 {
+			t.Errorf("%s: wrote %q, out nil: %v; want nothing at all", c.name, b.String(), out == nil)
+		}
 	}
 }

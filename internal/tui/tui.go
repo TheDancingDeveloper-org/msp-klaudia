@@ -27,6 +27,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"golang.org/x/term"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/api"
@@ -66,7 +67,7 @@ type Session struct {
 	EnterInserts  bool           // Return inserts a newline; alt+Return/ctrl+j submit
 	Notify        NotifyModes    // terminal-attention mechanisms (bell/OSC9/OSC777)
 	NoTagline     bool           // [banner] tagline = "off": no rotating subtitle after the logo
-	CursorBlink   bool           // [tui] cursorBlink / KLAUDIA_CURSOR_BLINK: blink the input cursor (default steady; see idle.go)
+	CursorBlink   bool           // [tui] cursor = "blink" / KLAUDIA_CURSOR_BLINK: blink the input cursor (default steady; see idle.go)
 	NoTitle       bool           // [tui] title = "off": never set the terminal title (see idle.go)
 	Skills        []SkillCommand // user-defined skills dispatched as /<name>
 
@@ -4129,9 +4130,13 @@ func Run(ctx context.Context, run RunFunc, history []anthropic.BetaMessageParam,
 	// capture would; a terminal that ignores it simply never sends focus events,
 	// and the notifier then fires regardless (see Model.focusKnown).
 	m := New(ctx, run, history, sess)
-	m.titleOut = os.Stdout // the program's output: tea.NewProgram's default
+	// Titles go to the program's output (tea.NewProgram's default), and only
+	// when that is a terminal. The terminal's own title comes back on exit.
+	out, restoreTitle := StartTitle(os.Stdout, term.IsTerminal(int(os.Stdout.Fd())), sess != nil && sess.NoTitle)
+	m.titleOut = out
 	p := tea.NewProgram(m, tea.WithReportFocus())
 	defer quietStandardLogger()()
 	_, err := p.Run()
+	restoreTitle()
 	return err
 }
