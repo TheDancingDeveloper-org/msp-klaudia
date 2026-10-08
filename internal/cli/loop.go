@@ -15,6 +15,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
 	"github.com/greenthread-ai/klaudia/internal/gitguard"
@@ -22,6 +23,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
 	"github.com/greenthread-ai/klaudia/internal/tools"
+	"github.com/greenthread-ai/klaudia/internal/tui"
 )
 
 // loopStallLimit stops the loop after this many consecutive iterations make no
@@ -57,6 +59,7 @@ type loopRun struct {
 	hooks        *hooks.Runner
 	render       *Renderer
 	diagnostics  tools.DiagnosticsFunc
+	noTitle      bool // [tui] title = "off"
 }
 
 // goalRetryBackoff is how long the goal loop waits before each retry of an
@@ -108,6 +111,12 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 
 	iters := goal.Iterations(p.iterations)
 	errOut := cmd.ErrOrStderr()
+	// The same state title the TUI sets during /goal run, so a host watching
+	// the terminal sees an unattended run the same way whichever started it.
+	// Only on a terminal: in a pipe or a log it is noise.
+	if f, ok := errOut.(*os.File); ok && !p.noTitle && term.IsTerminal(int(f.Fd())) {
+		fmt.Fprint(f, tui.GoalLoopTitle())
+	}
 
 	// The git model: a branch and a commit per iteration for code goals; the
 	// flags, or a `mode: artifact` line in the spec, drop either (#246).

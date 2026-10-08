@@ -218,6 +218,17 @@ type TUI struct {
 	// the terminal reports focus, the notification is emitted only while the
 	// window is unfocused.
 	Notify string `toml:"notify,omitempty"`
+
+	// Cursor is "steady" (default) or "blink". A blinking cursor repaints the
+	// input about twice a second for as long as the prompt waits, so an idle
+	// session never stops writing to its terminal; steady keeps it silent.
+	// KLAUDIA_CURSOR_BLINK=1 (or 0) overrides this.
+	Cursor string `toml:"cursor,omitempty"`
+
+	// Title is "on" (default) or "off". On, Klaudia sets the terminal title to
+	// its state — "klaudia: ready", "klaudia: working", … — whenever the state
+	// changes (docs/embedding.md lists the strings).
+	Title string `toml:"title,omitempty"`
 }
 
 // Banner configures the startup banner shown above the first prompt.
@@ -618,6 +629,12 @@ func merge(dst *Config, src Config) {
 	}
 	if src.TUI.Notify != "" {
 		dst.TUI.Notify = src.TUI.Notify
+	}
+	if src.TUI.Cursor != "" {
+		dst.TUI.Cursor = src.TUI.Cursor
+	}
+	if src.TUI.Title != "" {
+		dst.TUI.Title = src.TUI.Title
 	}
 	// Session retention: project overrides home. 0 means unset (keep the
 	// default), so only a non-zero value — including a negative "disable" —

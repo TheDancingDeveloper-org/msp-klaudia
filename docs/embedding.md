@@ -287,6 +287,42 @@ A resumed session that has a persisted compaction summary is seeded from that
 summary plus the messages recorded since. Session-scoped approvals are **not**
 restored.
 
+## The interactive TUI in a terminal
+
+Everything above is the stream-json contract. A host that runs the
+*interactive* TUI in a pseudo-terminal instead — a multiplexer, a web terminal,
+an orchestrator watching a pane — has no structured events to read, so the TUI
+offers two signals of its own. Both are **stable** under the rules in
+[Stability](#stability).
+
+**The title.** On every change of state, and never otherwise, the TUI writes
+`OSC 2 ; <title> BEL` (`\x1b]2;<title>\x07`), setting the terminal's window
+title. The titles are exactly:
+
+| Title | When |
+| --- | --- |
+| `klaudia: ready` | At the prompt, waiting for input. Also while the user has a picker or confirmation open at the prompt. |
+| `klaudia: working` | A turn (or `/compact`) is running. |
+| `klaudia: awaiting approval` | A turn is stalled on the user: a permission prompt, a question (`AskUserQuestion`) or a plan approval — including one inside a goal loop. |
+| `klaudia: goal-loop` | `/goal run` is iterating, between and during its turns. The headless `klaudia --loop` writes it once at start, to stderr, when stderr is a terminal. |
+
+The first title is written with the first frame, so a host sees `klaudia: ready`
+as soon as the prompt is up. The title is not reset on exit; a host should treat
+the process ending as the end of the session. `[tui] title = "off"` disables it.
+Hosts that read the title — tmux `#{pane_title}`, xterm.js `onTitleChange`, a
+VT parser's OSC hook — should match the whole string; a new state would arrive
+as a new title, which a host ignores as it ignores any unknown line.
+
+**Quiet when idle.** At the prompt, with nothing changing, the TUI writes no
+bytes at all: the cursor does not blink, and the spinner and elapsed-time clock
+stop with the turn. Output going quiet therefore does mean Klaudia is waiting
+— the title says which kind of waiting. What still writes while waiting is
+something real happening: a background job exiting or an `.mcp.json` reload
+being reported, and `/jobs follow`, which prints a running job's new output.
+`[tui] cursor = "blink"` (or `KLAUDIA_CURSOR_BLINK=1`) brings the blink back,
+and with it a repaint about twice a second; a host relying on quiet should not
+set it. `TestIdlePromptWritesNothing` (internal/tui) holds the TUI to this.
+
 ## Related
 
 - README, [Embedding](../README.md#embedding-stream-json-over-stdin) and
