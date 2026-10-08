@@ -9,6 +9,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/agent"
+	"github.com/greenthread-ai/klaudia/internal/session"
 )
 
 // A headless (-p) run has one user turn, and the process exits when it ends.
@@ -36,6 +37,25 @@ type drainLimits struct {
 	maxTurns     int
 	maxBudgetUSD float64
 	wait         time.Duration
+	// cwd and sessionID name where the children are persisted, so a later
+	// --resume can say which were still running. Empty skips persistence.
+	cwd       string
+	sessionID string
+}
+
+// persistChildren writes the registry's children beside the session.
+func persistChildren(reg *agent.BackgroundRegistry, lim drainLimits) {
+	if lim.sessionID == "" {
+		return
+	}
+	var recs []session.ChildRecord
+	for _, a := range reg.List() {
+		recs = append(recs, session.ChildRecord{
+			ID: a.ID, Type: a.Type, Label: a.Label, Status: string(a.Status),
+			Background: a.Background, Provenance: a.Provenance, Result: a.Result, Err: a.Err,
+		})
+	}
+	_ = session.WriteChildren(lim.cwd, lim.sessionID, recs)
 }
 
 // followUpFunc runs one follow-up turn on history, inside the remaining caps
@@ -52,6 +72,7 @@ type followUpFunc func(ctx context.Context, history []anthropic.BetaMessageParam
 // and stopping those still running — when a turn failed or was cut short, when
 // the turn or budget cap is used up, when ctx ends, or when the wait expires.
 func drainBackground(ctx context.Context, reg *agent.BackgroundRegistry, res agent.Result, err error, lim drainLimits, run followUpFunc, warn func(string)) (agent.Result, error) {
+	defer persistChildren(reg, lim)
 	if lim.wait == 0 {
 		running, ready := reg.Undelivered("")
 		if n := len(running) + len(ready); n > 0 && warn != nil {

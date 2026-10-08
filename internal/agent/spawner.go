@@ -276,7 +276,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	defer cancel()
 	reg := s.Background()
 	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
-	reportf(progress, "subagent_started %s %s", id, subagentType)
+
 	var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
@@ -489,7 +489,6 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
-	reportf(progress, "subagent_started %s %s", id, subagentType)
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which

@@ -1447,6 +1447,23 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		if fromSummary {
 			fmt.Fprintln(cmd.ErrOrStderr(), "resuming from compacted summary (--full for the entire transcript)")
 		}
+		if children, cerr := session.ReadChildren(root, resumeID); cerr == nil {
+			deliver, orphaned := session.ReconcileChildren(children)
+			for _, c := range orphaned {
+				where := ""
+				if c.Provenance != "" {
+					where = " (cut from " + c.Provenance + ")"
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: sub-agent %s (%s) was still running when the session ended%s\n", c.ID, c.Type, where)
+			}
+			for _, c := range deliver {
+				line := c.Result
+				if len(line) > 80 {
+					line = line[:80]
+				}
+				fmt.Fprintf(cmd.ErrOrStderr(), "sub-agent %s finished while the session was closed: %s\n", c.ID, line)
+			}
+		}
 	}
 
 	// Lifecycle hooks, if any are configured. Nil when neither config file
@@ -1937,14 +1954,17 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		// -p, stream-json and ACP a background Agent launch was never delivered
 		// (#276). Set here, a frontend cannot leave it out by accident.
 		bg, conversation := wiring.spawner.Background(), opts.Conversation
+		var pendingReport string
+		var pendingUsage []*tools.ChildUsage
+		take := func() {
+			pendingReport, pendingUsage = bg.PendingReportFor(conversation)
+		}
 		opts.CollectBackground = func() string {
-			report, _ := bg.PendingReportFor(conversation)
-			return report
+			take()
+			return pendingReport
 		}
-		opts.CollectChildUsage = func() []*tools.ChildUsage {
-			_, usage := bg.PendingReportFor(conversation)
-			return usage
-		}
+		opts.CollectChildUsage = func() []*tools.ChildUsage { return pendingUsage }
+		opts.SubagentEvents = bg.TakeEvents
 		return opts
 	}
 
@@ -2224,6 +2244,8 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		maxTurns:     opts.maxTurns,
 		maxBudgetUSD: opts.maxBudgetUSD,
 		wait:         opts.backgroundWait,
+		cwd:          cwd,
+		sessionID:    sessionID,
 	}, func(ctx context.Context, history []anthropic.BetaMessageParam, maxTurns int, maxBudgetUSD float64) (agent.Result, error) {
 		o := headlessOpts
 		o.Prompt, o.PromptImages, o.InitialMessages = "", nil, history

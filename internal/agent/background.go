@@ -84,6 +84,7 @@ func (a BackgroundAgent) Done() bool { return a.Status != BackgroundRunning }
 type BackgroundRegistry struct {
 	mu        sync.Mutex
 	seq       int
+	events    []Event
 	byID      map[string]*backgroundEntry
 	order     []string
 	delivered map[string]bool // ids whose result has been delivered to the parent
@@ -139,7 +140,18 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 		cancel: cancel,
 	}
 	r.order = append(r.order, id)
+	r.events = append(r.events, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Content: label})
 	return id
+}
+
+// TakeEvents returns the sub-agent lifecycle events recorded since the last
+// call, in order.
+func (r *BackgroundRegistry) TakeEvents() []Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.events
+	r.events = nil
+	return out
 }
 
 // collected marks an agent's result as already delivered, so TakeFinishedFor
@@ -169,14 +181,17 @@ func (r *BackgroundRegistry) finish(id, result string, usage *tools.ChildUsage, 
 	}
 	e.agent.FinishedAt = r.now()
 	e.agent.Usage = usage
+	status := "succeeded"
 	if err != nil {
+		status = "failed"
 		e.agent.Status = BackgroundFailed
 		e.agent.Err = err.Error()
 		e.agent.Result = result
-		return
+	} else {
+		e.agent.Status = BackgroundSucceeded
+		e.agent.Result = result
 	}
-	e.agent.Status = BackgroundSucceeded
-	e.agent.Result = result
+	r.events = append(r.events, Event{Type: "subagent_finished", ToolUseID: id, ToolName: e.agent.Type, Content: status})
 }
 
 // Get returns a snapshot of one agent.
