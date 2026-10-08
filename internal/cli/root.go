@@ -1759,12 +1759,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// refused with the flag that would permit them, so the output says what to
 	// do rather than only what failed.
 	approver := agent.HeadlessApprover(opts.allowHostChanges)
-	agentTypes := subagent.Load(cwd, func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
-	for _, tp := range agentTypes {
-		if unknown := tp.UnknownTools(base); len(unknown) > 0 {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: agent %q names tools that are not available: %s\n", tp.Name, strings.Join(unknown, ", "))
-		}
-	}
+	agentTypes := subagent.LoadAll(cwd, root, cliExtraDirs, base.Names(), func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
 	wiring, err := withAgentTool(base, provider, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
 	if err != nil {
 		return err

@@ -137,6 +137,53 @@ func TestSpawnHonoursTheTypesMaxTurns(t *testing.T) {
 	}
 }
 
+// The same bound holds when it comes from a file rather than a constructed
+// type: maxTurns: 2 in frontmatter stops the child at 2.
+func TestSpawnHonoursLoadedMaxTurns(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	dir, path := fixtureFile(t)
+	os.MkdirAll(filepath.Join(dir, ".klaudia", "agents"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".klaudia", "agents", "reviewer.md"), []byte(
+		"---\nname: reviewer\ndescription: reviews\nmaxTurns: 2\n---\nReview."), 0o644)
+	provider := &repeatProvider{turn: toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path})}
+	s := readOnlySpawner(t, provider, dir, 50).WithTypes(subagent.Load(dir, nil))
+	if _, _, err := s.Spawn(context.Background(), nil, "reviewer", "loop", nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls > 3 {
+		t.Errorf("loaded maxTurns was ignored: %d calls", provider.calls)
+	}
+}
+
+// A tool the frontmatter disallows is not in the registry the child runs
+// with, even when the type otherwise grants everything.
+func TestLoadedDisallowedToolIsAbsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".klaudia", "agents"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".klaudia", "agents", "safe.md"), []byte(
+		"---\nname: safe\ndescription: no bash\ndisallowedTools: [Bash]\n---\nBe careful."), 0o644)
+	loaded, ok := subagent.Find(subagent.Load(dir, nil), "safe")
+	if !ok {
+		t.Fatal("safe was not loaded")
+	}
+	read, err := tools.NewRead()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loaded.Filter(tools.NewRegistry(read, namedStub("Bash")))
+	if _, ok := got.Lookup("Bash"); ok {
+		t.Error("Bash survived disallowedTools")
+	}
+	if _, ok := got.Lookup("Read"); !ok {
+		t.Error("Read was removed along with Bash")
+	}
+}
+
 func TestSubagentProgressLine(t *testing.T) {
 	cases := []struct {
 		name string
