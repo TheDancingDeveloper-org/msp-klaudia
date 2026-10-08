@@ -290,6 +290,28 @@ func TestIntro(t *testing.T) {
 	}
 }
 
+// [banner] tagline = "off" (Session.NoTagline) starts an embedded session
+// without the rotating subtitle. The default still shows one.
+func TestNoTaglineSuppressesSubtitle(t *testing.T) {
+	quiet := New(t.Context(), nil, nil, &Session{NoTagline: true})
+	if got := quiet.introText(); quiet.introTagline != "" || strings.TrimSpace(strings.Split(got, "\n")[0]) == "" {
+		t.Fatalf("quiet start: tagline %q, intro %q", quiet.introTagline, got)
+	}
+	for _, tl := range taglines {
+		if strings.Contains(quiet.introText(), tl) {
+			t.Errorf("quiet intro shows tagline %q", tl)
+		}
+	}
+	if !strings.Contains(quiet.introText(), "Klaudia") {
+		t.Errorf("quiet intro lost the logo:\n%s", quiet.introText())
+	}
+
+	loud := New(t.Context(), nil, nil, &Session{})
+	if loud.introTagline == "" || !strings.Contains(loud.introText(), loud.introTagline) {
+		t.Errorf("default intro should show its tagline %q:\n%s", loud.introTagline, loud.introText())
+	}
+}
+
 func TestRenderContext(t *testing.T) {
 	m := &Model{sess: &Session{SessionID: "session-123", CWD: "/work/proj", GitBranch: "go-port"}}
 	got := m.renderContext()
