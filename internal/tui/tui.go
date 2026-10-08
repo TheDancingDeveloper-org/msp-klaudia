@@ -3293,7 +3293,10 @@ func (m *Model) showAsk(msg askMsg) {
 // after the turn has ended, and answering it must not leave the TUI saying
 // it is running when nothing is.
 func (m *Model) rememberAskState() {
-	if m.state != stateAwaitingPermission && m.state != stateAwaitingAnswer {
+	// stateAnsweringOther is excluded with the other awaiting states: an ask
+	// that arrives while the user is typing an "Other" answer would otherwise
+	// return there after the ask, with askReply already cleared.
+	if m.state != stateAwaitingPermission && m.state != stateAwaitingAnswer && m.state != stateAnsweringOther {
 		m.stateBeforeAsk = m.state
 	}
 }
