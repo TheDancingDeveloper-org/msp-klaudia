@@ -129,6 +129,14 @@ func TestAgentValidateIsolationAndTurns(t *testing.T) {
 	if err := a.ValidateInput(neg); err == nil {
 		t.Error("negative max_turns was accepted")
 	}
+	good, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`{"type":"object"}`)})
+	if err := a.ValidateInput(good); err != nil {
+		t.Errorf("a valid output_schema was rejected: %v", err)
+	}
+	broken, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`"not an object"`)})
+	if err := a.ValidateInput(broken); err == nil {
+		t.Error("an output_schema that is not an object was accepted")
+	}
 }
 
 func contains(s, sub string) bool {

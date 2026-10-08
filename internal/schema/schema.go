@@ -95,6 +95,26 @@ func compile(raw []byte) (*jsonschemav6.Schema, error) {
 	return c.Compile(resID)
 }
 
+// Compile builds a validator from a JSON Schema document the caller already
+// holds, rather than one reflected from a Go type. A tool input that carries
+// its own schema (the Agent tool's output_schema) uses it. The document must
+// be a JSON object; anything else is refused, so a string or an array cannot
+// pass as a schema.
+func Compile(raw json.RawMessage) (*Schema, error) {
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("schema is not valid JSON")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("schema must be a JSON object")
+	}
+	compiled, err := compile(raw)
+	if err != nil {
+		return nil, fmt.Errorf("compile schema: %w", err)
+	}
+	return &Schema{Raw: raw, compiled: compiled}, nil
+}
+
 // Validate checks raw input JSON against the schema. The returned error is
 // suitable for surfacing to the model as a validation failure.
 func (s *Schema) Validate(raw json.RawMessage) error {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/schema"
 	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 	"github.com/greenthread-ai/klaudia/internal/worktree"
@@ -69,6 +71,9 @@ type ChildSpec struct {
 	// child. It must be unique in the session. "" means none. The registry
 	// id (agent-N) is still what delivery uses.
 	Name string
+	// OutputSchema, when set, is a JSON Schema the child's final message must
+	// match. A mismatch gets exactly one more turn, then an error.
+	OutputSchema json.RawMessage
 	// Conversation is the launching turn's Turn.Conversation, so the child's
 	// registry entry is delivered back to the same conversation. "" for a
 	// frontend with only one.
@@ -121,6 +126,9 @@ func callOverridesOf(spec any) ChildSpec {
 	}
 	if r, ok := spec.(interface{ RequestedName() string }); ok && r != nil {
 		out.Name = r.RequestedName()
+	}
+	if r, ok := spec.(interface{ RequestedOutputSchema() json.RawMessage }); ok && r != nil {
+		out.OutputSchema = r.RequestedOutputSchema()
 	}
 	return out
 }
@@ -310,6 +318,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
+	prompt = withOutputSchema(prompt, spec.OutputSchema)
 
 	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
@@ -440,7 +449,7 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 
 	start := time.Now()
 	loop := New(s.provider, childTools)
-	res, err := loop.Run(ctx, Options{
+	opts := Options{
 		Prompt:        prompt,
 		Model:         model,
 		System:        t.SystemPrompt,
@@ -459,7 +468,8 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		Hooks:         s.hooks,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
-	}, emit)
+	}
+	res, err := loop.Run(ctx, opts, emit)
 	usage := childUsageOf(string(model), res)
 	if err != nil {
 		// What the sub-agent had already worked out is not lost with it: the
@@ -484,7 +494,58 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		}
 		return notice + note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 	}
+	if mismatch := outputMismatch(spec.OutputSchema, res.Text); mismatch != nil {
+		res, err = retryForSchema(ctx, loop, opts, res, mismatch.Error(), emit)
+		usage = childUsageOf(string(model), res)
+		if err != nil {
+			return notice, usage, err
+		}
+		if again := outputMismatch(spec.OutputSchema, res.Text); again != nil {
+			return notice, usage, fmt.Errorf("the sub-agent's answer does not match output_schema after one retry: %w\n\n%s", again, res.Text)
+		}
+	}
 	return notice + res.Text + subagentUsage(res, time.Since(start)), usage, nil
+}
+
+// withOutputSchema tells the child the shape its final message must have, so
+// the first answer is aimed at the schema rather than corrected after the fact.
+func withOutputSchema(prompt string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return prompt
+	}
+	return prompt + "\n\nYour final message must be only a JSON value matching this schema, with no surrounding prose:\n" + string(raw)
+}
+
+// outputMismatch reports why text does not satisfy schema. nil when no schema
+// was asked for, or when the text is the JSON the schema describes. The text
+// is checked as itself, not as a JSON string of itself: the child was asked
+// to reply with the object, so the object is what is validated.
+func outputMismatch(raw json.RawMessage, text string) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	compiled, err := schema.Compile(raw)
+	if err != nil {
+		return fmt.Errorf("output_schema: %w", err)
+	}
+	if err := compiled.Validate(json.RawMessage(text)); err != nil {
+		return err
+	}
+	return nil
+}
+
+// retryForSchema gives the child one more turn to correct an answer that did
+// not match its output_schema. The first run's conversation is replayed and
+// the failure appended, so it sees what it said and why it was refused, and
+// the bound is one turn: the retry is not a second run.
+func retryForSchema(ctx context.Context, loop *Loop, opts Options, first Result, why string, emit Emitter) (Result, error) {
+	opts.Prompt = ""
+	opts.InitialMessages = append(append([]anthropic.BetaMessageParam{}, first.Messages...),
+		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
+			"Your previous reply does not match the required output_schema: "+why+
+				"\nReply again with only the JSON object the schema describes. Nothing else.")))
+	opts.MaxTurns = 1
+	return loop.Run(ctx, opts, emit)
 }
 
 // childUsageOf is the child's spend in the shape the parent folds into its
@@ -537,6 +598,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
+	prompt = withOutputSchema(prompt, spec.OutputSchema)
 
 	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {

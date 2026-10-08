@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,5 +251,53 @@ func TestProgressLineIsClippedToOneLine(t *testing.T) {
 	}
 	if len([]rune(got)) > progressFieldLimit+len("Bash ") {
 		t.Errorf("progress line not clipped: %d runes", len([]rune(got)))
+	}
+}
+
+func reply(t *testing.T, text string) anthropic.BetaMessage {
+	t.Helper()
+	quoted, err := json.Marshal(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b anthropic.BetaContentBlockUnion
+	if err := json.Unmarshal([]byte(`{"type":"text","text":`+string(quoted)+`}`), &b); err != nil {
+		t.Fatal(err)
+	}
+	return anthropic.BetaMessage{StopReason: "end_turn", Content: []anthropic.BetaContentBlockUnion{b}}
+}
+
+// output_schema gets exactly one correction. A first answer that is prose is
+// refused, the child is shown why, and a second answer that matches is the
+// result. A second answer that still misses is an error, and the text is not
+// thrown away.
+func TestOutputSchemaRetriesOnce(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}`)
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		reply(t, "I think so"),
+		reply(t, `{"ok":true}`),
+	}}, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 0)
+
+	text, _, err := s.spawn(context.Background(), ChildSpec{OutputSchema: schema}, "Explore", "answer", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, `{"ok":true}`) {
+		t.Errorf("result = %q, want the corrected JSON", text)
+	}
+	if strings.Contains(text, "I think so") {
+		t.Errorf("the rejected first answer was returned: %q", text)
+	}
+
+	s = NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		reply(t, "nope"),
+		reply(t, "still nope"),
+	}}, tools.NewRegistry(), "claude-opus-4-8", bypassPerm(), nil, 0)
+	text, _, err = s.spawn(context.Background(), ChildSpec{OutputSchema: schema}, "Explore", "answer", nil)
+	if err == nil {
+		t.Fatal("a second mismatch was accepted")
+	}
+	if !strings.Contains(err.Error(), "still nope") {
+		t.Errorf("the error dropped the text: %v", err)
 	}
 }

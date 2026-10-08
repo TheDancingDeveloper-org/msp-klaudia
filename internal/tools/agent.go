@@ -81,6 +81,10 @@ type AgentInput struct {
 	// on agent-N. It must be unique among the children still running in
 	// this conversation.
 	Name string `json:"name,omitempty" jsonschema:"description=A label for this sub-agent, unique among the children still running in this conversation. Delivery still keys on the registry id (agent-N)."`
+	// OutputSchema, when set, is a JSON Schema the child's final message must
+	// match. The child is told the schema, its answer is checked, and a
+	// mismatch gets exactly one more turn to correct it.
+	OutputSchema json.RawMessage `json:"output_schema,omitempty" jsonschema:"description=A JSON Schema the sub-agent's final message must match. Its answer is checked against it, and a mismatch gets one more turn to correct it before the call fails."`
 }
 
 // Agent launches a sub-agent (its own agentic loop with a filtered toolset)
@@ -131,11 +135,12 @@ func (a *Agent) Description(context.Context) (string, error) {
 	b.WriteString("isolation chooses the tree: auto (the default) isolates a writer and shares the tree " +
 		"for a read-only type, worktree always isolates, shared never does. A writer's changes are applied " +
 		"back to the session's tree when it finishes; paths in its report are rewritten to that tree.\n")
-	b.WriteString("model, max_turns and name are optional. model overrides the type's model (a model the " +
+	b.WriteString("model, max_turns, name and output_schema are optional. model overrides the type's model (a model the " +
 		"provider cannot serve is replaced, and the result says so). max_turns bounds the child's loop and " +
 		"is capped by the session's bound, or by the shared default when the session set none. name is a " +
 		"label, unique among the children still running in this conversation; the result names the registry " +
-		"id (agent-N) either way, and that id is how you refer to it.\n")
+		"id (agent-N) either way, and that id is how you refer to it. output_schema is a JSON Schema the " +
+		"child's final message must match; a mismatch gets one more turn, then the call fails with the text.\n")
 	b.WriteString("The result is the sub-agent's own report, framed so it reads as a report, followed by " +
 		"a <usage> block of the turns and tokens it spent. It is asked to state the commands it ran and " +
 		"the paths it counted, and to distinguish what it measured from what it inferred. It cannot be continued.")
@@ -160,6 +165,11 @@ func (a *Agent) ValidateInput(raw json.RawMessage) error {
 	}
 	if in.MaxTurns < 0 {
 		return fmt.Errorf("max_turns must not be negative, not %d", in.MaxTurns)
+	}
+	if len(in.OutputSchema) > 0 {
+		if _, err := schema.Compile(in.OutputSchema); err != nil {
+			return fmt.Errorf("output_schema: %w", err)
+		}
 	}
 	return nil
 }
@@ -283,11 +293,12 @@ func (c parentSpecOf) ParentConversation() string               { return c.Conve
 // a property of the turn, and tools must not import the package that reads them.
 type callOverrides struct {
 	ParentContext
-	dir       string
-	model     string
-	isolation string
-	maxTurns  int
-	name      string
+	dir          string
+	model        string
+	isolation    string
+	maxTurns     int
+	name         string
+	outputSchema json.RawMessage
 }
 
 // RequestedWorkingDir is the repository the caller asked the child to be cut
@@ -309,12 +320,16 @@ func (c callOverrides) RequestedMaxTurns() int { return c.maxTurns }
 // RequestedName is the caller's handle for the child. "" means none.
 func (c callOverrides) RequestedName() string { return c.name }
 
+// RequestedOutputSchema is the JSON Schema the child's final message must
+// match. nil means the answer is not checked.
+func (c callOverrides) RequestedOutputSchema() json.RawMessage { return c.outputSchema }
+
 // withCallOverrides wraps spec so the spawner can see this call's inputs. A
 // call that sets none of them returns spec unchanged, and a nil spec still
 // carries a request: the child then falls back to the spawner's own wiring for
 // everything else.
 func withCallOverrides(spec ParentContext, in AgentInput) any {
-	if in.WorkingDir == "" && in.Model == "" && in.Isolation == "" && in.MaxTurns == 0 && in.Name == "" {
+	if in.WorkingDir == "" && in.Model == "" && in.Isolation == "" && in.MaxTurns == 0 && in.Name == "" && len(in.OutputSchema) == 0 {
 		return spec
 	}
 	return callOverrides{
@@ -324,5 +339,6 @@ func withCallOverrides(spec ParentContext, in AgentInput) any {
 		isolation:     in.Isolation,
 		maxTurns:      in.MaxTurns,
 		name:          in.Name,
+		outputSchema:  in.OutputSchema,
 	}
 }
