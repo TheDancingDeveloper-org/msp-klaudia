@@ -185,7 +185,7 @@ func TestStatusCaptionDropsSegmentsNotCharacters(t *testing.T) {
 	m.statTurns, m.statIn, m.statOut = 3, 1000, 200
 
 	wide := visibleText(m.statusLineAt(200))
-	for _, want := range []string{"claude-opus-5", "plan", "3 turns", "1.2k tokens"} {
+	for _, want := range []string{"claude-opus-5", "plan", "3 turns", "1.2k in+out"} {
 		if !strings.Contains(wide, want) {
 			t.Errorf("wide caption missing %q: %q", want, wide)
 		}
@@ -226,7 +226,7 @@ func TestStatusCaptionKeepsGoalStateWhenNarrow(t *testing.T) {
 func TestStatusCaptionKeepsEverythingAtUnknownWidth(t *testing.T) {
 	m := newTestModel()
 	m.sess.ResolvedModel = "claude-opus-5"
-	if got := visibleText(m.statusLine()); !strings.Contains(got, "tokens") {
+	if got := visibleText(m.statusLine()); !strings.Contains(got, "in+out") {
 		t.Errorf("unknown width should not truncate: %q", got)
 	}
 }
