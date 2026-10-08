@@ -37,6 +37,12 @@ type Type struct {
 	// and share the tree for a read-only type. IsolationWorktree always
 	// isolates; IsolationShared and the older "none" keep the shared tree.
 	Isolation string
+	// Verify is a shell command run in the child's directory after it finishes
+	// and before its changes are adopted. A non-zero exit keeps the checkout
+	// and appends the command's output to the report. "" means nothing is run.
+	// The frontmatter that sets it is loaded elsewhere; this is the field the
+	// spawner reads.
+	Verify string
 }
 
 // The isolation values a type and the Agent tool share. One set, so the tool

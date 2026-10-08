@@ -16,6 +16,7 @@ import (
 
 	"github.com/greenthread-ai/klaudia/internal/api"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
@@ -300,6 +301,55 @@ func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
 		t.Error("a failed child's work was applied to the user's tree")
+	}
+}
+
+// verify runs against the checkout before adoption. A failing command keeps
+// the checkout, leaves the user's tree untouched, and the output is part of
+// what comes back.
+func TestVerifyFailureBlocksAdoption(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "echo verify-broke >&2; exit 1"}})
+
+	text, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "verify failed") {
+		t.Fatalf("verify failure was not reported: %v", err)
+	}
+	if !strings.Contains(text, "verify-broke") {
+		t.Errorf("the command's output was dropped: %q", text)
+	}
+	dir := strings.TrimSuffix(err.Error()[strings.LastIndex(err.Error(), "left in ")+len("left in "):], ")")
+	if _, statErr := os.Stat(filepath.Join(dir, "made.txt")); statErr != nil {
+		t.Errorf("the checkout was removed after a failed verify: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("a failed verify still adopted the child's work")
+	}
+}
+
+// A verify command that passes does not get in the way: the child's work is
+// adopted and the checkout removed, exactly as if no command were set.
+func TestVerifySuccessAdopts(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "test -s made.txt"}})
+
+	if _, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr != nil {
+		t.Errorf("a passing verify did not adopt the child's work: %v", statErr)
 	}
 }
 

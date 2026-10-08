@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -370,12 +372,27 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
 	childErr = err
 	if tree == nil {
+		if err == nil {
+			if out, verr := s.verify(ctx, t.Verify, dir); verr != nil {
+				if out != "" {
+					text += "\n\n[verify failed]\n" + out
+				}
+				err = fmt.Errorf("verify failed: %w", verr)
+			}
+		}
 		return prov.note(text), usage, err
 	}
 	if err != nil {
 		// Whatever the child wrote stays where it is: applying half a change to
 		// the user's tree is the one outcome isolation exists to prevent.
 		return tree.Rewrite(text), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
+	}
+	if out, verr := s.verify(ctx, t.Verify, tree.Dir); verr != nil {
+		report := tree.Rewrite(text)
+		if out != "" {
+			report += "\n\n[verify failed]\n" + out
+		}
+		return report, usage, fmt.Errorf("verify failed: %w (the sub-agent's changes are left in %s)", verr, tree.Dir)
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
@@ -507,7 +524,34 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	return notice + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 }
 
-// withOutputSchema tells the child the shape its final message must have, so
+// verifyTimeout bounds a type's verify command. It is the user's own check,
+// run after the child finishes, and it must not hold adoption open forever.
+const verifyTimeout = 2 * time.Minute
+
+// verify runs the type's verify command in dir. The output and a non-nil
+// error mean it failed; both empty mean there was nothing to run, or it
+// passed. The command is the user's, from the type's file, so it runs in
+// the shell the way a hook does rather than under the model's confinement.
+func (s *Spawner) verify(ctx context.Context, command, dir string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = dir
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	text := strings.TrimSpace(out.String())
+	if err != nil {
+		return text, err
+	}
+	return "", nil
+}
+
 // the first answer is aimed at the schema rather than corrected after the fact.
 func withOutputSchema(prompt string, raw json.RawMessage) string {
 	if len(raw) == 0 {
@@ -646,6 +690,14 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		}
 		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, id, label, emit)
 		if tree == nil {
+			if err == nil {
+				if out, verr := s.verify(ctx, t.Verify, workingDir); verr != nil {
+					if out != "" {
+						result += "\n\n[verify failed]\n" + out
+					}
+					err = fmt.Errorf("verify failed: %w", verr)
+				}
+			}
 			reg.finish(id, prov.note(result), usage, err)
 			return
 		}
@@ -653,6 +705,14 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 			// Whatever the child wrote stays where it is: applying half a change
 			// to the user's tree is the one outcome isolation exists to prevent.
 			reg.finish(id, tree.Rewrite(result), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
+			return
+		}
+		if out, verr := s.verify(ctx, t.Verify, tree.Dir); verr != nil {
+			report := tree.Rewrite(result)
+			if out != "" {
+				report += "\n\n[verify failed]\n" + out
+			}
+			reg.finish(id, report, usage, fmt.Errorf("verify failed: %w (the sub-agent's changes are left in %s)", verr, tree.Dir))
 			return
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)
