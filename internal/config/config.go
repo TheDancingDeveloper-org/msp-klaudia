@@ -144,11 +144,25 @@ type Subagents struct {
 	// is gitignored and expensive. A worktree starts from the parent's tracked
 	// and untracked files, never its ignored ones.
 	Worktree *bool `toml:"worktree,omitempty"`
+	// MaxDepth is how many levels of sub-agent a child may itself launch.
+	// 1, the default, means a child has no Agent tool: it cannot launch
+	// another. 2 lets a child launch one of its own, and that one cannot
+	// launch a third. 0 is not a level; it is treated as the default.
+	MaxDepth *int `toml:"max_depth,omitempty"`
 }
 
 // SubagentWorktrees resolves the default: on unless the config says otherwise.
 func (c Config) SubagentWorktrees() bool {
 	return c.Subagents.Worktree == nil || *c.Subagents.Worktree
+}
+
+// SubagentMaxDepth resolves the default: one level unless the config says
+// otherwise. Below 1 is the default too; a depth of nothing is not a setting.
+func (c Config) SubagentMaxDepth() int {
+	if c.Subagents.MaxDepth == nil || *c.Subagents.MaxDepth < 1 {
+		return 1
+	}
+	return *c.Subagents.MaxDepth
 }
 
 // Sessions configures retention of stored session transcripts, pruned once at

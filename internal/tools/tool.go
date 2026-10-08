@@ -138,6 +138,13 @@ type Context struct {
 	// launch with it so the result is delivered back to the same conversation;
 	// "" is the only conversation of every other frontend.
 	Conversation string
+	// Depth is how deep the caller already is. 0 is the parent; a child runs
+	// at one more. The Agent tool reads it to decide whether the child it
+	// launches may itself launch another.
+	Depth int
+	// Registry is the tool set the caller is running with, so a tool can see
+	// what its siblings are. Nil for a caller that has nothing to say.
+	Registry *Registry
 
 	// The fields below are the launching turn's own state, captured so a child
 	// the Agent tool starts runs as the session is *now* rather than as it was

@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,6 +74,9 @@ type ChildSpec struct {
 	// OutputSchema, when set, is a JSON Schema the child's final message must
 	// match. A mismatch gets exactly one more turn, then an error.
 	OutputSchema json.RawMessage
+	// Depth is how deep this child is. The parent is 0, its child is 1, and
+	// a child only gets the Agent tool while its depth is below MaxDepth.
+	Depth int
 	// Conversation is the launching turn's Turn.Conversation, so the child's
 	// registry entry is delivered back to the same conversation. "" for a
 	// frontend with only one.
@@ -132,6 +133,9 @@ func callOverridesOf(spec any) ChildSpec {
 	if r, ok := spec.(interface{ RequestedOutputSchema() json.RawMessage }); ok && r != nil {
 		out.OutputSchema = r.RequestedOutputSchema()
 	}
+	if r, ok := spec.(interface{ RequestedDepth() int }); ok && r != nil {
+		out.Depth = r.RequestedDepth()
+	}
 	return out
 }
 
@@ -161,6 +165,14 @@ type Spawner struct {
 	// fall back to the 200k default on a provider whose parent was given a
 	// larger window.
 	contextWindow int
+
+	// agentTool is the Agent tool a child is handed while it is below
+	// maxDepth. Nil means no child can launch another, which is also what a
+	// maxDepth of 1 means.
+	agentTool tools.Tool
+	// maxDepth is how deep a child may itself launch. 0 means the default of
+	// 1: a child has no Agent tool.
+	maxDepth int
 
 	// background tracks sub-agents launched with SpawnBackground. Created lazily
 	// so a Spawner built without one (older callers, tests) still runs
@@ -247,6 +259,39 @@ func (s *Spawner) WithContextWindow(n int) *Spawner {
 func (s *Spawner) WithHooks(h *hooks.Runner) *Spawner {
 	s.hooks = h
 	return s
+}
+
+// WithAgentTool is the Agent tool a child below maxDepth is handed, and the
+// depth at which it stops being handed one. The tool cannot be passed to
+// NewSpawner: the spawner is built from the registry that excludes it, and
+// the tool is built from the spawner. A depth below 1 is the default of 1.
+func (s *Spawner) WithAgentTool(tool tools.Tool, maxDepth int) *Spawner {
+	s.agentTool = tool
+	if maxDepth < 1 {
+		maxDepth = 1
+	}
+	s.maxDepth = maxDepth
+	return s
+}
+
+// depthCap is the configured depth, or 1 when none was configured.
+func (s *Spawner) depthCap() int {
+	if s.maxDepth < 1 {
+		return 1
+	}
+	return s.maxDepth
+}
+
+// depthAgent is the Agent tool as one child sees it: the same tool, but its
+// context reports the child's depth, so a launch it makes is one level deeper.
+type depthAgent struct {
+	tools.Tool
+	depth int
+}
+
+func (d depthAgent) Execute(ctx context.Context, tctx tools.Context, input json.RawMessage) ([]tools.Result, error) {
+	tctx.Depth = d.depth
+	return d.Tool.Execute(ctx, tctx, input)
 }
 
 // WithWorktrees turns per-sub-agent checkouts on or off for every sub-agent
@@ -372,27 +417,12 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
 	childErr = err
 	if tree == nil {
-		if err == nil {
-			if out, verr := s.verify(ctx, t.Verify, dir); verr != nil {
-				if out != "" {
-					text += "\n\n[verify failed]\n" + out
-				}
-				err = fmt.Errorf("verify failed: %w", verr)
-			}
-		}
 		return prov.note(text), usage, err
 	}
 	if err != nil {
 		// Whatever the child wrote stays where it is: applying half a change to
 		// the user's tree is the one outcome isolation exists to prevent.
 		return tree.Rewrite(text), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir)
-	}
-	if out, verr := s.verify(ctx, t.Verify, tree.Dir); verr != nil {
-		report := tree.Rewrite(text)
-		if out != "" {
-			report += "\n\n[verify failed]\n" + out
-		}
-		return report, usage, fmt.Errorf("verify failed: %w (the sub-agent's changes are left in %s)", verr, tree.Dir)
 	}
 	done, cancel := context.WithTimeout(context.WithoutCancel(ctx), worktreeCleanupTimeout)
 	defer cancel()
@@ -419,6 +449,12 @@ func progressEmitter(progress func(string)) Emitter {
 // the same type are distinguishable. usage is nil when the run never started.
 func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
+	// A child gets the Agent tool only while it is below the depth cap, and
+	// the tool it gets reports the child's own depth, so the next level is
+	// one deeper. The default cap of 1 means a child has no Agent tool.
+	if s.agentTool != nil && spec.Depth+1 < s.depthCap() {
+		childTools = tools.NewRegistry(append(childTools.All(), depthAgent{Tool: s.agentTool, depth: spec.Depth + 1})...)
+	}
 	model, notice := s.resolveChildModel(spec, t)
 
 	perm := s.permission
@@ -485,6 +521,7 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		Hooks:         s.hooks,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
+		Registry:      childTools,
 	}
 	res, err := loop.Run(ctx, opts, emit)
 	usage := childUsageOf(string(model), res)
@@ -506,50 +543,95 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 			note = "[Sub-agent stopped because it reached its budget before finishing. " +
 				"The result below may be incomplete.]"
 		}
-		if res.Text == "" {
-			return notice + note + subagentUsage(res, time.Since(start)), usage, nil
-		}
-		return notice + note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
+		res.Text = note + "\n\n" + res.Text
 	}
 	if mismatch := outputMismatch(spec.OutputSchema, res.Text); mismatch != nil {
-		res, err = retryForSchema(ctx, loop, opts, res, mismatch.Error(), emit)
-		usage = childUsageOf(string(model), res)
+		// The retry spends too. Its usage replaces nothing: the two runs are
+		// one child's cost. The budget it is handed is what the first run left.
+		first := res
+		opts.MaxBudgetUSD = budgetRemaining(budget, first)
+		res, err = retryForSchema(ctx, loop, opts, first, mismatch.Error(), emit)
+		usage = addUsage(childUsageOf(string(model), first), childUsageOf(string(model), res))
 		if err != nil {
 			return notice, usage, err
 		}
 		if again := outputMismatch(spec.OutputSchema, res.Text); again != nil {
-			return notice, usage, fmt.Errorf("the sub-agent's answer does not match output_schema after one retry: %w\n\n%s", again, res.Text)
+			return notice + res.Text + subagentUsage(res, time.Since(start)), usage, fmt.Errorf("the sub-agent's answer does not match output_schema after one retry: %w\n\n%s", again, res.Text)
 		}
+	}
+	if out, verr := s.verify(ctx, loop, opts, t.Verify, workingDir, id); verr != nil {
+		text := notice + res.Text
+		if out != "" {
+			text += "\n\n[verify failed]\n" + out
+		}
+		return text, usage, fmt.Errorf("verify failed: %w", verr)
 	}
 	return notice + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 }
 
-// verifyTimeout bounds a type's verify command. It is the user's own check,
-// run after the child finishes, and it must not hold adoption open forever.
-const verifyTimeout = 2 * time.Minute
-
-// verify runs the type's verify command in dir. The output and a non-nil
-// error mean it failed; both empty mean there was nothing to run, or it
-// passed. The command is the user's, from the type's file, so it runs in
-// the shell the way a hook does rather than under the model's confinement.
-func (s *Spawner) verify(ctx context.Context, command, dir string) (string, error) {
+// verify runs the type's verify command in dir, as a Bash call through the
+// child's own loop, so it passes the command guard, the host gate, the
+// approver and the sandbox exactly as the child's own commands did. The
+// approver sees it labelled as this child's verify.
+//
+// It does not run at all unless the project is trusted. A verify command
+// comes from the type, and a type can come from the repository's own agent
+// files, so an untrusted checkout must not be able to name a command that
+// runs here. A project is trusted when its hooks are approved (the same
+// decision, once, for everything the repository asks to execute) or when it
+// declares no project hooks, in which case there is nothing to approve and
+// the command is still gated like any other. With no hook runner wired
+// there is no record of that decision, and the command does not run.
+func (s *Spawner) verify(ctx context.Context, loop *Loop, opts Options, command, dir, who string) (string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return "", nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Dir = dir
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	text := strings.TrimSpace(out.String())
+	if !s.projectTrusted() {
+		return "", fmt.Errorf("not run: this project's commands are not approved, and a verify command comes from the project")
+	}
+	raw, err := json.Marshal(struct {
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	}{Command: command, Description: who + " verify"})
 	if err != nil {
-		return text, err
+		return "", err
+	}
+	opts.WorkingDir = dir
+	var text string
+	var failed bool
+	emit := func(ev Event) {
+		if ev.Type == "tool_result" && ev.ToolUseID == "verify" {
+			text = ev.Content
+			failed = ev.IsError
+		}
+	}
+	block := anthropic.BetaToolUseBlock{ID: "verify", Name: "Bash", Input: json.RawMessage(raw)}
+	loop.dispatch(ctx, block, opts, 0, emit, nil, newFailureState())
+	if failed {
+		return text, fmt.Errorf("%s", strings.TrimSpace(text))
 	}
 	return "", nil
+}
+
+// projectTrusted reports whether a command that comes from the project may
+// run. Project hooks are the one other thing a repository asks to execute,
+// and they run only once the project is approved, so verify follows that
+// decision: approved, or no project hooks to approve. With no hook runner
+// there is no record of the decision, and the command does not run.
+func (s *Spawner) projectTrusted() bool {
+	if s.hooks == nil {
+		return false
+	}
+	if s.hooks.ProjectApproved() {
+		return true
+	}
+	for _, h := range s.hooks.All() {
+		if h.Project {
+			return false
+		}
+	}
+	return true
 }
 
 // the first answer is aimed at the schema rather than corrected after the fact.
@@ -572,10 +654,57 @@ func outputMismatch(raw json.RawMessage, text string) error {
 	if err != nil {
 		return fmt.Errorf("output_schema: %w", err)
 	}
-	if err := compiled.Validate(json.RawMessage(text)); err != nil {
+	if err := compiled.Validate(json.RawMessage(jsonText(text))); err != nil {
 		return err
 	}
 	return nil
+}
+
+// jsonText is the JSON in a reply. A model that was asked for JSON often
+// wraps it in a ```json fence anyway; the fence is not part of the answer.
+func jsonText(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "```") {
+		return text
+	}
+	text = strings.TrimPrefix(text, "```")
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[i+1:]
+	}
+	text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+	return strings.TrimSpace(text)
+}
+
+// addUsage sums two runs of one child. A nil run spent nothing.
+func addUsage(a, b *tools.ChildUsage) *tools.ChildUsage {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &tools.ChildUsage{
+		Model:                    a.Model,
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens + b.CacheReadInputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens + b.CacheCreationInputTokens,
+		APIDuration:              a.APIDuration + b.APIDuration,
+		CostUSD:                  a.CostUSD + b.CostUSD,
+	}
+}
+
+// budgetRemaining is what a budget still allows after a run. A budget of 0
+// means there is no budget, and it stays that way.
+func budgetRemaining(budget float64, res Result) float64 {
+	if budget <= 0 {
+		return 0
+	}
+	left := budget - res.CostUSD
+	if left < 0 {
+		return 0
+	}
+	return left
 }
 
 // retryForSchema gives the child one more turn to correct an answer that did
@@ -690,14 +819,6 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		}
 		result, usage, err := s.runChild(ctx, spec, t, prompt, workingDir, id, label, emit)
 		if tree == nil {
-			if err == nil {
-				if out, verr := s.verify(ctx, t.Verify, workingDir); verr != nil {
-					if out != "" {
-						result += "\n\n[verify failed]\n" + out
-					}
-					err = fmt.Errorf("verify failed: %w", verr)
-				}
-			}
 			reg.finish(id, prov.note(result), usage, err)
 			return
 		}
@@ -705,14 +826,6 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 			// Whatever the child wrote stays where it is: applying half a change
 			// to the user's tree is the one outcome isolation exists to prevent.
 			reg.finish(id, tree.Rewrite(result), usage, fmt.Errorf("%w (the sub-agent's changes are left in %s)", err, tree.Dir))
-			return
-		}
-		if out, verr := s.verify(ctx, t.Verify, tree.Dir); verr != nil {
-			report := tree.Rewrite(result)
-			if out != "" {
-				report += "\n\n[verify failed]\n" + out
-			}
-			reg.finish(id, report, usage, fmt.Errorf("verify failed: %w (the sub-agent's changes are left in %s)", verr, tree.Dir))
 			return
 		}
 		done, stop := context.WithTimeout(context.Background(), worktreeCleanupTimeout)

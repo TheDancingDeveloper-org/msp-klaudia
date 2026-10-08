@@ -170,6 +170,9 @@ type Options struct {
 	// here so a child the Agent tool launches can be told about them; the
 	// parent's own prompt already carries them (cli.withExtraDirs).
 	ExtraDirs []string
+	// Registry is the tool set this loop is running with. A tool that wants to
+	// know what its siblings are (the depth check reads it) finds them here.
+	Registry *tools.Registry
 	// ProviderName is the configured provider ("" = anthropic). The
 	// model-aware MaxTokens default comes from Claude's table only on
 	// Anthropic; any other provider gets the conservative unknown-model cap.
@@ -1398,6 +1401,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 		BeforeEdit:   opts.BeforeEdit,
 		ExtraDirs:    opts.ExtraDirs,
 		Budget:       budgetLeft(opts, spentUSD),
+		Registry:     opts.Registry,
 	}, raw)
 	if err != nil {
 		return errResult(fmt.Sprintf("Tool execution error: %v", err))

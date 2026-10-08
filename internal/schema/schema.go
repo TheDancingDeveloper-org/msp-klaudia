@@ -88,11 +88,29 @@ func compile(raw []byte) (*jsonschemav6.Schema, error) {
 		return nil, err
 	}
 	c := jsonschemav6.NewCompiler()
+	// A schema can arrive from the model (output_schema). A $ref is followed by
+	// the compiler's default loader, which reads file:// URLs, so a schema of
+	// {"$ref":"file:///etc/hostname"} reads that file. Nothing outside the
+	// document itself is resolvable: the loader refuses every URL, and the
+	// document is added under mem://, which the compiler serves itself.
+	c.UseLoader(jsonschemav6.SchemeURLLoader{
+		"file":  refuseExternal{},
+		"http":  refuseExternal{},
+		"https": refuseExternal{},
+	})
 	const resID = "mem://schema.json"
 	if err := c.AddResource(resID, doc); err != nil {
 		return nil, err
 	}
 	return c.Compile(resID)
+}
+
+// refuseExternal declines every URL. A schema supplied by the model must not be
+// able to name a file or a host and have it fetched: the document stands alone.
+type refuseExternal struct{}
+
+func (refuseExternal) Load(string) (any, error) {
+	return nil, fmt.Errorf("a schema may not reference another document")
 }
 
 // Compile builds a validator from a JSON Schema document the caller already

@@ -137,6 +137,13 @@ func TestAgentValidateIsolationAndTurns(t *testing.T) {
 	if err := a.ValidateInput(broken); err == nil {
 		t.Error("an output_schema that is not an object was accepted")
 	}
+	// A $ref is followed by the schema compiler, whose default loader reads
+	// file:// URLs. The schema arrives from the model, so that would be a
+	// file read with no trust check. It is refused before anything is read.
+	ref, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`{"$ref":"file:///etc/hostname"}`)})
+	if err := a.ValidateInput(ref); err == nil {
+		t.Error("an output_schema that references a local file was accepted")
+	}
 }
 
 func contains(s, sub string) bool {

@@ -15,7 +15,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/config"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/sandbox"
 	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
@@ -310,12 +313,16 @@ func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 func TestVerifyFailureBlocksAdoption(t *testing.T) {
 	root := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	bash, err := tools.NewBash(sandbox.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
 		toolUseTurn(t, "tu1", "Write", map[string]any{}),
 		reply(t, "wrote it"),
-	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
-		WithWorkingDir(root).WithWorktrees(true).
-		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "echo verify-broke >&2; exit 1"}})
+	}}, tools.NewRegistry(w, bash), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).WithHooks(userHooks(t)).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write", "Bash"}, Verify: "echo verify-broke >&2; exit 1"}})
 
 	text, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil)
 	if err == nil || !strings.Contains(err.Error(), "verify failed") {
@@ -338,18 +345,50 @@ func TestVerifyFailureBlocksAdoption(t *testing.T) {
 func TestVerifySuccessAdopts(t *testing.T) {
 	root := gitRepo(t)
 	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	bash, err := tools.NewBash(sandbox.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
 		toolUseTurn(t, "tu1", "Write", map[string]any{}),
 		reply(t, "wrote it"),
-	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
-		WithWorkingDir(root).WithWorktrees(true).
-		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "test -s made.txt"}})
+	}}, tools.NewRegistry(w, bash), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).WithHooks(userHooks(t)).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write", "Bash"}, Verify: "test -s made.txt"}})
 
 	if _, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr != nil {
 		t.Errorf("a passing verify did not adopt the child's work: %v", statErr)
+	}
+}
+
+// A project that declares its own hooks and has not been approved is not
+// trusted, and its verify command must not run. The child's work stays in
+// the checkout rather than being adopted on the strength of a check that
+// never happened.
+func TestUntrustedProjectDoesNotRunVerify(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	ran := &hookProbeTool{}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, ran), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithHooks(hooks.New(root, "sess", nil, []config.Hook{{Event: "PreToolUse", Command: "true"}})).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "touch verify-ran"}})
+
+	_, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("an untrusted project's verify was not refused: %v", err)
+	}
+	if ran.calls != 0 {
+		t.Errorf("the verify command ran %d times in an untrusted project", ran.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("an untrusted project's child was adopted without its verify running")
 	}
 }
 
