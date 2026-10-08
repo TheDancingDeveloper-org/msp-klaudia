@@ -31,10 +31,51 @@ import (
 // resetting its parent's rules.
 
 // ignoredDirs are skipped during traversal (matches the JS/ripgrep defaults)
-// unless the search names them.
+// unless the search names them or asks for NoIgnore.
 var ignoredDirs = map[string]bool{
-	".git": true, "node_modules": true, "__pycache__": true,
-	".svn": true, ".hg": true, "vendor": true,
+	"node_modules": true, "__pycache__": true, "vendor": true,
+}
+
+// vcsDirs are version-control metadata: never walked unless named, and never
+// reported as skipped — every repository has one, and nothing a search is
+// looking for lives there.
+var vcsDirs = map[string]bool{".git": true, ".svn": true, ".hg": true}
+
+// SkipReport records what a walk left out because it was hidden or ignored,
+// so a result that found nothing (or not everything) can say where it did not
+// look. Directories are listed (relative, slash-separated, in walk order, at
+// most maxReported of them); files are only counted.
+type SkipReport struct {
+	HiddenDirs, IgnoredDirs   []string
+	HiddenFiles, IgnoredFiles int
+	// MoreDirs counts directories skipped beyond the ones listed.
+	MoreDirs int
+}
+
+// maxReported bounds the directories a SkipReport lists.
+const maxReported = 50
+
+// Empty reports whether nothing was skipped.
+func (r *SkipReport) Empty() bool {
+	return r == nil || len(r.HiddenDirs)+len(r.IgnoredDirs)+r.HiddenFiles+r.IgnoredFiles+r.MoreDirs == 0
+}
+
+func (r *SkipReport) note(hidden bool, rel string, isDir bool) {
+	if r == nil {
+		return
+	}
+	switch {
+	case !isDir && hidden:
+		r.HiddenFiles++
+	case !isDir:
+		r.IgnoredFiles++
+	case len(r.HiddenDirs)+len(r.IgnoredDirs) >= maxReported:
+		r.MoreDirs++
+	case hidden:
+		r.HiddenDirs = append(r.HiddenDirs, rel)
+	default:
+		r.IgnoredDirs = append(r.IgnoredDirs, rel)
+	}
 }
 
 // ignoreRule is one line of an ignore file.
@@ -137,23 +178,31 @@ type walkFilter struct {
 	git         bool   // the root is inside a git repository
 	hiddenDirs  bool   // descend into dot-directories
 	hiddenFiles bool   // visit dotfiles
+	noIgnore    bool   // ignore files and the default skip list do not apply
+	report      *SkipReport
+	anchored    bool // the pattern has a directory part, so named confines where it can match
 	named       []string
 	rules       map[string][]ignoreRule // walked directory -> rules in effect inside it
 }
 
 // newWalkFilter prepares a filter for a walk of root (already cleaned) whose
-// entries will be matched against pattern (may be empty).
-func newWalkFilter(root string, hidden bool, pattern string) *walkFilter {
+// entries will be matched against pattern (may be empty). noIgnore lifts
+// .gitignore/.ignore and the default skip list; report, when set, records what
+// is left out.
+func newWalkFilter(root string, hidden, noIgnore bool, pattern string, report *SkipReport) *walkFilter {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		abs = root
 	}
 	w := &walkFilter{
-		root:    root,
-		absRoot: filepath.ToSlash(abs),
-		rules:   map[string][]ignoreRule{},
+		root:     root,
+		absRoot:  filepath.ToSlash(abs),
+		noIgnore: noIgnore,
+		report:   report,
+		rules:    map[string][]ignoreRule{},
 	}
 	w.named, w.hiddenDirs, w.hiddenFiles = patternNames(pattern, hidden)
+	w.anchored = strings.Contains(pattern, "/")
 	w.rules[parentKey] = w.ancestorRules(abs)
 	return w
 }
@@ -216,6 +265,21 @@ func (w *walkFilter) isNamed(rel string) bool {
 	return true
 }
 
+// note records a skipped entry, unless the pattern could never have matched
+// anything there: ".github/**/*.yml" leaving out target/ is not a gap in the
+// result, and saying so would send the model looking for one.
+func (w *walkFilter) note(hidden bool, rel string, isDir bool) {
+	if w.anchored && len(w.named) > 0 {
+		segs := strings.Split(rel, "/")
+		for i := 0; i < len(segs) && i < len(w.named); i++ {
+			if segs[i] != w.named[i] {
+				return
+			}
+		}
+	}
+	w.report.note(hidden, rel, isDir)
+}
+
 // skip reports whether the walk should leave out p; for a directory, true
 // means prune it. A directory that is kept has its ignore files loaded.
 func (w *walkFilter) skip(p string, d fs.DirEntry) bool {
@@ -235,13 +299,19 @@ func (w *walkFilter) skip(p string, d fs.DirEntry) bool {
 	name := d.Name()
 	parent := filepath.Dir(p)
 	if !w.isNamed(rel) {
-		if isDir && ignoredDirs[name] {
+		if isDir && vcsDirs[name] {
+			return true
+		}
+		if isDir && ignoredDirs[name] && !w.noIgnore {
+			w.note(false, rel, isDir)
 			return true
 		}
 		if strings.HasPrefix(name, ".") && !(isDir && w.hiddenDirs || !isDir && w.hiddenFiles) {
+			w.note(true, rel, isDir)
 			return true
 		}
-		if ignored(w.rules[parent], abs, name, isDir) {
+		if !w.noIgnore && ignored(w.rules[parent], abs, name, isDir) {
+			w.note(false, rel, isDir)
 			return true
 		}
 	}

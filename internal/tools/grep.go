@@ -17,7 +17,7 @@ type GrepInput struct {
 	Pattern    string `json:"pattern" jsonschema:"description=The regular expression pattern to search for in file contents"`
 	Path       string `json:"path,omitempty" jsonschema:"description=File or directory to search in (defaults to cwd)"`
 	Glob       string `json:"glob,omitempty" jsonschema:"description=Glob pattern to filter files (e.g. *.go)"`
-	OutputMode string `json:"output_mode,omitempty" jsonschema:"description=files_with_matches (default), content, or count"`
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"description=files_with_matches (the default; or content when -A/-B/-C/-n is given), content, or count"`
 	IgnoreCase bool   `json:"-i,omitempty" jsonschema:"description=Case-insensitive search"`
 	LineNum    bool   `json:"-n,omitempty" jsonschema:"description=Show line numbers (content mode)"`
 	Multiline  bool   `json:"multiline,omitempty" jsonschema:"description=Allow patterns to span lines (dot matches newline); content mode then shows each match with the line it starts on"`
@@ -26,6 +26,8 @@ type GrepInput struct {
 	Before     int    `json:"-B,omitempty" jsonschema:"description=Lines of context before each match (content mode)"`
 	Context    int    `json:"-C,omitempty" jsonschema:"description=Lines of context before and after each match (content mode)"`
 	HeadLimit  int    `json:"head_limit,omitempty" jsonschema:"description=Return at most this many lines/files/counts; the rest are counted, not shown"`
+	Hidden     bool   `json:"hidden,omitempty" jsonschema:"description=Also search hidden (dot) files and directories such as .github"`
+	NoIgnore   bool   `json:"no_ignore,omitempty" jsonschema:"description=Also search paths excluded by .gitignore/.ignore and the default skip list (node_modules, vendor, __pycache__)"`
 }
 
 // grepTypes maps the type filter's names to file extensions — the common
@@ -61,13 +63,17 @@ func (g *Grep) Name() string { return "Grep" }
 func (g *Grep) ConcurrencySafe() bool { return true }
 
 func (g *Grep) Description(context.Context) (string, error) {
-	return "Search file contents with a regular expression. output_mode controls results: " +
-		"\"files_with_matches\" (default) lists matching files, \"content\" shows matching lines, " +
-		"\"count\" shows per-file match counts. Filter files with glob or type (e.g. type=go), ignore case with -i. " +
-		"In content mode, -A/-B/-C add lines of context (context lines use '-' where matches use ':'). " +
-		"head_limit caps how many results are shown; the rest are counted. " +
-		"Skips files ignored by .gitignore/.ignore and hidden (dot) files unless the path or glob names them. " +
-		"A relative path is taken from the working directory.", nil
+	return "Search file contents with a regular expression.\n" +
+		"What is searched: by default, hidden (dot) files and directories such as .github, " +
+		"and paths excluded by .gitignore/.ignore (plus node_modules, vendor, __pycache__), are NOT searched. " +
+		"Search them with hidden: true / no_ignore: true, or by naming them in path or glob " +
+		"(path: \".github\", glob: \".github/**/*.yml\"). When something was skipped the result says what, " +
+		"so \"No matches found\" with a skip note means \"not found where I looked\", not \"not in the repo\".\n" +
+		"Output: output_mode is \"files_with_matches\" by default (matching file paths only), " +
+		"\"content\" (matching lines) or \"count\" (per-file counts). Giving -A/-B/-C (context lines) or -n " +
+		"(line numbers) without output_mode selects content. Context lines use '-' where matches use ':'.\n" +
+		"Filter files with glob or type (e.g. type=go); ignore case with -i. head_limit caps how many results " +
+		"are shown; the rest are counted. A relative path is taken from the working directory.", nil
 }
 
 func (g *Grep) InputSchema() json.RawMessage { return g.schema.Raw }
@@ -125,11 +131,19 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	if in.Context > 0 {
 		before, after = max(before, in.Context), max(after, in.Context)
 	}
-	if in.OutputMode != "content" {
+	// Asking for context or line numbers is asking to see lines. Without this,
+	// -A with no mode returned bare file paths and the context was dropped in
+	// silence.
+	mode := in.OutputMode
+	if mode == "" && (in.After > 0 || in.Before > 0 || in.Context > 0 || in.LineNum) {
+		mode = "content"
+	}
+	if mode != "content" {
 		before, after = 0, 0 // context only means something where lines are shown
 	}
 
 	hidden := 0
+	var skipped search.SkipReport
 	matches, err := search.Grep(search.GrepOptions{
 		Pattern:    in.Pattern,
 		Root:       root,
@@ -140,6 +154,9 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		Ctx:        ctx,
 		Skip:       tctx.Hidden,
 		Skipped:    &hidden,
+		Hidden:     in.Hidden,
+		NoIgnore:   in.NoIgnore,
+		Report:     &skipped,
 		Exts:       grepTypes[strings.ToLower(in.Type)],
 		Before:     before,
 		After:      after,
@@ -149,8 +166,9 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	}
 	note := hiddenNote(hidden)
 	if len(matches) == 0 {
-		return []Result{{Content: "No matches found" + note}}, nil
+		return []Result{{Content: "No matches found" + note + skipNote(&skipped, true)}}, nil
 	}
+	note += skipNote(&skipped, false)
 	for i := range matches {
 		matches[i].File = displayPath(tctx, matches[i].File) // relative to the working dir
 	}
@@ -160,7 +178,7 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 		note += fmt.Sprintf("\n(stopped after %d matches — narrow the pattern, path or glob to see the rest)", maxSearchResults)
 	}
 	var out string
-	switch in.OutputMode {
+	switch mode {
 	case "content":
 		out = formatContent(matches, in.LineNum, before > 0 || after > 0)
 	case "count":
@@ -247,4 +265,47 @@ func hiddenNote(n int) string {
 		return ""
 	}
 	return fmt.Sprintf("\n(%d path(s) not searched: covered by a Read deny rule)", n)
+}
+
+// skipNote says where a walk did not look: the hidden and ignored directories
+// it pruned, and — when nothing was found, so every possibility matters — the
+// dotfiles and ignored files too. A result that has matches mentions only
+// directories, which is where a whole class of files (.github/workflows, a
+// build dir) goes missing; a stray .editorconfig is not worth a line on every
+// search.
+func skipNote(r *search.SkipReport, empty bool) string {
+	if r.Empty() {
+		return ""
+	}
+	list := func(dirs []string, files int, noun string) string {
+		var parts []string
+		for i, d := range dirs {
+			if i == 6 {
+				parts = append(parts, fmt.Sprintf("%d more", len(dirs)-i))
+				break
+			}
+			parts = append(parts, d+"/")
+		}
+		if empty && files > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", files, noun))
+		}
+		return strings.Join(parts, ", ")
+	}
+	var what, how []string
+	if h := list(r.HiddenDirs, r.HiddenFiles, "hidden file(s)"); h != "" {
+		what = append(what, "hidden: "+h)
+		how = append(how, "hidden: true")
+	}
+	if g := list(r.IgnoredDirs, r.IgnoredFiles, "ignored file(s)"); g != "" {
+		what = append(what, "ignored: "+g)
+		how = append(how, "no_ignore: true")
+	}
+	if r.MoreDirs > 0 {
+		what = append(what, fmt.Sprintf("%d more dir(s)", r.MoreDirs))
+	}
+	if len(how) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n(not searched — %s. To include them pass %s, or name them in path or glob.)",
+		strings.Join(what, "; "), strings.Join(how, " / "))
 }

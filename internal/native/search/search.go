@@ -23,6 +23,11 @@ type GlobOptions struct {
 	Root    string // base directory to search (defaults to ".")
 	Pattern string // glob pattern, e.g. "**/*.go"; empty means all files
 	Hidden  bool   // include dotfiles/dotdirs even when Pattern does not name them
+	// NoIgnore searches what .gitignore/.ignore and the default skip list
+	// (node_modules, vendor, __pycache__) would leave out.
+	NoIgnore bool
+	// Report, when set, records the hidden and ignored entries left out.
+	Report *SkipReport
 	// Ctx, when set, stops the walk once it is done (an interrupted turn).
 	Ctx context.Context
 	// Skip, when set, excludes a file or directory (given its absolute path)
@@ -56,7 +61,7 @@ func Glob(opts GlobOptions) ([]string, error) {
 		root = "."
 	}
 	root = filepath.Clean(root)
-	filter := newWalkFilter(root, opts.Hidden, opts.Pattern)
+	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Pattern, opts.Report)
 	type ent struct {
 		path string
 		mod  int64
@@ -133,6 +138,9 @@ type GrepOptions struct {
 	Multiline  bool   // '.' matches newlines; pattern may span lines
 	Glob       string // optional file filter (e.g. "*.go")
 	Hidden     bool
+	// NoIgnore and Report are as for GlobOptions.
+	NoIgnore bool
+	Report   *SkipReport
 	// Limit, when positive, stops the search once more than Limit matches
 	// are found (Limit+1 are returned, so the caller can tell it stopped).
 	// Without it a broad pattern over a large tree held every match in
@@ -230,7 +238,7 @@ func Grep(opts GrepOptions) ([]GrepMatch, error) {
 		return matches, nil
 	}
 	root = filepath.Clean(root)
-	filter := newWalkFilter(root, opts.Hidden, opts.Glob)
+	filter := newWalkFilter(root, opts.Hidden, opts.NoIgnore, opts.Glob, opts.Report)
 
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if cerr := ctxErr(opts.Ctx); cerr != nil {

@@ -13,6 +13,18 @@ port mirrors (see `internal/version`).
   one reply. Combining it with `-p`, a positional prompt, `--loop` or an
   embedding input format is a usage error.
 
+### Fixed
+- **Grep no longer hides what it did not search.** `-A`/`-B`/`-C` or `-n`
+  without `output_mode` now selects `content`, where they used to be dropped
+  and bare paths returned. When a Grep or Glob walk leaves out hidden or
+  ignored directories, the result says which ones (and, when nothing matched,
+  how many dotfiles and ignored files) and how to include them — instead of a
+  bare "No matches found" that models read as "search is broken" before
+  falling back to `rg` in the shell. Both tools take `hidden` and `no_ignore`;
+  `no_ignore` also lifts the node_modules/vendor/__pycache__ default.
+  Version-control directories (`.git`, `.svn`, `.hg`) are never walked unless
+  named, and never reported. (#283)
+
 ### Merged from upstream (greenthread-ai/klaudia 2e644c9, 0fa00a6)
 
 Upstream's "one turn contract, ACP, sub-agent worktrees, hooks, MCP

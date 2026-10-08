@@ -87,8 +87,10 @@ func TestGlobNoMatchesIsNotAnError(t *testing.T) {
 	dir := searchTree(t)
 	g, _ := NewGlob()
 	res := runTool(t, g, Context{}, GlobInput{Pattern: "*.rs", Path: dir})
-	if res.IsError || res.Content != "No files found" {
-		t.Errorf("res = %+v, want a plain \"No files found\"", res)
+	// Not an error — and, since the tree has a dotfile the walk left out, it
+	// says so rather than implying the whole tree was looked at.
+	if res.IsError || !strings.HasPrefix(res.Content, "No files found\n(not searched — hidden: 1 hidden file(s).") {
+		t.Errorf("res = %+v, want \"No files found\" and the skipped dotfile", res)
 	}
 }
 
@@ -169,7 +171,7 @@ func TestGrepNoMatchesAndErrors(t *testing.T) {
 	g, _ := NewGrep()
 
 	res := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "nothing-matches-this"})
-	if res.IsError || res.Content != "No matches found" {
+	if res.IsError || !strings.HasPrefix(res.Content, "No matches found\n(not searched — hidden: 1 hidden file(s).") {
 		t.Errorf("no-match res = %+v", res)
 	}
 
