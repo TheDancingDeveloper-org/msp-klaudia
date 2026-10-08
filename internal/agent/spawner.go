@@ -360,7 +360,6 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	}
 	text, usage, err := s.runChild(ctx, spec, t, prompt, dir, id, "", emit)
 	childErr = err
-	text = s.modelNotice(spec, t) + text
 	if tree == nil {
 		return prov.note(text), usage, err
 	}
@@ -394,7 +393,7 @@ func progressEmitter(progress func(string)) Emitter {
 // the same type are distinguishable. usage is nil when the run never started.
 func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
-	model, _ := s.resolveChildModel(spec, t)
+	model, notice := s.resolveChildModel(spec, t)
 
 	perm := s.permission
 	if spec.Mode != nil {
@@ -468,9 +467,9 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		// Returning "" threw away everything it found before a stream error
 		// or an overload ended its run.
 		if res.Text != "" {
-			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
+			return notice + fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
 		}
-		return "", usage, err
+		return notice, usage, err
 	}
 	// Say so rather than passing back a truncated answer as if it were complete.
 	if res.StopReason == "max_turns" || res.StopReason == "max_budget" {
@@ -481,11 +480,11 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 				"The result below may be incomplete.]"
 		}
 		if res.Text == "" {
-			return note + subagentUsage(res, time.Since(start)), usage, nil
+			return notice + note + subagentUsage(res, time.Since(start)), usage, nil
 		}
-		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
+		return notice + note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 	}
-	return res.Text + subagentUsage(res, time.Since(start)), usage, nil
+	return notice + res.Text + subagentUsage(res, time.Since(start)), usage, nil
 }
 
 // childUsageOf is the child's spend in the shape the parent folds into its
@@ -813,71 +812,64 @@ func (s *Spawner) isolateChild(t subagent.Type, requested, repo string) bool {
 	if choice == "" {
 		choice = t.Isolation
 	}
-	switch choice {
-	case subagent.IsolationWorktree:
-		return true
-	case subagent.IsolationShared, subagent.IsolationNone:
+	if subagent.SharesTree(choice) {
 		return false
+	}
+	if choice == subagent.IsolationWorktree {
+		return true
 	}
 	return writesFiles(subagentTools(t.Filter(s.base)))
 }
 
-// resolveChildModel is the model the child runs on, and whether the one that
-// was asked for had to be replaced. Precedence is the tool input, then the
-// type's model, then the launching turn's (or the spawner's, when the turn
-// named none). A Claude alias on a provider that does not serve one is not
-// sent: the parent model stands in, and substituted says so.
-func (s *Spawner) resolveChildModel(spec ChildSpec, t subagent.Type) (anthropic.Model, bool) {
+// resolveChildModel is the model the child runs on, and the notice to prefix
+// to its result. Precedence is the tool input, then the type's model, then
+// the launching turn's (or the spawner's, when the turn named none). A
+// Claude alias on a provider that does not serve one is not sent: the
+// parent model stands in. The notice is empty only when the child runs on
+// the parent's model; any other choice is named, so a haiku session that
+// launches opus does not do it silently.
+func (s *Spawner) resolveChildModel(spec ChildSpec, t subagent.Type) (anthropic.Model, string) {
 	parent := s.model
 	if spec.Model != "" {
 		parent = anthropic.Model(spec.Model)
 	}
-	asked := spec.RequestedModel
-	if strings.TrimSpace(asked) == "" {
-		asked = t.Model
+	asked := strings.TrimSpace(spec.RequestedModel)
+	if asked == "" {
+		asked = strings.TrimSpace(t.Model)
 	}
-	if strings.TrimSpace(asked) == "" {
-		return parent, false
+	if asked == "" {
+		return parent, ""
 	}
-	// A Claude alias on a provider that does not serve Claude ids is not
-	// sent: the parent model stands in, and the result says so. On Anthropic
-	// the alias resolves to a real id, which is the model that was asked for.
-	if api.AliasWarning(s.providerName, asked) != "" {
-		return parent, true
-	}
-	return api.ResolveModelFor(s.providerName, asked), false
-}
-
-// modelNotice is the one line prepended to a result when the model the call
-// asked for is not the one the child ran on. "" when nothing was substituted.
-func (s *Spawner) modelNotice(spec ChildSpec, t subagent.Type) string {
-	model, substituted := s.resolveChildModel(spec, t)
+	model := parent
+	substituted := api.AliasWarning(s.providerName, asked) != ""
 	if !substituted {
-		return ""
+		model = api.ResolveModelFor(s.providerName, asked)
 	}
-	asked := spec.RequestedModel
-	if strings.TrimSpace(asked) == "" {
-		asked = t.Model
+	if model == parent && !substituted {
+		return model, ""
 	}
-	return fmt.Sprintf("[Model %q is not served by this provider; the sub-agent ran on %s instead.]\n\n", strings.TrimSpace(asked), model)
+	if substituted {
+		return parent, fmt.Sprintf("[Model %q is not served by this provider; the sub-agent ran on %s instead.]\n\n", asked, parent)
+	}
+	return model, fmt.Sprintf("[The sub-agent ran on %s, not the session's %s.]\n\n", model, parent)
 }
 
 // childMaxTurns is the child's turn bound. The tool input wins over the
-// type, which wins over the session, and the session's bound caps all of
-// them when one is set. Zero or below falls back to the shared default.
+// type, which wins over the session, and a ceiling caps all of them: the
+// session's bound when one is set, otherwise the shared default. A call
+// that asks for ten thousand turns does not get them just because the
+// session left the bound unset.
 func (s *Spawner) childMaxTurns(spec ChildSpec, t subagent.Type) int {
+	ceiling := s.maxTurns
+	if ceiling <= 0 {
+		ceiling = defaultSubagentMaxTurns
+	}
 	maxTurns := spec.RequestedMaxTurns
 	if maxTurns <= 0 {
 		maxTurns = t.MaxTurns
 	}
-	if maxTurns <= 0 {
-		maxTurns = s.maxTurns
-	}
-	if s.maxTurns > 0 && s.maxTurns < maxTurns {
-		maxTurns = s.maxTurns
-	}
-	if maxTurns <= 0 {
-		return defaultSubagentMaxTurns
+	if maxTurns <= 0 || maxTurns > ceiling {
+		return ceiling
 	}
 	return maxTurns
 }

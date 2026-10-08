@@ -184,6 +184,26 @@ func TestLoadedDisallowedToolIsAbsent(t *testing.T) {
 	}
 }
 
+// With no session bound the ceiling is the shared default, not whatever the
+// call or the type file asked for.
+func TestChildMaxTurnsCapsAtTheDefault(t *testing.T) {
+	s := &Spawner{}
+	if got := s.childMaxTurns(ChildSpec{RequestedMaxTurns: 1000}, subagent.Type{}); got != defaultSubagentMaxTurns {
+		t.Errorf("requested 1000 on a default spawner gave %d, want %d", got, defaultSubagentMaxTurns)
+	}
+	if got := s.childMaxTurns(ChildSpec{}, subagent.Type{MaxTurns: 1000}); got != defaultSubagentMaxTurns {
+		t.Errorf("type maxTurns 1000 on a default spawner gave %d, want %d", got, defaultSubagentMaxTurns)
+	}
+	// A tighter request still wins, and a session bound still caps both.
+	if got := s.childMaxTurns(ChildSpec{RequestedMaxTurns: 3}, subagent.Type{MaxTurns: 1000}); got != 3 {
+		t.Errorf("a tighter request gave %d, want 3", got)
+	}
+	s.maxTurns = 20
+	if got := s.childMaxTurns(ChildSpec{RequestedMaxTurns: 1000}, subagent.Type{MaxTurns: 1000}); got != 20 {
+		t.Errorf("the session ceiling gave %d, want 20", got)
+	}
+}
+
 func TestSubagentProgressLine(t *testing.T) {
 	cases := []struct {
 		name string

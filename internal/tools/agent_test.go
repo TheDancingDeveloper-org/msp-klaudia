@@ -102,34 +102,34 @@ func TestAgentBackgroundReturnsHandleWithoutBlocking(t *testing.T) {
 	}
 }
 
-	func TestAgentDescriptionListsTypes(t *testing.T) {
-		a := newTestAgent(t, &fakeSpawner{})
-		desc, _ := a.Description(context.Background())
-		for _, want := range []string{
-			"general-purpose", "Explore",
-			"background=true", "isolation", "worktree", "<usage>", "agent-N",
-		} {
-			if !contains(desc, want) {
-				t.Errorf("description missing %q:\n%s", want, desc)
-			}
+func TestAgentDescriptionListsTypes(t *testing.T) {
+	a := newTestAgent(t, &fakeSpawner{})
+	desc, _ := a.Description(context.Background())
+	for _, want := range []string{
+		"general-purpose", "Explore",
+		"background=true", "isolation", "worktree", "<usage>", "agent-N",
+	} {
+		if !contains(desc, want) {
+			t.Errorf("description missing %q:\n%s", want, desc)
 		}
 	}
+}
 
-	func TestAgentValidateIsolationAndTurns(t *testing.T) {
-		a := newTestAgent(t, &fakeSpawner{})
-		ok, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "worktree", Model: "sonnet", MaxTurns: 3, Name: "scout"})
-		if err := a.ValidateInput(ok); err != nil {
-			t.Errorf("valid input rejected: %v", err)
-		}
-		bad, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "fork"})
-		if err := a.ValidateInput(bad); err == nil {
-			t.Error("isolation \"fork\" was accepted")
-		}
-		neg, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", MaxTurns: -1})
-		if err := a.ValidateInput(neg); err == nil {
-			t.Error("negative max_turns was accepted")
-		}
+func TestAgentValidateIsolationAndTurns(t *testing.T) {
+	a := newTestAgent(t, &fakeSpawner{})
+	ok, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "worktree", Model: "sonnet", MaxTurns: 3, Name: "scout"})
+	if err := a.ValidateInput(ok); err != nil {
+		t.Errorf("valid input rejected: %v", err)
 	}
+	bad, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "fork"})
+	if err := a.ValidateInput(bad); err == nil {
+		t.Error("isolation \"fork\" was accepted")
+	}
+	neg, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", MaxTurns: -1})
+	if err := a.ValidateInput(neg); err == nil {
+		t.Error("negative max_turns was accepted")
+	}
+}
 
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
@@ -153,5 +153,25 @@ func TestAgentFailureCarriesPartialWork(t *testing.T) {
 	}
 	if !res[0].IsError || !strings.Contains(res[0].Content, "overloaded") || !strings.Contains(res[0].Content, "found the config") {
 		t.Errorf("result = %+v, want the error and the partial work", res[0])
+	}
+}
+
+func TestAgentSchemaIsolationEnum(t *testing.T) {
+	a, err := NewAgent(&fakeSpawner{}, []AgentTypeInfo{{Name: "Explore"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(a.InputSchema(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := doc.Properties["isolation"].Enum
+	want := []string{IsolationAuto, IsolationWorktree, IsolationShared}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("isolation enum = %v, want %v", got, want)
 	}
 }

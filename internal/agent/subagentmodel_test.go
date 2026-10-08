@@ -27,27 +27,19 @@ func TestSubagentModel(t *testing.T) {
 func TestResolveChildModelPrecedenceAndNotice(t *testing.T) {
 	parent := anthropic.Model("claude-opus-5")
 	for _, tc := range []struct {
-		name, provider, requested, typeModel, want string
-		substituted                                bool
+		name, provider, requested, typeModel, want, notice string
 	}{
-		{"tool input wins", "", "haiku", "sonnet", "claude-haiku-4-5", false},
-		{"type model otherwise", "", "", "sonnet", "claude-sonnet-5", false},
-		{"parent when neither names one", "", "", "", "claude-opus-5", false},
-		{"alias on a non-claude provider is replaced", "openai", "sonnet", "", "claude-opus-5", true},
-		{"a full non-claude id is kept", "openai", "openai/gpt-5.5-mini", "", "openai/gpt-5.5-mini", false},
+		{"tool input wins", "", "haiku", "sonnet", "claude-haiku-4-5", "claude-haiku-4-5"},
+		{"type model otherwise", "", "", "sonnet", "claude-sonnet-5", "claude-sonnet-5"},
+		{"parent when neither names one", "", "", "", "claude-opus-5", ""},
+		{"alias on a non-claude provider is replaced", "openai", "sonnet", "", "claude-opus-5", "not served"},
+		{"a full non-claude id is kept", "openai", "openai/gpt-5.5-mini", "", "openai/gpt-5.5-mini", "openai/gpt-5.5-mini"},
 	} {
 		s := &Spawner{model: parent, providerName: tc.provider}
-		got, sub := s.resolveChildModel(ChildSpec{RequestedModel: tc.requested}, subagent.Type{Model: tc.typeModel})
-		if string(got) != tc.want || sub != tc.substituted {
-			t.Errorf("%s: resolveChildModel = %q, %v; want %q, %v", tc.name, got, sub, tc.want, tc.substituted)
+		got, note := s.resolveChildModel(ChildSpec{RequestedModel: tc.requested}, subagent.Type{Model: tc.typeModel})
+		if string(got) != tc.want || !strings.Contains(note, tc.notice) {
+			t.Errorf("%s: resolveChildModel = %q, %q; want %q containing %q", tc.name, got, note, tc.want, tc.notice)
 		}
-	}
-	s := &Spawner{model: parent, providerName: "openai"}
-	if note := s.modelNotice(ChildSpec{RequestedModel: "sonnet"}, subagent.Type{}); !strings.Contains(note, "sonnet") || !strings.Contains(note, "claude-opus-5") {
-		t.Errorf("notice = %q, want the asked-for and the used model", note)
-	}
-	if note := s.modelNotice(ChildSpec{}, subagent.Type{}); note != "" {
-		t.Errorf("no substitution should give no notice, got %q", note)
 	}
 }
 

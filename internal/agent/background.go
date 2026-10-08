@@ -150,27 +150,39 @@ func (r *BackgroundRegistry) register(conversation, subagentType, label string, 
 
 // registerNamed is register with a caller-supplied name. The name is a label
 // on the registry id, not a second id: delivery still keys on agent-N. An
-// empty name is an ordinary register. A name already held by another child
-// in this session is refused, so two children cannot answer to one handle.
+// empty name is an ordinary register. A name already held by a child that
+// is still running in this conversation is refused, so two children cannot
+// answer to one handle at once. A finished child, or one in another
+// conversation, does not hold the name.
 func (r *BackgroundRegistry) registerNamed(conversation, subagentType, name, label string, isolated bool, provenance string, background bool, cancel func()) (string, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if name != "" {
 		for _, e := range r.byID {
-			if e.agent.Name == name {
-				r.mu.Unlock()
-				return "", fmt.Errorf("a sub-agent named %q is already running in this session", name)
+			if e.agent.Name == name && e.agent.Conversation == conversation && e.agent.Status == BackgroundRunning {
+				return "", fmt.Errorf("a sub-agent named %q is already running in this conversation", name)
 			}
 		}
 	}
-	r.mu.Unlock()
-	id := r.register(conversation, subagentType, label, isolated, provenance, background, cancel)
-	if name != "" {
-		r.mu.Lock()
-		if e, ok := r.byID[id]; ok {
-			e.agent.Name = name
-		}
-		r.mu.Unlock()
+	r.seq++
+	id := fmt.Sprintf("agent-%d", r.seq)
+	r.byID[id] = &backgroundEntry{
+		agent: BackgroundAgent{
+			ID:           id,
+			Type:         subagentType,
+			Name:         name,
+			Label:        label,
+			Status:       BackgroundRunning,
+			StartedAt:    r.now(),
+			Isolated:     isolated,
+			Provenance:   provenance,
+			Background:   background,
+			Conversation: conversation,
+		},
+		cancel: cancel,
 	}
+	r.order = append(r.order, id)
+	r.recordEvent(conversation, Event{Type: "subagent_started", ToolUseID: id, ToolName: subagentType, Text: label})
 	return id, nil
 }
 
