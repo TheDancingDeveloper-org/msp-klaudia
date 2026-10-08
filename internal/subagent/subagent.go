@@ -116,12 +116,25 @@ func Lookup(name string) (Type, bool) {
 // a custom agent file that misspells a tool is reported at startup rather
 // than silently granting nothing. "*" is never unknown.
 func (t Type) UnknownTools(base *tools.Registry) []string {
+	known := map[string]bool{}
+	if base != nil {
+		for _, name := range base.Names() {
+			known[name] = true
+		}
+	}
+	return t.unknownNames(known)
+}
+
+// unknownNames is UnknownTools against a bare name set, which is all the
+// loader has at startup: the registry is not built yet, and an MCP tool that
+// connects later is simply not in it.
+func (t Type) unknownNames(known map[string]bool) []string {
 	var out []string
 	for _, name := range append(append([]string{}, t.Tools...), t.DisallowedTools...) {
 		if name == "*" {
 			continue
 		}
-		if _, ok := base.Lookup(name); !ok {
+		if _, ok := known[name]; !ok {
 			out = append(out, name)
 		}
 	}

@@ -91,15 +91,122 @@ isolation: none
 Review it.
 `), 0o644)
 	var warned []string
-	got := Load(dir, func(m string) { warned = append(warned, m) })
+	got := LoadAll(dir, "", nil, []string{"Bash"}, func(m string) { warned = append(warned, m) })
 	var reviewer Type
-	for _, t := range got {
-		if t.Name == "reviewer" {
-			reviewer = t
+	for _, ty := range got {
+		if ty.Name == "reviewer" {
+			reviewer = ty
 		}
 	}
-	if reviewer.MaxTurns != 4 || reviewer.Isolation != "none" || len(reviewer.DisallowedTools) != 2 {
+	if reviewer.MaxTurns != 4 || reviewer.Isolation != "shared" || len(reviewer.DisallowedTools) != 2 {
 		t.Fatalf("frontmatter = %+v", reviewer)
+	}
+	joined := strings.Join(warned, "\n")
+	if !strings.Contains(joined, "NoSuchTool") || !strings.Contains(joined, "not available at startup") {
+		t.Errorf("warned = %v, want the unknown tool named as not available at startup", warned)
+	}
+}
+
+// An explicit toolset that can only read gets the MCP access the built-in
+// read-only types get. A wildcard, or one writer tool, does not.
+func TestReadOnlyToolsetDerivesReadOnlyMCP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".klaudia", "agents")
+	writeAgent(t, dir, "reader.md", "---\nname: reader\ndescription: reads\ntools: Read, Grep\n---\nRead.")
+	writeAgent(t, dir, "writer.md", "---\nname: writer\ndescription: writes\ntools: Read, Bash\n---\nWrite.")
+	writeAgent(t, dir, "wild.md", "---\nname: wild\ndescription: anything\ntools: \"*\"\n---\nAnything.")
+	types := Load(cwd, nil)
+	for _, tt := range []struct {
+		name string
+		want bool
+	}{
+		{"reader", true}, {"writer", false}, {"wild", false},
+	} {
+		got, ok := Find(types, tt.name)
+		if !ok || got.ReadOnlyMCP != tt.want {
+			t.Errorf("%s ReadOnlyMCP = %v (found %v), want %v", tt.name, got.ReadOnlyMCP, ok, tt.want)
+		}
+	}
+}
+
+// A value outside the vocabulary fails the file, with a warning, rather than
+// being stored and acted on later.
+func TestUnknownIsolationFailsTheFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	cwd := t.TempDir()
+	writeAgent(t, filepath.Join(cwd, ".klaudia", "agents"), "odd.md",
+		"---\nname: odd\ndescription: odd\nisolation: somewhere\n---\nGo.")
+	var warned []string
+	types := Load(cwd, func(m string) { warned = append(warned, m) })
+	if _, ok := Find(types, "odd"); ok {
+		t.Fatal("a file with an unknown isolation value was loaded")
+	}
+	if len(warned) != 1 || !strings.Contains(warned[0], "isolation") {
+		t.Errorf("warned = %v, want one isolation warning", warned)
+	}
+}
+
+// A key Klaudia does not read is reported once across every file that sets it.
+func TestIgnoredKeyWarnedOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	cwd := t.TempDir()
+	dir := filepath.Join(cwd, ".klaudia", "agents")
+	body := func(name string) string {
+		return "---\nname: " + name + "\ndescription: d\npermissionMode: acceptEdits\n---\nGo."
+	}
+	writeAgent(t, dir, "a.md", body("alpha"))
+	writeAgent(t, dir, "b.md", body("beta"))
+	var warned []string
+	Load(cwd, func(m string) { warned = append(warned, m) })
+	n := 0
+	for _, m := range warned {
+		if strings.Contains(m, "permissionMode") && strings.Contains(m, "ignored") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("permissionMode warned %d times (%v), want once", n, warned)
+	}
+}
+
+// The project root is read even when the session started in a subdirectory,
+// and an extra directory is read too. A root equal to cwd is read once.
+func TestLoadAllReadsRootAndExtra(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KLAUDIA_CONFIG_DIR", "")
+	root := t.TempDir()
+	cwd := filepath.Join(root, "sub")
+	os.MkdirAll(cwd, 0o755)
+	extra := t.TempDir()
+	writeAgent(t, filepath.Join(root, ".klaudia", "agents"), "fromroot.md",
+		"---\nname: fromroot\ndescription: at the root\n---\nRoot.")
+	writeAgent(t, filepath.Join(cwd, ".klaudia", "agents"), "fromcwd.md",
+		"---\nname: fromcwd\ndescription: in the subdir\n---\nCwd.")
+	writeAgent(t, filepath.Join(extra, ".klaudia", "agents"), "fromextra.md",
+		"---\nname: fromextra\ndescription: extra\n---\nExtra.")
+
+	got := LoadAll(cwd, root, []string{extra}, nil, nil)
+	for _, name := range []string{"fromroot", "fromcwd", "fromextra"} {
+		if _, ok := Find(got, name); !ok {
+			t.Errorf("LoadAll missed %s", name)
+		}
+	}
+
+	writeAgent(t, filepath.Join(root, ".klaudia", "agents"), "twice.md",
+		"---\nname: twice\ndescription: once\n---\nOnce.")
+	var n int
+	for _, ty := range LoadAll(root, root, nil, nil, nil) {
+		if ty.Name == "twice" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("root equal to cwd loaded twice %d times", n)
 	}
 }
 
