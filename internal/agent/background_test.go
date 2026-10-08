@@ -239,6 +239,33 @@ func TestWriterFailsWhenIsolationFails(t *testing.T) {
 	}
 }
 
+// A type that says isolation: none stays in the shared tree even though it
+// writes and worktrees are on. The type opted out; cutting a checkout for it
+// would discard that choice.
+func TestBackgroundWriterWithIsolationNoneSharesTheTree(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "shared\n"}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+	}}, tools.NewRegistry(w), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Isolation: "none"}})
+
+	id, _, err := s.SpawnBackground("", nil, "Patcher", "write it", "rw", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { a, _ := s.Background().Get(id); return a.Done() })
+
+	wrote := w.wrote()
+	if len(wrote) != 1 || wrote[0] != root {
+		t.Fatalf("child wrote %v, want the shared tree %s", wrote, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "made.txt")); err != nil {
+		t.Errorf("the file never reached the shared tree: %v", err)
+	}
+}
+
 // A read-only type shares the parent tree even when isolation is on: a checkout
 // would make every path it returns wrong, and there is nothing to isolate.
 func TestBackgroundReadOnlySharesTree(t *testing.T) {

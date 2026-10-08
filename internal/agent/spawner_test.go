@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
@@ -117,6 +118,22 @@ func TestSpawnHonoursExplicitMaxTurns(t *testing.T) {
 	}
 	if provider.calls > 3 {
 		t.Errorf("explicit max-turns ignored: %d calls", provider.calls)
+	}
+}
+
+// A type that names its own maxTurns stops there even when the session's
+// bound is higher. The type's author wrote the bound for a reason.
+func TestSpawnHonoursTheTypesMaxTurns(t *testing.T) {
+	dir, path := fixtureFile(t)
+	provider := &repeatProvider{turn: toolUseTurn(t, "tu1", "Read", map[string]any{"file_path": path})}
+	s := readOnlySpawner(t, provider, dir, 50).WithTypes([]subagent.Type{{
+		Name: "Reviewer", Tools: []string{"Read"}, MaxTurns: 2,
+	}})
+	if _, _, err := s.Spawn(context.Background(), nil, "Reviewer", "loop", nil); err != nil {
+		t.Fatal(err)
+	}
+	if provider.calls > 3 {
+		t.Errorf("the type's maxTurns was ignored: %d calls", provider.calls)
 	}
 }
 

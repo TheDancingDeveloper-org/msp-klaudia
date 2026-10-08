@@ -381,6 +381,12 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 	if maxTurns <= 0 {
 		maxTurns = defaultSubagentMaxTurns
 	}
+	// The type's own bound is tighter than the shared one and wins. A
+	// reviewer that should stop after a handful of turns must not inherit
+	// the fifty-turn default.
+	if t.MaxTurns > 0 && (maxTurns <= 0 || t.MaxTurns < maxTurns) {
+		maxTurns = t.MaxTurns
+	}
 	// Give the child the model's real window. Leaving this 0 fell back to the
 	// 200k compaction default, so a sub-agent on a 1M model summarised its
 	// history at a fifth of the room it actually had.
@@ -491,7 +497,7 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 		return "", "", err
 	}
 	reg := s.Background()
-	isolate := s.isolate && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+	isolate := s.isolate && t.Isolation != "none" && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
