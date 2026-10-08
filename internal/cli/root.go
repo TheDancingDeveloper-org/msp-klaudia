@@ -70,7 +70,7 @@ type agentWiring struct {
 // /mode, a frontend's own approver), so the Agent tool captures them per call
 // from tools.Context. What is fixed for the process — the provider, the tool
 // registry, the working dir, the trust gate — still lives here.
-func withAgentTool(base *tools.Registry, provider api.Provider, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type, worktrees bool) (*agentWiring, error) {
+func withAgentTool(base *tools.Registry, provider api.Provider, maxTurns int, deferred map[string]bool, workingDir string, host *agent.HostGate, types []subagent.Type, worktrees bool, maxDepth int) (*agentWiring, error) {
 	if len(types) == 0 {
 		types = subagent.Builtin()
 	}
@@ -81,7 +81,11 @@ func withAgentTool(base *tools.Registry, provider api.Provider, maxTurns int, de
 		// A sub-agent that can write gets its own seeded checkout, adopted back
 		// when it finishes ([subagents] worktree, on by default). One knob for
 		// both the synchronous and the background path.
-		WithWorktrees(worktrees)
+		WithWorktrees(worktrees).
+		// A child below maxDepth is handed the Agent tool, reporting its own
+		// depth, so the next launch is one deeper. The default of 1 means a
+		// child has no Agent tool and cannot launch another.
+		WithAgentTool(nil, maxDepth)
 
 	infos := make([]tools.AgentTypeInfo, 0)
 	for _, t := range types {
@@ -91,6 +95,9 @@ func withAgentTool(base *tools.Registry, provider api.Provider, maxTurns int, de
 	if err != nil {
 		return nil, err
 	}
+	// The tool cannot be named until it exists, and it is built from the
+	// spawner, so the spawner learns it here rather than at construction.
+	spawner.WithAgentTool(agentTool, maxDepth)
 	return &agentWiring{
 		registry:  tools.NewRegistry(append(base.All(), agentTool)...),
 		spawner:   spawner,
@@ -1760,7 +1767,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// do rather than only what failed.
 	approver := agent.HeadlessApprover(opts.allowHostChanges)
 	agentTypes := subagent.LoadAll(cwd, root, cliExtraDirs, base.Names(), func(m string) { fmt.Fprintln(cmd.ErrOrStderr(), "warning:", m) })
-	wiring, err := withAgentTool(base, provider, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees())
+	wiring, err := withAgentTool(base, provider, opts.maxTurns, deferredTools, cwd, hostGate, agentTypes, cfg.SubagentWorktrees(), cfg.SubagentMaxDepth())
 	if err != nil {
 		return err
 	}
