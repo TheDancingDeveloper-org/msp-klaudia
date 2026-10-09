@@ -92,6 +92,13 @@ func Parse(input string) (Analysis, error) {
 	if err != nil {
 		return Analysis{}, err
 	}
+	// lastpipe makes bash run the last command of a pipe in the current shell, so
+	// a cd there does move the shell that runs what follows. It can be enabled at
+	// any point of the line before the pipe, and whether it is on is shell state
+	// this reading does not track, so a line that mentions it is not sequential:
+	// no cd on it is followed, and every git on it is judged where the line
+	// started. (The same goes for `set -o lastpipe`: the mention test covers it.)
+	lastpipe := strings.Contains(input, "lastpipe")
 
 	var a Analysis
 	// bg is a stack parallel to the walk: whether the node being visited sits
@@ -178,7 +185,7 @@ func Parse(input string) (Analysis, error) {
 			Background: background[n],
 		})
 	}
-	a.Sequential = sequential(prog, a.Commands, calls)
+	a.Sequential = sequential(prog, a.Commands, calls) && !lastpipe
 	return a, nil
 }
 
