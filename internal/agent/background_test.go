@@ -347,6 +347,9 @@ func TestBackgroundSystemPromptCarriesProjectContext(t *testing.T) {
 	if !strings.Contains(sys, "always run the tests") {
 		t.Errorf("system prompt dropped CLAUDE.md:\n%s", sys)
 	}
+	if !strings.Contains(sys, "Report contract") {
+		t.Errorf("system prompt has no report contract:\n%s", sys)
+	}
 }
 
 // captureProvider records the system prompt of the one turn it is asked for.
@@ -657,5 +660,24 @@ func TestForegroundChildIsRegisteredAndCollected(t *testing.T) {
 	}
 	if got := sp.Background().PendingReport(); got != "" {
 		t.Errorf("the foreground result was also delivered as a background report:\n%s", got)
+	}
+}
+
+// A name is unique among the children still running in one conversation. A
+// finished child releases it, and another conversation never held it.
+func TestRegisterNamedScopesTheName(t *testing.T) {
+	r := NewBackgroundRegistry()
+	if _, err := r.registerNamed("c1", "Explore", "scout", "scout", false, "", true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.registerNamed("c1", "Explore", "scout", "again", false, "", true, nil); err == nil {
+		t.Fatal("a second running child took a name the first still holds")
+	}
+	if _, err := r.registerNamed("c2", "Explore", "scout", "other", false, "", true, nil); err != nil {
+		t.Fatalf("another conversation was refused a name it does not hold: %v", err)
+	}
+	r.finish("agent-1", "done", nil, nil)
+	if _, err := r.registerNamed("c1", "Explore", "scout", "again", false, "", true, nil); err != nil {
+		t.Fatalf("a finished child still held the name: %v", err)
 	}
 }

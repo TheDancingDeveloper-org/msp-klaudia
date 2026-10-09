@@ -105,8 +105,44 @@ func TestAgentBackgroundReturnsHandleWithoutBlocking(t *testing.T) {
 func TestAgentDescriptionListsTypes(t *testing.T) {
 	a := newTestAgent(t, &fakeSpawner{})
 	desc, _ := a.Description(context.Background())
-	if !contains(desc, "general-purpose") || !contains(desc, "Explore") {
-		t.Errorf("description missing types: %s", desc)
+	for _, want := range []string{
+		"general-purpose", "Explore",
+		"background=true", "isolation", "worktree", "<usage>", "agent-N",
+	} {
+		if !contains(desc, want) {
+			t.Errorf("description missing %q:\n%s", want, desc)
+		}
+	}
+}
+
+func TestAgentValidateIsolationAndTurns(t *testing.T) {
+	a := newTestAgent(t, &fakeSpawner{})
+	ok, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "worktree", Model: "sonnet", MaxTurns: 3, Name: "scout"})
+	if err := a.ValidateInput(ok); err != nil {
+		t.Errorf("valid input rejected: %v", err)
+	}
+	bad, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", Isolation: "fork"})
+	if err := a.ValidateInput(bad); err == nil {
+		t.Error("isolation \"fork\" was accepted")
+	}
+	neg, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", MaxTurns: -1})
+	if err := a.ValidateInput(neg); err == nil {
+		t.Error("negative max_turns was accepted")
+	}
+	good, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`{"type":"object"}`)})
+	if err := a.ValidateInput(good); err != nil {
+		t.Errorf("a valid output_schema was rejected: %v", err)
+	}
+	broken, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`"not an object"`)})
+	if err := a.ValidateInput(broken); err == nil {
+		t.Error("an output_schema that is not an object was accepted")
+	}
+	// A $ref is followed by the schema compiler, whose default loader reads
+	// file:// URLs. The schema arrives from the model, so that would be a
+	// file read with no trust check. It is refused before anything is read.
+	ref, _ := json.Marshal(AgentInput{Prompt: "x", SubagentType: "Explore", Description: "d", OutputSchema: json.RawMessage(`{"$ref":"file:///etc/hostname"}`)})
+	if err := a.ValidateInput(ref); err == nil {
+		t.Error("an output_schema that references a local file was accepted")
 	}
 }
 
@@ -132,5 +168,25 @@ func TestAgentFailureCarriesPartialWork(t *testing.T) {
 	}
 	if !res[0].IsError || !strings.Contains(res[0].Content, "overloaded") || !strings.Contains(res[0].Content, "found the config") {
 		t.Errorf("result = %+v, want the error and the partial work", res[0])
+	}
+}
+
+func TestAgentSchemaIsolationEnum(t *testing.T) {
+	a, err := NewAgent(&fakeSpawner{}, []AgentTypeInfo{{Name: "Explore"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(a.InputSchema(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := doc.Properties["isolation"].Enum
+	want := []string{IsolationAuto, IsolationWorktree, IsolationShared}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("isolation enum = %v, want %v", got, want)
 	}
 }

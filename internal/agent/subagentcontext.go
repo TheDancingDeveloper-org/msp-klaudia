@@ -15,8 +15,16 @@ import (
 // carries (cli.withExtraDirs) and a child would otherwise never hear about. A
 // function here rather than a call in Spawn, whose prompt parameter shadows
 // the package.
+// reportContract is appended to every child's system prompt. It does not make
+// the child right; it makes a report that asserts without evidence visible
+// as one, which is what the parent has to judge the result by.
+const reportContract = "\n\n# Report contract\n" +
+	"Your final message is a report, not a conversation. State the commands you ran and the " +
+	"paths you counted. Distinguish what you measured (a command's output, a file's contents) " +
+	"from what you inferred. Do not state a count, a path or an outcome you did not check."
+
 func subagentSystem(typePrompt, workingDir string, extraDirs []string) string {
-	sys := prompt.Subagent(typePrompt, workingDir)
+	sys := prompt.Subagent(typePrompt, workingDir) + reportContract
 	if len(extraDirs) == 0 {
 		return sys
 	}

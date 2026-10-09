@@ -15,7 +15,11 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/api"
+	"github.com/greenthread-ai/klaudia/internal/config"
+	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/sandbox"
+	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
@@ -300,6 +304,126 @@ func TestFailedSubAgentKeepsItsCheckoutAndSaysWhere(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
 		t.Error("a failed child's work was applied to the user's tree")
+	}
+}
+
+// verify runs against the checkout before adoption. A failing command keeps
+// the checkout, leaves the user's tree untouched, and the output is part of
+// what comes back.
+func TestVerifyFailureBlocksAdoption(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	bash, err := tools.NewBash(sandbox.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, bash), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).WithHooks(userHooks(t)).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write", "Bash"}, Verify: "echo verify-broke >&2; exit 1"}})
+
+	text, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "verify failed") {
+		t.Fatalf("verify failure was not reported: %v", err)
+	}
+	if !strings.Contains(text, "verify-broke") {
+		t.Errorf("the command's output was dropped: %q", text)
+	}
+	dir := strings.TrimSuffix(err.Error()[strings.LastIndex(err.Error(), "left in ")+len("left in "):], ")")
+	if _, statErr := os.Stat(filepath.Join(dir, "made.txt")); statErr != nil {
+		t.Errorf("the checkout was removed after a failed verify: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("a failed verify still adopted the child's work")
+	}
+}
+
+// A verify command that passes does not get in the way: the child's work is
+// adopted and the checkout removed, exactly as if no command were set.
+func TestVerifySuccessAdopts(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	bash, err := tools.NewBash(sandbox.NewLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, bash), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).WithHooks(userHooks(t)).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write", "Bash"}, Verify: "test -s made.txt"}})
+
+	if _, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr != nil {
+		t.Errorf("a passing verify did not adopt the child's work: %v", statErr)
+	}
+}
+
+// A project that declares its own hooks and has not been approved is not
+// trusted, and its verify command must not run. The child's work stays in
+// the checkout rather than being adopted on the strength of a check that
+// never happened.
+func TestUntrustedProjectDoesNotRunVerify(t *testing.T) {
+	root := gitRepo(t)
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	ran := &hookProbeTool{}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, ran), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithHooks(hooks.New(root, "sess", nil, []config.Hook{{Event: "PreToolUse", Command: "true"}})).
+		WithTypes([]subagent.Type{{Name: "Patcher", Tools: []string{"Write"}, Verify: "touch verify-ran"}})
+
+	_, _, err := s.Spawn(context.Background(), nil, "Patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("an untrusted project's verify was not refused: %v", err)
+	}
+	if ran.calls != 0 {
+		t.Errorf("the verify command ran %d times in an untrusted project", ran.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("an untrusted project's child was adopted without its verify running")
+	}
+}
+
+// The same refusal holds when the verify command comes from the project's own
+// agent file rather than a type built in the test. The file is what an
+// untrusted checkout can actually write, so that is the path that matters.
+func TestUntrustedProjectFileVerifyDoesNotRun(t *testing.T) {
+	root := gitRepo(t)
+	os.MkdirAll(filepath.Join(root, ".klaudia", "agents"), 0o755)
+	os.WriteFile(filepath.Join(root, ".klaudia", "agents", "patcher.md"), []byte(
+		"---\nname: patcher\ndescription: patches\ntools: [Write]\nverify: touch verify-ran\n---\nPatch."), 0o644)
+	loaded := subagent.LoadAll(root, "", nil, []string{"Write"}, nil)
+	found, ok := subagent.Find(loaded, "patcher")
+	if !ok || found.Verify != "touch verify-ran" {
+		t.Fatalf("verify did not load from the file: %+v", found)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "done\n"}
+	ran := &hookProbeTool{}
+	s := NewSpawner(&scriptedProvider{turns: []anthropic.BetaMessage{
+		toolUseTurn(t, "tu1", "Write", map[string]any{}),
+		reply(t, "wrote it"),
+	}}, tools.NewRegistry(w, ran), "claude-opus-4-8", bypassPerm(), nil, 2).
+		WithWorkingDir(root).WithWorktrees(true).
+		WithHooks(hooks.New(root, "sess", nil, []config.Hook{{Event: "PreToolUse", Command: "true"}})).
+		WithTypes(loaded)
+
+	_, _, err := s.Spawn(context.Background(), nil, "patcher", "go", nil)
+	if err == nil || !strings.Contains(err.Error(), "not approved") {
+		t.Fatalf("a verify loaded from an untrusted project file was not refused: %v", err)
+	}
+	if ran.calls != 0 {
+		t.Errorf("the file's verify command ran %d times", ran.calls)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "made.txt")); statErr == nil {
+		t.Error("the child's work was adopted though its verify never ran")
 	}
 }
 

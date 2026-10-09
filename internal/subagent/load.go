@@ -120,6 +120,7 @@ type agentFrontmatter struct {
 	MaxTurns        int    `yaml:"maxTurns"`
 	DisallowedTools any    `yaml:"disallowedTools"`
 	Isolation       string `yaml:"isolation"`
+	Verify          string `yaml:"verify"`
 }
 
 func parseAgentFile(path string) (Type, []string, error) {
@@ -186,6 +187,7 @@ func parseAgentFile(path string) (Type, []string, error) {
 		MaxTurns:        fm.MaxTurns,
 		DisallowedTools: toolList(fm.DisallowedTools),
 		Isolation:       isolation,
+		Verify:          strings.TrimSpace(fm.Verify),
 	}
 	toolsNamed := fm.Tools != nil
 	switch v := fm.Tools.(type) {
@@ -249,7 +251,7 @@ func samePath(a, b string) bool {
 // definition written for Claude Code is reported once and otherwise ignored.
 var honouredKeys = map[string]bool{
 	"name": true, "description": true, "tools": true, "disallowedtools": true,
-	"model": true, "maxturns": true, "isolation": true,
+	"model": true, "maxturns": true, "isolation": true, "verify": true,
 	// color is decorative and has been silently skipped since agent files
 	// were first read, so it stays quiet rather than warning on every file.
 	"color": true,
@@ -297,7 +299,7 @@ func maxTurnsNotInteger(raw string) bool {
 // one begins a new field; any other line continues the field before it.
 var agentKeys = map[string]bool{
 	"name": true, "description": true, "tools": true, "model": true,
-	"maxturns": true, "disallowedtools": true, "isolation": true,
+	"maxturns": true, "disallowedtools": true, "isolation": true, "verify": true,
 	"color": true, "permissionmode": true, "skills": true, "hooks": true,
 	"background": true, "memory": true, "effort": true,
 }
@@ -329,6 +331,7 @@ func lenientAgentFrontmatter(fm string) (agentFrontmatter, bool) {
 		Description: strings.TrimSpace(vals["description"]),
 		Model:       strings.TrimSpace(vals["model"]),
 		Isolation:   strings.TrimSpace(vals["isolation"]),
+		Verify:      strings.TrimSpace(vals["verify"]),
 	}
 	if t := strings.Trim(strings.TrimSpace(vals["tools"]), "[]"); t != "" {
 		out.Tools = t

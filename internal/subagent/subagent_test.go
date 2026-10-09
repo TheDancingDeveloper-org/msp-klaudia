@@ -10,6 +10,14 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/tools"
 )
 
+func TestIsolationVocabularyMatchesTheTool(t *testing.T) {
+	if IsolationAuto != tools.IsolationAuto || IsolationWorktree != tools.IsolationWorktree || IsolationShared != tools.IsolationShared {
+		t.Fatalf("type consts (%q %q %q) differ from the tool's (%q %q %q)",
+			IsolationAuto, IsolationWorktree, IsolationShared,
+			tools.IsolationAuto, tools.IsolationWorktree, tools.IsolationShared)
+	}
+}
+
 func TestBuiltinLookup(t *testing.T) {
 	for _, name := range []string{"general-purpose", "Explore", "Plan"} {
 		if _, ok := Lookup(name); !ok {

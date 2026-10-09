@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 	"github.com/greenthread-ai/klaudia/internal/hooks"
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/schema"
 	"github.com/greenthread-ai/klaudia/internal/subagent"
 	"github.com/greenthread-ai/klaudia/internal/tools"
 	"github.com/greenthread-ai/klaudia/internal/worktree"
@@ -53,6 +55,25 @@ type ChildSpec struct {
 	// child should be cut from, instead of the session's. "" means the
 	// session's. It is validated against WorkingDir and ExtraDirs.
 	RequestedDir string
+	// RequestedModel is the Agent tool's model input, an alias or a full id.
+	// "" means the type's model, or the launching turn's when the type names
+	// none. It wins over both. A model the provider cannot serve is replaced
+	// and the result says so.
+	RequestedModel string
+	// RequestedIsolation is the Agent tool's isolation input. "" means the
+	// type's own isolation. It wins over the type.
+	RequestedIsolation string
+	// RequestedMaxTurns is the Agent tool's max_turns input. 0 means the
+	// type's bound, or the session's. It wins over the type and is itself
+	// capped by the session's bound.
+	RequestedMaxTurns int
+	// Name is the Agent tool's name input: the caller's handle for this
+	// child. It must be unique in the session. "" means none. The registry
+	// id (agent-N) is still what delivery uses.
+	Name string
+	// OutputSchema, when set, is a JSON Schema the child's final message must
+	// match. A mismatch gets exactly one more turn, then an error.
+	OutputSchema json.RawMessage
 	// Conversation is the launching turn's Turn.Conversation, so the child's
 	// registry entry is delivered back to the same conversation. "" for a
 	// frontend with only one.
@@ -63,32 +84,53 @@ type ChildSpec struct {
 // nil — a caller that predates the per-call capture — is the zero spec, which
 // falls back to what the Spawner was built with. Anything else that does not
 // implement the interface is the zero spec too: a spec the spawner cannot
-// read is no better than none. A requested working directory travels on the
-// spec (tools.requestedDirSpec) rather than on ParentContext, because it is
-// one tool call's input and not a property of the turn.
+// read is no better than none. One tool call's inputs (working_dir, model,
+// isolation, max_turns, name) travel on the spec (tools.callOverrides) rather
+// than on ParentContext, because they are one call's input and not a
+// property of the turn.
 func childSpecFrom(spec any) ChildSpec {
-	requested := ""
-	if r, ok := spec.(interface{ RequestedWorkingDir() string }); ok && r != nil {
-		requested = r.RequestedWorkingDir()
-	}
+	call := callOverridesOf(spec)
 	pc, ok := spec.(tools.ParentContext)
 	if !ok || pc == nil {
-		return ChildSpec{RequestedDir: requested}
+		return call
 	}
 	approver, _ := pc.ParentApprover().(Approver)
-	return ChildSpec{
-		Approver:     approver,
-		Mode:         pc.ParentMode(),
-		Model:        pc.ParentModel(),
-		Effort:       pc.ParentEffort(),
-		Thinking:     pc.ParentThinking(),
-		BeforeEdit:   pc.ParentBeforeEdit(),
-		ExtraDirs:    pc.ParentExtraDirs(),
-		Budget:       pc.ParentBudget(),
-		WorkingDir:   pc.ParentWorkingDir(),
-		Conversation: pc.ParentConversation(),
-		RequestedDir: requested,
+	call.Approver = approver
+	call.Mode = pc.ParentMode()
+	call.Model = pc.ParentModel()
+	call.Effort = pc.ParentEffort()
+	call.Thinking = pc.ParentThinking()
+	call.BeforeEdit = pc.ParentBeforeEdit()
+	call.ExtraDirs = pc.ParentExtraDirs()
+	call.Budget = pc.ParentBudget()
+	call.WorkingDir = pc.ParentWorkingDir()
+	call.Conversation = pc.ParentConversation()
+	return call
+}
+
+// callOverridesOf reads one Agent tool call's inputs off the spec. Each
+// method is optional: a caller that predates an input simply does not set it.
+func callOverridesOf(spec any) ChildSpec {
+	var out ChildSpec
+	if r, ok := spec.(interface{ RequestedWorkingDir() string }); ok && r != nil {
+		out.RequestedDir = r.RequestedWorkingDir()
 	}
+	if r, ok := spec.(interface{ RequestedModel() string }); ok && r != nil {
+		out.RequestedModel = r.RequestedModel()
+	}
+	if r, ok := spec.(interface{ RequestedIsolation() string }); ok && r != nil {
+		out.RequestedIsolation = r.RequestedIsolation()
+	}
+	if r, ok := spec.(interface{ RequestedMaxTurns() int }); ok && r != nil {
+		out.RequestedMaxTurns = r.RequestedMaxTurns()
+	}
+	if r, ok := spec.(interface{ RequestedName() string }); ok && r != nil {
+		out.Name = r.RequestedName()
+	}
+	if r, ok := spec.(interface{ RequestedOutputSchema() json.RawMessage }); ok && r != nil {
+		out.OutputSchema = r.RequestedOutputSchema()
+	}
+	return out
 }
 
 // Spawner runs sub-agents. It implements tools.Spawner so the Agent tool can
@@ -112,6 +154,11 @@ type Spawner struct {
 	workingDir   string
 	hostGate     *HostGate
 	providerName string
+	// contextWindow is the configured context-window override (cfg.ContextWindow).
+	// 0 means none. A child inherits it: leaving it at 0 makes ContextWindowFor
+	// fall back to the 200k default on a provider whose parent was given a
+	// larger window.
+	contextWindow int
 
 	// background tracks sub-agents launched with SpawnBackground. Created lazily
 	// so a Spawner built without one (older callers, tests) still runs
@@ -177,6 +224,13 @@ func (s *Spawner) WithWorkingDir(dir string) *Spawner {
 // from Claude's tables on Anthropic, from the unknown-model defaults elsewhere.
 func (s *Spawner) WithProviderName(name string) *Spawner {
 	s.providerName = name
+	return s
+}
+
+// WithContextWindow records the configured context-window override, so a
+// child sizes its window the way the parent does. 0 means no override.
+func (s *Spawner) WithContextWindow(n int) *Spawner {
+	s.contextWindow = n
 	return s
 }
 
@@ -264,6 +318,7 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
+	prompt = withOutputSchema(prompt, spec.OutputSchema)
 
 	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
@@ -275,11 +330,14 @@ func (s *Spawner) spawn(ctx context.Context, spec ChildSpec, subagentType, promp
 	// sits in: adoption applies the child's patch to t.Root, and an edit the
 	// child made above the session's subdirectory only lands when that root is
 	// the repository.
-	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(ctx, repo)
+	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	reg := s.Background()
-	id := reg.register(spec.Conversation, subagentType, "", isolate, prov.String(), false, cancel)
+	id, err := reg.registerNamed(spec.Conversation, subagentType, spec.Name, spec.Name, isolate, prov.String(), false, cancel)
+	if err != nil {
+		return "", nil, err
+	}
 	var childErr error
 	defer func() {
 		// A foreground child is delivered by the tool result, not by the
@@ -340,13 +398,7 @@ func progressEmitter(progress func(string)) Emitter {
 // the same type are distinguishable. usage is nil when the run never started.
 func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type, prompt, workingDir, id, label string, emit Emitter) (string, *tools.ChildUsage, error) {
 	childTools := subagentTools(t.Filter(s.base))
-	model := subagentModel(s.model, t.Model)
-	if spec.Model != "" {
-		// The launching turn's model wins over the wiring-time one: /model
-		// between startup and this launch has to reach the child. A type that
-		// names its own model still wins over both.
-		model = subagentModel(anthropic.Model(spec.Model), t.Model)
-	}
+	model, notice := s.resolveChildModel(spec, t)
 
 	perm := s.permission
 	if spec.Mode != nil {
@@ -384,24 +436,16 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		budget = *spec.Budget
 	}
 
-	maxTurns := s.maxTurns
-	if maxTurns <= 0 {
-		maxTurns = defaultSubagentMaxTurns
-	}
-	// The type's own bound is tighter than the shared one and wins. A
-	// reviewer that should stop after a handful of turns must not inherit
-	// the fifty-turn default.
-	if t.MaxTurns > 0 && (maxTurns <= 0 || t.MaxTurns < maxTurns) {
-		maxTurns = t.MaxTurns
-	}
-	// Give the child the model's real window. Leaving this 0 fell back to the
-	// 200k compaction default, so a sub-agent on a 1M model summarised its
-	// history at a fifth of the room it actually had.
-	ctxWindow, _ := api.ContextWindowFor(s.providerName, string(model), 0)
+	maxTurns := s.childMaxTurns(spec, t)
+	// Give the child the model's real window, and the configured override the
+	// parent was given. Leaving the override at 0 fell back to the 200k
+	// compaction default on a provider whose parent was told otherwise, so a
+	// sub-agent summarised its history at a fraction of the room it had.
+	ctxWindow, _ := api.ContextWindowFor(s.providerName, string(model), s.contextWindow)
 
 	start := time.Now()
 	loop := New(s.provider, childTools)
-	res, err := loop.Run(ctx, Options{
+	opts := Options{
 		Prompt:        prompt,
 		Model:         model,
 		System:        t.SystemPrompt,
@@ -420,7 +464,8 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		Hooks:         s.hooks,
 		CommandGuard:  s.guard,
 		SubAgent:      true,
-	}, emit)
+	}
+	res, err := loop.Run(ctx, opts, emit)
 	usage := childUsageOf(string(model), res)
 	if err != nil {
 		// What the sub-agent had already worked out is not lost with it: the
@@ -428,9 +473,9 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 		// Returning "" threw away everything it found before a stream error
 		// or an overload ended its run.
 		if res.Text != "" {
-			return fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
+			return notice + fmt.Sprintf("[Sub-agent failed after %d turn(s); its last completed reply follows and may be incomplete.]\n\n%s", res.NumTurns, res.Text), usage, err
 		}
-		return "", usage, err
+		return notice, usage, err
 	}
 	// Say so rather than passing back a truncated answer as if it were complete.
 	if res.StopReason == "max_turns" || res.StopReason == "max_budget" {
@@ -440,12 +485,188 @@ func (s *Spawner) runChild(ctx context.Context, spec ChildSpec, t subagent.Type,
 			note = "[Sub-agent stopped because it reached its budget before finishing. " +
 				"The result below may be incomplete.]"
 		}
-		if res.Text == "" {
-			return note + subagentUsage(res, time.Since(start)), usage, nil
-		}
-		return note + "\n\n" + res.Text + subagentUsage(res, time.Since(start)), usage, nil
+		res.Text = note + "\n\n" + res.Text
 	}
-	return res.Text + subagentUsage(res, time.Since(start)), usage, nil
+	if mismatch := outputMismatch(spec.OutputSchema, res.Text); mismatch != nil {
+		// The retry spends too. Its usage replaces nothing: the two runs are
+		// one child's cost. The budget it is handed is what the first run left.
+		first := res
+		opts.MaxBudgetUSD = budgetRemaining(budget, first)
+		res, err = retryForSchema(ctx, loop, opts, first, mismatch.Error(), emit)
+		usage = addUsage(childUsageOf(string(model), first), childUsageOf(string(model), res))
+		if err != nil {
+			return notice, usage, err
+		}
+		if again := outputMismatch(spec.OutputSchema, res.Text); again != nil {
+			return notice + res.Text + subagentUsage(res, time.Since(start)), usage, fmt.Errorf("the sub-agent's answer does not match output_schema after one retry: %w\n\n%s", again, res.Text)
+		}
+	}
+	if out, verr := s.verify(ctx, loop, opts, t.Verify, workingDir, id); verr != nil {
+		text := notice + res.Text
+		if out != "" {
+			text += "\n\n[verify failed]\n" + out
+		}
+		return text, usage, fmt.Errorf("verify failed: %w", verr)
+	}
+	return notice + res.Text + subagentUsage(res, time.Since(start)), usage, nil
+}
+
+// verify runs the type's verify command in dir, as a Bash call through the
+// child's own loop, so it passes the command guard, the host gate, the
+// approver and the sandbox exactly as the child's own commands did. The
+// approver sees it labelled as this child's verify.
+//
+// It does not run at all unless the project may run its own commands. A
+// verify command comes from the type, and a type can come from the
+// repository's own agent files, so an untrusted checkout must not be able
+// to name a command that runs here. A project may run them when its hooks
+// are approved (the same decision, once, for everything the repository asks
+// to execute) or when it declares no project hooks, in which case there is
+// nothing to approve. "May run" is not "trusted": the command is still
+// gated by the guard, the host gate, the approver and the sandbox like any
+// other. With no hook runner wired there is no record of that decision,
+// and the command does not run. In a headless session the approver denies
+// anything that would ask, so a verify that needs approval fails the child
+// and its checkout is left unadopted.
+func (s *Spawner) verify(ctx context.Context, loop *Loop, opts Options, command, dir, who string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", nil
+	}
+	if !s.projectMayRunCommands() {
+		return "", fmt.Errorf("not run: this project's commands are not approved, and a verify command comes from the project")
+	}
+	raw, err := json.Marshal(struct {
+		Command     string `json:"command"`
+		Description string `json:"description"`
+	}{Command: command, Description: who + " verify"})
+	if err != nil {
+		return "", err
+	}
+	opts.WorkingDir = dir
+	var text string
+	var failed bool
+	emit := func(ev Event) {
+		if ev.Type == "tool_result" && ev.ToolUseID == "verify" {
+			text = ev.Content
+			failed = ev.IsError
+		}
+	}
+	block := anthropic.BetaToolUseBlock{ID: "verify", Name: "Bash", Input: json.RawMessage(raw)}
+	loop.dispatch(ctx, block, opts, 0, emit, nil, newFailureState())
+	if failed {
+		return text, fmt.Errorf("%s", strings.TrimSpace(text))
+	}
+	return "", nil
+}
+
+// projectMayRunCommands reports whether a command that comes from the project
+// may be attempted. Project hooks are the one other thing a repository asks
+// to execute, and they run only once the project is approved, so verify
+// follows that decision: approved, or no project hooks to approve. Neither
+// means the command is trusted; it is still gated like any Bash call. With
+// no hook runner there is no record of the decision, and the command does
+// not run.
+func (s *Spawner) projectMayRunCommands() bool {
+	if s.hooks == nil {
+		return false
+	}
+	if s.hooks.ProjectApproved() {
+		return true
+	}
+	for _, h := range s.hooks.All() {
+		if h.Project {
+			return false
+		}
+	}
+	return true
+}
+
+// the first answer is aimed at the schema rather than corrected after the fact.
+func withOutputSchema(prompt string, raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return prompt
+	}
+	return prompt + "\n\nYour final message must be only a JSON value matching this schema, with no surrounding prose:\n" + string(raw)
+}
+
+// outputMismatch reports why text does not satisfy schema. nil when no schema
+// was asked for, or when the text is the JSON the schema describes. The text
+// is checked as itself, not as a JSON string of itself: the child was asked
+// to reply with the object, so the object is what is validated.
+func outputMismatch(raw json.RawMessage, text string) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	compiled, err := schema.Compile(raw)
+	if err != nil {
+		return fmt.Errorf("output_schema: %w", err)
+	}
+	if err := compiled.Validate(json.RawMessage(jsonText(text))); err != nil {
+		return err
+	}
+	return nil
+}
+
+// jsonText is the JSON in a reply. A model that was asked for JSON often
+// wraps it in a ```json fence anyway; the fence is not part of the answer.
+func jsonText(text string) string {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "```") {
+		return text
+	}
+	text = strings.TrimPrefix(text, "```")
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[i+1:]
+	}
+	text = strings.TrimSuffix(strings.TrimSpace(text), "```")
+	return strings.TrimSpace(text)
+}
+
+// addUsage sums two runs of one child. A nil run spent nothing.
+func addUsage(a, b *tools.ChildUsage) *tools.ChildUsage {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	return &tools.ChildUsage{
+		Model:                    a.Model,
+		InputTokens:              a.InputTokens + b.InputTokens,
+		OutputTokens:             a.OutputTokens + b.OutputTokens,
+		CacheReadInputTokens:     a.CacheReadInputTokens + b.CacheReadInputTokens,
+		CacheCreationInputTokens: a.CacheCreationInputTokens + b.CacheCreationInputTokens,
+		APIDuration:              a.APIDuration + b.APIDuration,
+		CostUSD:                  a.CostUSD + b.CostUSD,
+	}
+}
+
+// budgetRemaining is what a budget still allows after a run. A budget of 0
+// means there is no budget, and it stays that way.
+func budgetRemaining(budget float64, res Result) float64 {
+	if budget <= 0 {
+		return 0
+	}
+	left := budget - res.CostUSD
+	if left < 0 {
+		return 0
+	}
+	return left
+}
+
+// retryForSchema gives the child one more turn to correct an answer that did
+// not match its output_schema. The first run's conversation is replayed and
+// the failure appended, so it sees what it said and why it was refused, and
+// the bound is one turn: the retry is not a second run.
+func retryForSchema(ctx context.Context, loop *Loop, opts Options, first Result, why string, emit Emitter) (Result, error) {
+	opts.Prompt = ""
+	opts.InitialMessages = append(append([]anthropic.BetaMessageParam{}, first.Messages...),
+		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(
+			"Your previous reply does not match the required output_schema: "+why+
+				"\nReply again with only the JSON object the schema describes. Nothing else.")))
+	opts.MaxTurns = 1
+	return loop.Run(ctx, opts, emit)
 }
 
 // childUsageOf is the child's spend in the shape the parent folds into its
@@ -498,16 +719,21 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 	// The child sees the environment and the project's instructions, not only
 	// its type's prompt; t is a copy, so the built-in stays as it was.
 	t.SystemPrompt = subagentSystem(t.SystemPrompt, s.workingDir, spec.ExtraDirs)
+	prompt = withOutputSchema(prompt, spec.OutputSchema)
 
 	repo, sub, prov, err := s.childRepo(spec)
 	if err != nil {
 		return "", "", err
 	}
 	reg := s.Background()
-	isolate := s.isolate && !subagent.SharesTree(t.Isolation) && repo != "" && writesFiles(subagentTools(t.Filter(s.base))) && worktree.Supported(context.Background(), repo)
+	isolate := s.isolateChild(t, spec.RequestedIsolation, repo)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	id := reg.register(conversation, subagentType, label, isolate, prov.String(), true, cancel)
+	id, err := reg.registerNamed(conversation, subagentType, spec.Name, firstNonEmpty(label, spec.Name), isolate, prov.String(), true, cancel)
+	if err != nil {
+		cancel()
+		return "", "", err
+	}
 
 	// Background progress cannot go to the launching tool call — that returned
 	// the moment we handed back the id — so it updates the registry entry, which
@@ -749,6 +975,90 @@ func (s *Spawner) collect(ctx context.Context, tree *worktree.Tree, text string,
 	}
 	reportf(progress, "  ↳ %s", rep.Summary())
 	return text + fmt.Sprintf("\n\n[Working tree: %s.]", rep.Summary())
+}
+
+// isolateChild decides whether this child gets its own checkout.
+//
+// The session must have worktrees on, the directory must be a repository,
+// and git must be able to make one. Within that, the call's isolation wins
+// over the type's: worktree isolates even a read-only type, shared (and the
+// older "none") never isolates, and "" or auto isolate only a writer.
+func (s *Spawner) isolateChild(t subagent.Type, requested, repo string) bool {
+	if !s.isolate || repo == "" || !worktree.Supported(context.Background(), repo) {
+		return false
+	}
+	choice := requested
+	if choice == "" {
+		choice = t.Isolation
+	}
+	if subagent.SharesTree(choice) {
+		return false
+	}
+	if choice == subagent.IsolationWorktree {
+		return true
+	}
+	return writesFiles(subagentTools(t.Filter(s.base)))
+}
+
+// resolveChildModel is the model the child runs on, and the notice to prefix
+// to its result. Precedence is the tool input, then the type's model, then
+// the launching turn's (or the spawner's, when the turn named none). A
+// Claude alias on a provider that does not serve one is not sent: the
+// parent model stands in. The notice is empty only when the child runs on
+// the parent's model; any other choice is named, so a haiku session that
+// launches opus does not do it silently.
+func (s *Spawner) resolveChildModel(spec ChildSpec, t subagent.Type) (anthropic.Model, string) {
+	parent := s.model
+	if spec.Model != "" {
+		parent = anthropic.Model(spec.Model)
+	}
+	asked := strings.TrimSpace(spec.RequestedModel)
+	if asked == "" {
+		asked = strings.TrimSpace(t.Model)
+	}
+	if asked == "" {
+		return parent, ""
+	}
+	model := parent
+	substituted := api.AliasWarning(s.providerName, asked) != ""
+	if !substituted {
+		model = api.ResolveModelFor(s.providerName, asked)
+	}
+	if model == parent && !substituted {
+		return model, ""
+	}
+	if substituted {
+		return parent, fmt.Sprintf("[Model %q is not served by this provider; the sub-agent ran on %s instead.]\n\n", asked, parent)
+	}
+	return model, fmt.Sprintf("[The sub-agent ran on %s, not the session's %s.]\n\n", model, parent)
+}
+
+// childMaxTurns is the child's turn bound. The tool input wins over the
+// type, which wins over the session, and a ceiling caps all of them: the
+// session's bound when one is set, otherwise the shared default. A call
+// that asks for ten thousand turns does not get them just because the
+// session left the bound unset.
+func (s *Spawner) childMaxTurns(spec ChildSpec, t subagent.Type) int {
+	ceiling := s.maxTurns
+	if ceiling <= 0 {
+		ceiling = defaultSubagentMaxTurns
+	}
+	maxTurns := spec.RequestedMaxTurns
+	if maxTurns <= 0 {
+		maxTurns = t.MaxTurns
+	}
+	if maxTurns <= 0 || maxTurns > ceiling {
+		return ceiling
+	}
+	return maxTurns
+}
+
+// firstNonEmpty returns the first string that is not empty.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // writesFiles reports whether this toolset can change the working tree.
