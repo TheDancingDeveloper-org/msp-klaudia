@@ -380,3 +380,73 @@ func TestGuardConcurrentFirstTouch(t *testing.T) {
 		}
 	}
 }
+
+// A work tree whose state cannot be read is not left unprotected: the command
+// is judged as an unreadable target is, against the start repository with
+// every protected path in reach.
+func TestGuardFailsClosedWhenCaptureFails(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := clean(t)
+	// rev-parse still finds the work tree; status cannot read it.
+	if err := os.WriteFile(filepath.Join(broken, ".git", "index"), []byte("garbage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Capture(broken); err == nil {
+		t.Fatal("Capture of a repository with a corrupt index succeeded; the test needs it to fail")
+	}
+	msg := b.CheckCommand("git -C "+broken+" add -A", a)
+	if msg == "" {
+		t.Fatal("a command in a work tree that could not be captured was allowed")
+	}
+	if !strings.Contains(msg, "todo.txt") {
+		t.Errorf("refusal does not judge against the start repository's paths: %s", msg)
+	}
+	// A clean start repository has nothing to protect, so it stays allowed.
+	c, err := Capture(clean(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := c.CheckCommand("git -C "+broken+" add -A", a); msg != "" {
+		t.Errorf("clean start refused: %s", msg)
+	}
+}
+
+// The touch every Bash call makes asks git once per directory, not per call;
+// a directory that is not a work tree is asked again, since it may become one.
+func TestProbeIsCachedForWorkTreesOnly(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := map[string]int{}
+	real := runProbe
+	runProbe = func(dir string, gitOpts []string) (string, string, error) {
+		calls[dir]++
+		return real(dir, gitOpts)
+	}
+	t.Cleanup(func() { runProbe = real })
+
+	other := clean(t)
+	plain := t.TempDir()
+	for i := 0; i < 3; i++ {
+		b.CheckCommand("ls", other)
+		b.CheckCommand("ls", plain)
+	}
+	if n := calls[other]; n != 1 {
+		t.Errorf("work tree probed %d times over 3 calls, want 1", n)
+	}
+	if n := calls[plain]; n != 3 {
+		t.Errorf("plain directory probed %d times over 3 calls, want 3 (a miss must not be cached)", n)
+	}
+	// A plain directory that becomes a dirty work tree is protected from then on.
+	git(t, plain, "init", "-q")
+	write(t, plain, "users.txt", "the user's\n")
+	if msg := b.CheckCommand("git add -A", plain); msg == "" {
+		t.Error("a directory that became a dirty work tree was left unprotected")
+	}
+}

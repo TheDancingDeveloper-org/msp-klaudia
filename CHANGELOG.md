@@ -21,6 +21,14 @@ port mirrors (see `internal/version`).
   `[tui] title = "off"` disables it.
 
 ### Fixed
+- **A sub-agent's `working_dir` may be a linked worktree of the session's
+  repository.** A session opened on a main checkout could not launch a
+  sub-agent — background writers included — into a sibling `git worktree`
+  of the same repository, because only the session's directory and its
+  `--add-dir`s were accepted. A worktree that git lists for the repository of
+  the session's directory (or of an additional directory) is the same
+  repository and is now accepted too. A directory that merely points into the
+  repository with a `.git` file is not registered and is still refused.
 - **The git guard judges a command by the repository it runs in (#289).** It
   applied the start repository's baseline to every git command, so
   `git -C <worktree> add -A` or `cd <other repo> && git add .` was refused over
@@ -30,8 +38,9 @@ port mirrors (see `internal/version`).
   tree, compared by canonical top level, so a linked worktree is its own tree
   and a symlink to the start repository is still it. Another tree's
   pre-existing changes are captured on the run's first touch of it, before
-  that call runs, and protected the same way; a target that cannot be read
-  keeps the old reading against the start repository. **Behaviour change:**
+  that call runs, and protected the same way; a target that cannot be read,
+  or a tree whose state cannot be, keeps the old reading against the start
+  repository. **Behaviour change:**
   a session that starts in a clean repository now has a guard as well, for the
   other trees it touches.
 - **An idle prompt no longer writes to the terminal.** The input cursor blinked,

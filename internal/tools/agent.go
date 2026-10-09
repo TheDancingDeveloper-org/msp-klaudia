@@ -66,8 +66,9 @@ type AgentInput struct {
 	// WorkingDir, when set, is the repository the child is cut from: its
 	// checkout is seeded from that repo and its changes are adopted back
 	// there, instead of the session's working directory. It must be the
-	// session's working directory or one of its additional directories.
-	WorkingDir string `json:"working_dir,omitempty" jsonschema:"description=Repository the sub-agent works in, as an absolute path. It must be the session working directory or one of the additional working directories. Omit it to use the session working directory."`
+	// session's working directory, one of its additional directories, or a
+	// git worktree registered with one of their repositories.
+	WorkingDir string `json:"working_dir,omitempty" jsonschema:"description=Repository the sub-agent works in, as an absolute path. It must be inside the session working directory or an additional working directory or be a git worktree of one of their repositories. Omit it to use the session working directory."`
 	// Model, when set, is the model the child runs on (an alias or a full id).
 	// A model the provider cannot serve is substituted and the result says so.
 	Model string `json:"model,omitempty" jsonschema:"description=Model the sub-agent runs on, an alias (sonnet, opus, haiku) or a full model id. Omit it to use the type's model, or the session's when the type names none. A model the provider cannot serve is replaced and the result says so."`
@@ -130,7 +131,8 @@ func (a *Agent) Description(context.Context) (string, error) {
 		"meantime. Use it for work that will outlast this turn; leave it false to wait for the result " +
 		"inline when the next step depends on it. A background writer runs in its own isolated worktree.\n")
 	b.WriteString("Set working_dir to an absolute path inside the session's working directory or one " +
-		"of its additional working directories to choose the repository the sub-agent is cut from. " +
+		"of its additional working directories, or to a git worktree of one of their repositories " +
+		"(such as a sibling checkout made with `git worktree add`), to choose the repository the sub-agent is cut from. " +
 		"It runs at that repository's root, and its changes land back there.\n")
 	b.WriteString("isolation chooses the tree: auto (the default) isolates a writer and shares the tree " +
 		"for a read-only type, worktree always isolates, shared never does. A writer's changes are applied " +

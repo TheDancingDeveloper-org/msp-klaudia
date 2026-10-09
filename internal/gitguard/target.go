@@ -41,31 +41,36 @@ import (
 type site struct {
 	base *Baseline
 	dir  string
+	all  bool // the paths reached cannot be told: judge every protected path
 }
 
 // locate resolves dir — with any --git-dir/--work-tree options the command
 // passes — to the work tree git would use, capturing that work tree's baseline
 // if this is the run's first touch of it.
 func (b *Baseline) locate(dir string, gitOpts []string) site {
-	top, prefix, err := probe(dir, gitOpts)
+	top, prefix, err := b.probe(dir, gitOpts)
 	if err != nil {
 		// Not in a work tree git can find, so a git command there fails
 		// before it changes anything. A directory under the start
 		// repository's root that git cannot read stays the start
 		// repository's, which is the conservative reading.
 		if len(gitOpts) == 0 && b.contains(dir) {
-			return site{b, dir}
+			return site{base: b, dir: dir}
 		}
 		return site{}
 	}
 	if canonical(top) == canonical(b.Root) {
-		return site{b, filepath.Join(b.Root, filepath.FromSlash(prefix))}
+		return site{base: b, dir: filepath.Join(b.Root, filepath.FromSlash(prefix))}
 	}
 	o := b.other(top)
 	if o == nil {
-		return site{}
+		// A work tree whose state could not be read is not one to let a
+		// command loose in unprotected. Fail closed: judge it as an
+		// unreadable target is judged, against the start repository with
+		// every protected path in reach.
+		return site{base: b, dir: dir, all: true}
 	}
-	return site{o, filepath.Join(o.Root, filepath.FromSlash(prefix))}
+	return site{base: o, dir: filepath.Join(o.Root, filepath.FromSlash(prefix))}
 }
 
 // touch records the baseline of the work tree containing path, if it is not
@@ -107,9 +112,35 @@ func (b *Baseline) contains(p string) bool {
 	return err == nil && r != ".." && !strings.HasPrefix(r, "../")
 }
 
-// probe asks git for the top level of the work tree dir belongs to and dir's
-// path inside it ("" at the top level).
-func probe(dir string, gitOpts []string) (top, prefix string, err error) {
+// probed is a work tree found by probe: its top level and the prefix of the
+// directory that was asked about.
+type probed struct{ top, prefix string }
+
+// probe is runProbe, remembered by canonical directory so that the touch every
+// Bash call makes does not run git each time. Only answers found are kept, and
+// only for a plain directory (no --git-dir/--work-tree): "not a work tree" can
+// stop being true — a `git init` or `git worktree add` there — and a stale
+// "no" would let a command into that tree unprotected, where a stale "yes"
+// only keeps the tree that was there protected.
+func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix string, err error) {
+	if len(gitOpts) > 0 {
+		return runProbe(dir, gitOpts)
+	}
+	key := canonical(dir)
+	if p, ok := b.probes.Load(key); ok {
+		return p.(probed).top, p.(probed).prefix, nil
+	}
+	top, prefix, err = runProbe(dir, nil)
+	if err == nil {
+		b.probes.Store(key, probed{top, prefix})
+	}
+	return top, prefix, err
+}
+
+// runProbe asks git for the top level of the work tree dir belongs to and
+// dir's path inside it ("" at the top level). A variable so a test can count
+// the calls.
+var runProbe = func(dir string, gitOpts []string) (top, prefix string, err error) {
 	args := append(append([]string{}, gitOpts...), "rev-parse", "--show-toplevel", "--show-prefix")
 	out, err := gitprobe.Command(dir, args...).Output()
 	if err != nil {
