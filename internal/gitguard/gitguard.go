@@ -11,8 +11,12 @@
 // was never in git (#250). The loop's prompt asks the model not to do that;
 // this is what holds when the model does it anyway.
 //
+// A baseline protects the repository it was captured in. Commands aimed at
+// another repository or worktree are judged by that one's own baseline,
+// captured the first time the run touches it (see target.go).
+//
 // The reading is deliberately conservative. When a command's paths cannot be
-// read — an expansion, a `cd` earlier in the line, paths arriving through
+// read — an expansion, a `cd` that may not have run, paths arriving through
 // xargs, an unparsable line — it is assumed to reach every protected path. A
 // false refusal costs the model one retry with a narrower command; a false
 // allowance costs someone's afternoon.
@@ -26,6 +30,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 	"github.com/greenthread-ai/klaudia/internal/native/bashparser"
@@ -39,6 +44,9 @@ type Baseline struct {
 	Root      string   // absolute repository root
 	Tracked   []string // tracked paths modified, staged, deleted or renamed
 	Untracked []string // untracked (not ignored) files and directories
+
+	mu     sync.Mutex
+	others map[string]*Baseline // other work trees the run has touched, by canonical root
 }
 
 // ErrNotRepo is returned by Capture outside a git work tree.
@@ -120,26 +128,52 @@ func (b *Baseline) rel(p string) (string, bool) {
 }
 
 // CheckTool is the agent's CommandGuard: it returns a refusal for a Bash call
-// that would discard protected changes, and "" for anything else.
+// that would discard protected changes, and "" for anything else. A file
+// write is never refused, but it is a first touch of the work tree it lands
+// in, so that tree's baseline is captured before the write happens.
 func (b *Baseline) CheckTool(tool string, input []byte, cwd string) string {
-	if b.Empty() || tool != "Bash" {
+	if b == nil {
 		return ""
 	}
-	var in struct {
-		Command string `json:"command"`
+	switch tool {
+	case "Bash":
+		var in struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(input, &in) != nil || strings.TrimSpace(in.Command) == "" {
+			return ""
+		}
+		return b.CheckCommand(in.Command, cwd)
+	case "Write", "Edit", "NotebookEdit":
+		var in struct {
+			FilePath     string `json:"file_path"`
+			NotebookPath string `json:"notebook_path"`
+		}
+		if json.Unmarshal(input, &in) != nil {
+			return ""
+		}
+		p := in.FilePath
+		if p == "" {
+			p = in.NotebookPath
+		}
+		if p == "" {
+			return ""
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(cwd, p)
+		}
+		b.touch(p)
 	}
-	if json.Unmarshal(input, &in) != nil || strings.TrimSpace(in.Command) == "" {
-		return ""
-	}
-	return b.CheckCommand(in.Command, cwd)
+	return ""
 }
 
 // CheckCommand returns why cmd may not run, or "" when it may.
 func (b *Baseline) CheckCommand(cmd, cwd string) string {
-	if b.Empty() {
+	if b == nil {
 		return ""
 	}
-	hits, what, stage := b.scan(cmd, cwd, 0)
+	b.touch(cwd)
+	hits, what, stage := b.scan(cmd, cwd, true, 0)
 	if len(hits) == 0 {
 		return ""
 	}
@@ -153,8 +187,9 @@ func (b *Baseline) CheckCommand(cmd, cwd string) string {
 const maxDepth = 4
 
 // scan returns the protected paths cmd could discard and the git invocation
-// that would do it.
-func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
+// that would do it. cwdKnown is false when the directory cmd runs in could not
+// be read (a nested shell after an unreadable cd).
+func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, string, bool) {
 	a, err := bashparser.Parse(cmd)
 	if err != nil || depth > maxDepth {
 		// Unreadable: refuse only if it plausibly runs a discarding git command.
@@ -163,11 +198,19 @@ func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
 		}
 		return nil, "", false
 	}
-	// After a cd the reader no longer knows where relative paths point.
-	moved := false
+	// GIT_DIR and GIT_WORK_TREE move git somewhere this reader does not
+	// follow, whether set on the command, through env, or exported earlier.
+	envMoved := strings.Contains(cmd, "GIT_DIR") || strings.Contains(cmd, "GIT_WORK_TREE")
+	// dir is where the next command runs, while known. pending is the chain
+	// whose cd set it without being sure to run: once past that chain, dir
+	// is no longer known.
+	dir, known, pending := cwd, cwdKnown, -1
 	for _, c := range a.Commands {
+		if pending >= 0 && c.Chain != pending {
+			known, pending = false, -1
+		}
 		if payload, ok := bashparser.ShellPayload(c.Name, c.Args); ok {
-			if hits, what, stage := b.scan(payload, cwd, depth+1); len(hits) > 0 {
+			if hits, what, stage := b.scan(payload, dir, known, depth+1); len(hits) > 0 {
 				return hits, what, stage
 			}
 			continue
@@ -176,9 +219,10 @@ func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
 		if !ok {
 			continue
 		}
+		words := c.ArgWords[len(c.ArgWords)-len(args):]
 		switch bashparser.Base(name) {
 		case "cd", "pushd", "popd":
-			moved = true
+			dir, known, pending = b.chdir(a, c, words, dir, known)
 			continue
 		case "git":
 		default:
@@ -189,8 +233,7 @@ func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
 		for _, w := range c.ArgWords {
 			literal = literal && w.Literal
 		}
-		dir := cwd
-		args, dir, dirKnown := globalOpts(args, dir)
+		args, gdir, gitOpts, readable := globalOpts(args, words, dir)
 		if len(args) == 0 {
 			continue
 		}
@@ -198,17 +241,78 @@ func (b *Baseline) scan(cmd, cwd string, depth int) ([]string, string, bool) {
 		if d == nil {
 			continue
 		}
+		// An unreadable target is judged against the start repository, with
+		// every protected path in reach.
+		at, pathsKnown := site{b, gdir}, false
+		if known && readable && !envMoved && !chdirWrapped(c) {
+			at, pathsKnown = b.locate(gdir, gitOpts), len(gitOpts) == 0
+		}
+		if at.base.Empty() {
+			continue
+		}
 		var hits []string
-		if d.all || viaXargs || !literal || moved || !dirKnown {
-			hits = b.pick(d, nil, true)
+		if d.all || viaXargs || !literal || !pathsKnown {
+			hits = at.base.pick(d, nil, true)
 		} else {
-			hits = b.pick(d, b.resolve(d.paths, dir), len(d.paths) == 0)
+			hits = at.base.pick(d, at.base.resolve(d.paths, at.dir), len(d.paths) == 0)
 		}
 		if len(hits) > 0 {
-			return hits, "git " + strings.Join(append([]string{args[0]}, d.flags...), " "), d.stage
+			what := "git " + strings.Join(append([]string{args[0]}, d.flags...), " ")
+			if at.base != b {
+				what += " in " + at.base.Root + ", a work tree this run first touched with uncommitted changes already in it,"
+			}
+			return hits, what, d.stage
 		}
 	}
 	return nil, "", false
+}
+
+// chdir follows a cd. The new directory is known only when the line is
+// sequential, the cd names one literal, existing directory, and either starts
+// its chain — so it runs whatever came before — or the commands that read the
+// directory are later in its own `&&` chain, which run only if it succeeded.
+// Anything else (pushd, popd, `cd -`, `cd ~`, an expansion, a cd in a subshell,
+// pipeline or conditional) leaves the directory unknown. A known target is
+// touched: if it is another work tree, its baseline is captured now.
+func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []bashparser.Word, dir string, known bool) (string, bool, int) {
+	if !a.Sequential || bashparser.Base(c.Name) != "cd" || len(words) != 1 || !words[0].Literal {
+		return dir, false, -1
+	}
+	t := words[0].Text
+	if t == "" || strings.HasPrefix(t, "-") || strings.HasPrefix(t, "~") {
+		return dir, false, -1
+	}
+	if !filepath.IsAbs(t) {
+		if !known {
+			return dir, false, -1
+		}
+		t = filepath.Join(dir, t)
+	}
+	if !isDir(t) {
+		return dir, false, -1
+	}
+	b.touch(t)
+	if c.ChainStart {
+		return t, true, -1
+	}
+	return t, true, c.Chain
+}
+
+// chdirWrapped reports whether a wrapper in front of git changes directory
+// first (`env -C dir git …`, `sudo -D dir git …`).
+func chdirWrapped(c bashparser.Command) bool {
+	if bashparser.Base(c.Name) == "git" {
+		return false
+	}
+	for _, a := range c.Args {
+		if bashparser.Base(a) == "git" {
+			return false
+		}
+		if strings.HasPrefix(a, "-C") || strings.HasPrefix(a, "-D") || strings.HasPrefix(a, "--chdir") {
+			return true
+		}
+	}
+	return false
 }
 
 // discardSpec describes what a git subcommand invocation can throw away.
@@ -377,8 +481,17 @@ func pathsAfterDashDash(args []string) []string {
 }
 
 // globalOpts strips git's global options, following -C to the directory the
-// subcommand runs in. dirKnown is false when -C names an unreadable directory.
-func globalOpts(args []string, dir string) ([]string, string, bool) {
+// subcommand runs in and collecting --git-dir and --work-tree (in their
+// original spelling) for locate. words are args with their Literal flags;
+// readable is false when an option that moves git is not a literal.
+func globalOpts(args []string, words []bashparser.Word, dir string) (rest []string, at string, gitOpts []string, readable bool) {
+	readable = true
+	take := func(n int) {
+		for _, w := range words[:n] {
+			readable = readable && w.Literal
+		}
+		args, words = args[n:], words[n:]
+	}
 	for len(args) > 0 {
 		a := args[0]
 		switch {
@@ -387,21 +500,23 @@ func globalOpts(args []string, dir string) ([]string, string, bool) {
 			if !filepath.IsAbs(d) {
 				d = filepath.Join(dir, d)
 			}
-			dir, args = d, args[2:]
-		case (a == "-c" || a == "--git-dir" || a == "--work-tree" || a == "--namespace") && len(args) > 1:
-			if a == "--work-tree" || a == "--git-dir" {
-				return args[2:], dir, false
-			}
-			args = args[2:]
+			dir = d
+			take(2)
+		case (a == "--git-dir" || a == "--work-tree") && len(args) > 1:
+			gitOpts = append(gitOpts, a, args[1])
+			take(2)
 		case strings.HasPrefix(a, "--work-tree=") || strings.HasPrefix(a, "--git-dir="):
-			return args[1:], dir, false
+			gitOpts = append(gitOpts, a)
+			take(1)
+		case (a == "-c" || a == "--namespace") && len(args) > 1:
+			args, words = args[2:], words[2:]
 		case strings.HasPrefix(a, "-"):
-			args = args[1:]
+			args, words = args[1:], words[1:]
 		default:
-			return args, dir, true
+			return args, dir, gitOpts, readable
 		}
 	}
-	return nil, dir, true
+	return nil, dir, gitOpts, readable
 }
 
 // resolve turns pathspecs (relative to dir) into repository-relative paths. A

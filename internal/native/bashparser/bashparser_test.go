@@ -187,3 +187,50 @@ func TestParseBackground(t *testing.T) {
 		}
 	}
 }
+
+func TestSequential(t *testing.T) {
+	type cmd struct {
+		chain int
+		start bool
+	}
+	cases := []struct {
+		line string
+		seq  bool
+		want []cmd // per command, when seq
+	}{
+		{"cd a && git add -A", true, []cmd{{0, true}, {0, false}}},
+		{"cd a; git add -A", true, []cmd{{0, true}, {1, true}}},
+		{"cd a\ngit add -A && git commit -m x", true, []cmd{{0, true}, {1, true}, {1, false}}},
+		{"false && cd a; git add -A", true, []cmd{{0, true}, {0, false}, {1, true}}},
+		{"cd a || exit; git add -A", false, nil},
+		{"(cd a && git add -A); git add -A", false, nil},
+		{"{ cd a; }; git add -A", false, nil},
+		{"cd a | git add -A", false, nil},
+		{"cd a & git add -A", false, nil},
+		{"! cd a; git add -A", false, nil},
+		{"if true; then cd a; fi; git add -A", false, nil},
+		{"f() { cd a; }; git add -A", false, nil},
+		{"echo $(cd a); git add -A", false, nil},
+	}
+	for _, tc := range cases {
+		a, err := Parse(tc.line)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", tc.line, err)
+		}
+		if a.Sequential != tc.seq {
+			t.Errorf("Parse(%q).Sequential = %v, want %v", tc.line, a.Sequential, tc.seq)
+			continue
+		}
+		if !tc.seq {
+			continue
+		}
+		if len(a.Commands) != len(tc.want) {
+			t.Fatalf("Parse(%q): %d commands, want %d", tc.line, len(a.Commands), len(tc.want))
+		}
+		for i, w := range tc.want {
+			if c := a.Commands[i]; c.Chain != w.chain || c.ChainStart != w.start {
+				t.Errorf("Parse(%q) command %d (%s): chain %d start %v, want %d %v", tc.line, i, c.Name, c.Chain, c.ChainStart, w.chain, w.start)
+			}
+		}
+	}
+}

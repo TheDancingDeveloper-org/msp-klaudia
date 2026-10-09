@@ -200,3 +200,183 @@ func TestGuardKeepsUserEditInRealRepo(t *testing.T) {
 		t.Fatalf("guard refused a revert of an unprotected file: %s", msg)
 	}
 }
+
+// clean builds a repository with one commit and nothing uncommitted.
+func clean(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	write(t, dir, "main.go", "package main\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "init")
+	return dir
+}
+
+// The start repository's baseline applies to commands in it, not to commands
+// aimed at another repository or a linked worktree (#289).
+func TestGuardFollowsTargetRepo(t *testing.T) {
+	a := repo(t) // the start repository, with the user's changes
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The run's own files, written through the guard as the Write tool would.
+	own := func(dir, rel string) {
+		t.Helper()
+		in := []byte(`{"file_path":"` + filepath.Join(dir, rel) + `"}`)
+		if msg := b.CheckTool("Write", in, a); msg != "" {
+			t.Fatalf("Write refused: %s", msg)
+		}
+		write(t, dir, rel, "the run's own work\n")
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", "-b", "agent", wt)
+	own(wt, "agent.go")
+	other := clean(t)
+	own(other, "new.go")
+	nongit := t.TempDir()
+
+	refuse := []struct{ cmd, cwd string }{
+		{"git add -A", a},
+		{"git -C " + a + " add -A", other},
+		{"cd " + a + " && git add .", other},
+		{"git --git-dir=" + a + "/.git --work-tree=" + a + " add -A", other},
+		// Unreadable targets keep today's reading: the start repository.
+		{`cd "$X" && git add -A`, other},
+		{"false && cd " + other + "; git add -A", a},
+		{"(cd " + other + " && true); git add -A", a},
+		{"cd " + other + " | true; git add -A", a},
+		{"cd /nonexistent-gitguard-dir; git add -A", a},
+		{"GIT_DIR=" + other + "/.git git add -A", a},
+		{"env -C " + other + " git add -A", a},
+		{`git -C "$X" add -A`, other},
+		{"sh -c 'cd " + a + " && git add -A'", other},
+	}
+	for _, c := range refuse {
+		if msg := b.CheckCommand(c.cmd, c.cwd); msg == "" {
+			t.Errorf("CheckCommand(%q) in %s allowed it; want a refusal", c.cmd, c.cwd)
+		}
+	}
+	allow := []struct{ cmd, cwd string }{
+		{"git -C " + wt + " add -A", a},
+		{"cd " + wt + " && git add -A && git commit -m own", a},
+		{"cd " + wt + "; git add .", a},
+		{"git add -A", wt},
+		{"cd " + other + " && git add .", a},
+		{"git -C " + other + " add -A", a},
+		{"git --git-dir=" + other + "/.git --work-tree=" + other + " add -A", a},
+		{"sh -c 'cd " + other + " && git add -A'", a},
+		{"git -C " + nongit + " add -A", a},
+		{"cd " + nongit + " && git clean -fdx", a},
+		{"git -C " + a + " checkout -- src/b.py", other},
+	}
+	for _, c := range allow {
+		if msg := b.CheckCommand(c.cmd, c.cwd); msg != "" {
+			t.Errorf("CheckCommand(%q) in %s refused: %s", c.cmd, c.cwd, msg)
+		}
+	}
+}
+
+// Another work tree's own pre-existing changes are protected too: its
+// baseline is captured on the run's first touch, before that touch runs.
+func TestGuardCapturesOtherWorktreeOnFirstTouch(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", "-b", "user", wt)
+	write(t, wt, "user-notes.txt", "the user's, before the run\n")
+
+	// The first touch is the destructive command itself.
+	msg := b.CheckCommand("git -C "+wt+" clean -f", a)
+	if msg == "" || !strings.Contains(msg, "user-notes.txt") || !strings.Contains(msg, wt) {
+		t.Fatalf("first touch of a dirty worktree: %q; want a refusal naming user-notes.txt in %s", msg, wt)
+	}
+	if msg := b.CheckCommand("cd "+wt+" && git add -A", a); msg == "" {
+		t.Error("git add -A over the worktree's own untracked file was allowed")
+	}
+	// Its own new file, added by name, is fine.
+	write(t, wt, "agent.go", "the run's\n")
+	if msg := b.CheckCommand("git add agent.go", wt); msg != "" {
+		t.Errorf("adding the run's own file was refused: %s", msg)
+	}
+
+	// A file the run writes before it ever runs git in a tree is the run's:
+	// the write is the first touch, and it captures the tree clean.
+	wt2 := filepath.Join(t.TempDir(), "wt2")
+	git(t, a, "worktree", "add", "-q", "-b", "agent2", wt2)
+	in := []byte(`{"file_path":"` + filepath.Join(wt2, "pkg", "new.go") + `"}`)
+	if msg := b.CheckTool("Write", in, a); msg != "" {
+		t.Fatalf("Write refused: %s", msg)
+	}
+	write(t, wt2, "pkg/new.go", "the run's\n")
+	if msg := b.CheckCommand("git -C "+wt2+" add -A", a); msg != "" {
+		t.Errorf("git add -A of the run's own files was refused: %s", msg)
+	}
+}
+
+// A symlink to the start repository is the start repository, and relative
+// paths are read against where the link points.
+func TestGuardSymlinkIsSameRepo(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(a, link); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	other := clean(t)
+	for _, c := range []struct{ cmd, cwd string }{
+		{"git -C " + link + " add -A", other},
+		{"git add -A", link},
+		{"cd " + link + "/src && git checkout -- a.py", other},
+		{"git -C " + link + " checkout -- src/a.py", other},
+	} {
+		if msg := b.CheckCommand(c.cmd, c.cwd); msg == "" {
+			t.Errorf("CheckCommand(%q) in %s allowed it through a symlink", c.cmd, c.cwd)
+		}
+	}
+	if msg := b.CheckCommand("git -C "+link+" checkout -- src/b.py", other); msg != "" {
+		t.Errorf("an unprotected file through a symlink was refused: %s", msg)
+	}
+}
+
+// A clean start repository still guards the other trees the run touches.
+func TestGuardFromCleanStart(t *testing.T) {
+	b, err := Capture(clean(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := b.Guard()
+	if guard == nil {
+		t.Fatal("clean start: no guard")
+	}
+	dirty := repo(t)
+	if msg := guard("Bash", []byte(`{"command":"git add -A"}`), dirty); msg == "" {
+		t.Error("git add -A in a dirty repository touched for the first time was allowed")
+	}
+}
+
+// Touches of a new repository from parallel calls all see one baseline,
+// taken before any of them was allowed.
+func TestGuardConcurrentFirstTouch(t *testing.T) {
+	b, err := Capture(clean(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirty := repo(t)
+	const n = 8
+	msgs := make(chan string, n)
+	for i := 0; i < n; i++ {
+		go func() { msgs <- b.CheckCommand("git -C "+dirty+" reset --hard", "/") }()
+	}
+	for i := 0; i < n; i++ {
+		if msg := <-msgs; msg == "" {
+			t.Error("a concurrent first touch was allowed to reset --hard")
+		}
+	}
+}

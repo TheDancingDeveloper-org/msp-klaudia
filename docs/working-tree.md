@@ -106,10 +106,27 @@ invocation could discard one of those paths — `checkout --`/`checkout <path>`,
 forced `switch`/`checkout` — or stage it into the loop's commits — `add -A`,
 `add .`, `add -u`, `add <path>`, `commit -a`, `commit <path>`. That holds in
 every permission mode, including bypass, and in sub-agents. A command whose
-paths cannot be read (an expansion, a `cd` before it, `xargs`, `sh -c` it
-cannot parse) is assumed to reach all of them. The loop's own files remain
-revertible and committable: `git checkout -- <file it wrote>` and
-`git add <file it wrote>` are fine.
+paths cannot be read (an expansion, `xargs`, `sh -c` it cannot parse) is
+assumed to reach all of them. The loop's own files remain revertible and
+committable: `git checkout -- <file it wrote>` and `git add <file it wrote>`
+are fine.
+
+The baseline belongs to the repository the run started in, and each git
+invocation is judged by the work tree it actually runs in — resolved from
+`-C`, a `cd` earlier in the line, and `--git-dir`/`--work-tree`, then asked of
+git (`rev-parse --show-toplevel`) and compared by canonical path. A linked
+worktree is a different work tree from its main checkout, and a symlink to the
+start repository is the start repository. Another work tree's own uncommitted
+changes are captured the first time the run touches it — a Bash call whose
+directory or `cd` lands in it, a git command aimed at it, a Write or Edit of a
+file in it — before that call is allowed, and are protected the same way.
+Files the run writes in a tree after that first touch are its own, so a
+sub-agent can `git add -A` in its own worktree. Where the target cannot be read
+— `cd "$X"`, a `cd` that may not have run (in a subshell, a pipeline, after
+`||` or a failed `&&`, into a directory that does not exist), `GIT_DIR` or
+`GIT_WORK_TREE`, `env -C` — the command is judged against the start
+repository with every protected path in reach. A session that starts in a
+clean repository has a guard too, for the other trees it touches.
 
 This exists because the first production run undid a one-line change of its own
 with `git checkout -- <14 files>`, reverting a day of uncommitted work in the

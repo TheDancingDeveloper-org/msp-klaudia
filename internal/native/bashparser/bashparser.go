@@ -38,6 +38,14 @@ type Command struct {
 	// or one enclosing it, ends in `&` — `a &`, `(a; b) &`, `(a &)`, `a | b &`.
 	// `&&` and the redirections `&>`, `>&`, `2>&1` are not backgrounding.
 	Background bool
+
+	// Chain is the index of the top-level statement the command belongs to,
+	// and ChainStart whether it is the first command of that statement's
+	// `&&` chain. Both are meaningful only when Analysis.Sequential is set:
+	// then a command that starts its chain always runs, and one later in the
+	// chain runs only if every command before it in the chain succeeded.
+	Chain      int
+	ChainStart bool
 }
 
 // Redirect is an output redirection target. Only writing redirections are
@@ -57,6 +65,13 @@ type Analysis struct {
 	// HasExpansion reports whether any word in the line was non-literal. A
 	// cheap top-level "I could not read all of this" signal.
 	HasExpansion bool
+	// Sequential reports that the line is nothing but simple commands joined
+	// by `;`, newlines and `&&` — no pipe, `||`, `&`, `!`, subshell, group,
+	// compound command, function or command substitution. In such a line a
+	// command runs in the shell that runs the next one, in source order, so a
+	// reader can follow state like the working directory across it (see
+	// Command.Chain).
+	Sequential bool
 }
 
 // Parse parses a bash command line. On a parse error the returned Analysis is
@@ -77,6 +92,8 @@ func Parse(input string) (Analysis, error) {
 	// under a backgrounded statement. Walk calls f(nil) after a node's
 	// children, which is where its entry is popped.
 	bg := []bool{false}
+	calls := map[*syntax.CallExpr]int{} // recorded call → index in a.Commands
+	substituted := false
 	syntax.Walk(prog, func(node syntax.Node) bool {
 		if node == nil {
 			bg = bg[:len(bg)-1]
@@ -88,6 +105,8 @@ func Parse(input string) (Analysis, error) {
 		}
 		bg = append(bg, inBg)
 		switch n := node.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			substituted = true
 		case *syntax.BinaryCmd:
 			if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
 				a.HasPipe = true
@@ -135,6 +154,7 @@ func Parse(input string) (Analysis, error) {
 			for _, w := range ws[1:] {
 				args = append(args, w.Text)
 			}
+			calls[n] = len(a.Commands)
 			a.Commands = append(a.Commands, Command{
 				Name:       ws[0].Text,
 				Args:       args,
@@ -145,7 +165,46 @@ func Parse(input string) (Analysis, error) {
 		}
 		return true
 	})
+	a.Sequential = !substituted && sequential(prog, a.Commands, calls)
 	return a, nil
+}
+
+// sequential reports whether prog is a plain list of `&&` chains of simple
+// commands, and if so numbers each recorded command's chain (Command.Chain).
+func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]int) bool {
+	var chain func(s *syntax.Stmt) ([]*syntax.CallExpr, bool)
+	chain = func(s *syntax.Stmt) ([]*syntax.CallExpr, bool) {
+		if s == nil || s.Background || s.Negated || s.Coprocess || s.Disown {
+			return nil, false
+		}
+		switch c := s.Cmd.(type) {
+		case *syntax.CallExpr:
+			return []*syntax.CallExpr{c}, true
+		case *syntax.BinaryCmd:
+			if c.Op != syntax.AndStmt {
+				return nil, false
+			}
+			x, ok := chain(c.X)
+			if !ok {
+				return nil, false
+			}
+			y, ok := chain(c.Y)
+			return append(x, y...), ok
+		}
+		return nil, false
+	}
+	for i, s := range prog.Stmts {
+		cs, ok := chain(s)
+		if !ok {
+			return false
+		}
+		for j, c := range cs {
+			if k, ok := calls[c]; ok {
+				cmds[k].Chain, cmds[k].ChainStart = i, j == 0
+			}
+		}
+	}
+	return true
 }
 
 // Prefix returns a permission specifier for the first command: the program
