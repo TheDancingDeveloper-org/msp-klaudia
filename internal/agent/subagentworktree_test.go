@@ -600,3 +600,60 @@ func TestSharedChildInSubdirWritesThere(t *testing.T) {
 		t.Error("the write landed at the repository toplevel")
 	}
 }
+
+// A working_dir in a linked worktree of the session's repository — a sibling
+// directory, not under the session's — is the same repository, so a writer can
+// be launched there: it is cut from that worktree and adopted back into it.
+func TestWorkingDirInLinkedWorktreeIsAllowed(t *testing.T) {
+	rootA := gitRepo(t)
+	wt := filepath.Join(t.TempDir(), "sibling")
+	if out, err := exec.Command("git", "-C", rootA, "worktree", "add", "-q", "-b", "sibling", wt).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "in the sibling\n"}
+
+	text, _, err := writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{
+			workingDir: rootA, dir: wt,
+		}, "general-purpose", "write it", nil)
+	if err != nil {
+		t.Fatalf("Spawn into a linked worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "made.txt")); err != nil {
+		t.Fatalf("the child's work never reached the linked worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootA, "made.txt")); err == nil {
+		t.Error("the main checkout received the child's file")
+	}
+	if !strings.Contains(text, "Cut from "+canonical(wt)) || !strings.Contains(text, "on sibling") {
+		t.Errorf("launch result does not name the worktree it was cut from:\n%s", text)
+	}
+}
+
+// A directory that only points into the session's repository — a .git file
+// naming a worktree's admin area — is not a registered worktree and stays
+// refused.
+func TestWorkingDirPointingIntoRepoIsRefused(t *testing.T) {
+	rootA := gitRepo(t)
+	wt := filepath.Join(t.TempDir(), "real")
+	if out, err := exec.Command("git", "-C", rootA, "worktree", "add", "-q", "-b", "real", wt).CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	gitFile, err := os.ReadFile(filepath.Join(wt, ".git"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	impostor := t.TempDir()
+	if err := os.WriteFile(filepath.Join(impostor, ".git"), gitFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := &relWriteTool{mu: new(sync.Mutex), rel: "made.txt", body: "nope\n"}
+	_, _, err = writingSpawner(t, w, rootA).WithWorktrees(true).
+		Spawn(context.Background(), requestedDirSpec{workingDir: rootA, dir: impostor}, "general-purpose", "write it", nil)
+	if err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("a directory pointing into the repository was accepted: %v", err)
+	}
+	if len(w.wrote()) != 0 {
+		t.Errorf("the child ran anyway: %v", w.wrote())
+	}
+}

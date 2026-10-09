@@ -783,7 +783,8 @@ func (s *Spawner) spawnBackground(conversation string, spec ChildSpec, subagentT
 // childRepo resolves the repository a child is cut from. With no requested
 // directory that is the session's working directory (the spawner's, when the
 // turn did not say). A requested directory must sit inside that working
-// directory or one of the session's additional directories, and it is then
+// directory, one of the session's additional directories, or a worktree
+// registered with one of their repositories, and it is then
 // resolved to its repository toplevel: the seed and the adoption both happen
 // there, so a path inside a nested checkout still lands in the right tree.
 // A directory that is not a repository is used as given — a child can still
@@ -802,8 +803,9 @@ func (s *Spawner) childRepo(spec ChildSpec) (repo, sub string, prov repoProvenan
 		repo, prov = base, repoOf(base)
 	} else {
 		dir := canonical(spec.RequestedDir)
-		if !dirAllowed(dir, append([]string{base}, spec.ExtraDirs...)) {
-			return "", "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory and its additional directories", spec.RequestedDir)
+		roots := append([]string{base}, spec.ExtraDirs...)
+		if !dirAllowed(dir, roots) && !inLinkedWorktree(dir, roots) {
+			return "", "", repoProvenance{}, fmt.Errorf("working_dir %q is outside the session's working directory, its additional directories and their repositories' worktrees", spec.RequestedDir)
 		}
 		top := repoToplevel(dir)
 		if top == "" {
@@ -848,6 +850,32 @@ func dirAllowed(dir string, roots []string) bool {
 		}
 		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return true
+		}
+	}
+	return false
+}
+
+// inLinkedWorktree reports whether dir is inside a worktree registered with
+// the repository of one of roots — a sibling `git worktree` of the session's
+// checkout, which is the same repository the session was opened on and so no
+// new trust. The worktree must be one git lists for that repository: sharing
+// its common directory is not enough, since any directory can hold a .git
+// file pointing into another repository's admin area.
+func inLinkedWorktree(dir string, roots []string) bool {
+	top := repoToplevel(dir)
+	if top == "" {
+		return false
+	}
+	top = canonical(top)
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		out := gitOut(root, "worktree", "list", "--porcelain")
+		for _, line := range strings.Split(out, "\n") {
+			if wt, ok := strings.CutPrefix(line, "worktree "); ok && canonical(wt) == top {
+				return true
+			}
 		}
 	}
 	return false
