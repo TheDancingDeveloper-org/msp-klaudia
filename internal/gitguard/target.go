@@ -334,10 +334,12 @@ func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix, gitDir stri
 // gitDirAppeared reports whether a .git entry now exists in dir or one of its
 // ancestors below top. top itself is not checked: its .git is the entry the
 // cached answer was taken under, and the baseline's identity watches that one.
+// An Lstat error other than "not there" is read as appeared: a directory the
+// walk cannot see is not one to trust a cached answer about.
 func gitDirAppeared(dir, top string) bool {
 	top = canonical(top)
 	for d := dir; canonical(d) != top; {
-		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil || !os.IsNotExist(err) {
 			return true
 		}
 		parent := filepath.Dir(d)
