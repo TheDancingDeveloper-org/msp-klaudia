@@ -265,6 +265,9 @@ func TestGuardFollowsTargetRepo(t *testing.T) {
 		{"env GIT_INDEX_FILE=" + a + "/.git/index git add -A", other},
 		{"GIT_COMMON_DIR=" + a + "/.git git add -A", other},
 		{"git config core.worktree " + a + " && git checkout -- . && git clean -fdx", other},
+		{"git config core.WorkTree " + a + " && git checkout -- . && git clean -fdx", other},
+		{"git config CORE.WORKTREE " + a + " && git clean -fdx", other},
+		{"git config --add core.Worktree " + a + " && git clean -fdx", other},
 	}
 	for _, c := range refuse {
 		if msg := b.CheckCommand(c.cmd, c.cwd); msg == "" {

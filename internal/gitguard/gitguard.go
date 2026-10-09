@@ -205,8 +205,10 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 	// refs, and core.worktree (set by `git config` earlier on the line) the work
 	// tree a later command touches (#293, #295). Any of them keeps the reading
 	// on the start repository.
-	envMoved := false
-	for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "core.worktree"} {
+	// The variable names are case-sensitive; git config keys are not, so
+	// core.worktree is matched without regard to case.
+	envMoved := strings.Contains(strings.ToLower(cmd), "core.worktree")
+	for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
 		envMoved = envMoved || strings.Contains(cmd, moved)
 	}
 	// dir is where the next command runs, while known. pending is the chain
