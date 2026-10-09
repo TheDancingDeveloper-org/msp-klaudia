@@ -215,7 +215,21 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 			return
 		}
 		if b.Op == syntax.Pipe || b.Op == syntax.PipeAll {
-			piped[b.X], piped[b.Y] = true, true
+			// Only the non-final sides are marked. lastpipe, when set, runs the
+			// final side in this shell, and its state is not tracked here, so the
+			// final side keeps its chain: a cd there is followed, the
+			// conservative reading whatever lastpipe is.
+			piped[b.X] = true
+			// `a | b | c` parses as (a | b) | c, so the marked left side is
+			// itself a pipe; its non-final sides are marked in turn.
+			for x := b.X; ; {
+				inner, ok := x.Cmd.(*syntax.BinaryCmd)
+				if !ok || (inner.Op != syntax.Pipe && inner.Op != syntax.PipeAll) {
+					break
+				}
+				piped[inner.X] = true
+				x = inner.X
+			}
 		}
 		mark(b.X)
 		mark(b.Y)
