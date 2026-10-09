@@ -31,6 +31,7 @@ func newMcpCommand() *cobra.Command {
 		SilenceUsage: true,
 	}
 	cmd.AddCommand(newMCPCodexSubagentCommand())
+	cmd.AddCommand(newMcpBrowserCommand())
 	return cmd
 }
 
