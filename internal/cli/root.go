@@ -1203,6 +1203,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	cmd.AddCommand(newDoctorCommand())
 	cmd.AddCommand(newConfigCommand())
 	cmd.AddCommand(newHookCommand())
+	cmd.AddCommand(NewMCPCommand())
 
 	cmd.AddCommand(newLoginCommand())
 
