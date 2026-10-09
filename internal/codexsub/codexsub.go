@@ -364,11 +364,12 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 // Never (exec/src/lib.rs), so passing -a makes every spawn fail with a clap
 // error.
 //
-// -s conflicts with the full-access wrapper's
-// --dangerously-bypass-approvals-and-sandbox, and clap rejects both at
-// once. That is the failure mode we want: a misconfigured wrapper fails the
-// spawn instead of quietly widening it. --codex must point at the real
-// binary, not the wrapper.
+// -s does not conflict with the full-access wrapper's
+// --dangerously-bypass-approvals-and-sandbox. The conflicts_with on that
+// flag belongs to --approve-for-me, so a wrapper that prepends it and then
+// our -s parses and runs, and the child is unsandboxed. The server refuses
+// such a binary at startup instead (see refuseWrapper), and --codex must
+// name the real binary.
 //
 // --json prints an event per line; the last {"type":"item.completed"} whose
 // item is an agent message is the answer. -o writes the same answer to a file,

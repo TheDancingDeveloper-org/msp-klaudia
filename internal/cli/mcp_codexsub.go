@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
@@ -41,19 +43,21 @@ func newMCPCodexSubagentCommand() *cobra.Command {
 		Short: "MCP server: spawn a Codex child in a seeded worktree and adopt its changes",
 		Long: `Serve spawn_isolated over stdio MCP until stdin closes.
 
-		The child always runs with an explicit posture, -s workspace-write. Codex
-		exec hard-codes approval Never and has no -a flag, so none is passed.
---sandbox widens the posture. That is a flag on this command, not a tool
-argument: the model that calls the tool must not be able to widen its own
-child.
+			The child always runs with an explicit posture, -s workspace-write. Codex
+			exec hard-codes approval Never and has no -a flag, so none is passed.
+			--sandbox widens the posture. That is a flag on this command, not a tool
+			argument: the model that calls the tool must not be able to widen its own
+			child.
 
--s conflicts with --dangerously-bypass-approvals-and-sandbox, which the
-full-access wrapper forces, and clap rejects the two together. A wrapper
-pointed at by mistake therefore fails the spawn rather than widening it.
---codex defaults to whatever "codex" resolves to on PATH; point it at the
-real binary, not that wrapper.
+			--codex must be the real codex binary. On a Vogt pod "codex" on PATH is
+			the full-access wrapper, a script that prepends
+			--dangerously-bypass-approvals-and-sandbox, and that flag does not
+			conflict with -s: the wrapper wins and the child runs unsandboxed. The
+			server refuses to start if --codex is a script or names that flag (or
+			--yolo). Point it at the real binary, for example
+			/usr/local/libexec/codex-real.
 
-working_dir is confined to the directories named with --root, or to this
+			working_dir is confined to the directories named with --root, or to this
 process's own working directory when none is named. A child cannot be pointed
 at $HOME or at another repository.
 
@@ -89,6 +93,9 @@ type serverOpts struct {
 // serveCodexSubagent runs the server on the process's own stdin and stdout,
 // which is the only pair the SDK's stdio transport speaks on.
 func serveCodexSubagent(ctx context.Context, opts serverOpts) error {
+	if err := refuseWrapper(opts.Bin); err != nil {
+		return err
+	}
 	depth := 0
 	if v := os.Getenv(codexsub.DepthEnv); v != "" {
 		fmt.Sscan(v, &depth)
@@ -137,6 +144,39 @@ func serveCodexSubagent(ctx context.Context, opts serverOpts) error {
 	log.SetOutput(os.Stderr)
 	if err := server.Run(ctx, &mcpsdk.StdioTransport{}); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("mcp server: %w", err)
+	}
+	return nil
+}
+
+// refuseWrapper rejects a codex that would undo the child's sandbox.
+//
+// -s does not conflict with --dangerously-bypass-approvals-and-sandbox. The
+// conflicts_with on the bypass flag belongs to --approve-for-me, so a wrapper
+// that prepends the bypass flag and then our -s parses and runs, and the child
+// is unsandboxed. The only reliable check is the file itself: a script, or
+// anything naming the bypass flag or --yolo in its opening, is refused before
+// the server accepts a single call. The message names the real binary, because
+// "codex" on a Vogt pod is the wrapper.
+func refuseWrapper(bin string) error {
+	if bin == "" {
+		bin = "codex"
+	}
+	resolved, err := exec.LookPath(bin)
+	if err != nil {
+		return fmt.Errorf("codex executable: %w", err)
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return fmt.Errorf("codex executable: %w", err)
+	}
+	defer f.Close()
+	buf := make([]byte, 1024)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	if strings.HasPrefix(head, "#!") ||
+		strings.Contains(head, "--dangerously-bypass-approvals-and-sandbox") ||
+		strings.Contains(head, "--yolo") {
+		return fmt.Errorf("%s is the full-access wrapper, not the codex binary: it would prepend --dangerously-bypass-approvals-and-sandbox and the child would run unsandboxed, because that flag does not conflict with -s. Point --codex at the real binary, for example /usr/local/libexec/codex-real", resolved)
 	}
 	return nil
 }
