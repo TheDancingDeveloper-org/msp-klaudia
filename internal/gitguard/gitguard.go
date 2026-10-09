@@ -48,6 +48,7 @@ type Baseline struct {
 	mu     sync.Mutex
 	others map[string]*Baseline // other work trees the run has touched, by canonical root
 	probes sync.Map             // canonical dir → probed, see Baseline.probe
+	id     gitIdentity          // the tree this baseline was captured for; see other
 }
 
 // ErrNotRepo is returned by Capture outside a git work tree.
