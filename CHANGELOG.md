@@ -21,6 +21,19 @@ port mirrors (see `internal/version`).
   `[tui] title = "off"` disables it.
 
 ### Fixed
+- **The git guard judges a command by the repository it runs in (#289).** It
+  applied the start repository's baseline to every git command, so
+  `git -C <worktree> add -A` or `cd <other repo> && git add .` was refused over
+  untracked files in the checkout the session started in — which blocked
+  sub-agents committing in worktrees of their own. Each git invocation is now
+  resolved (`-C`, a preceding `cd`, `--git-dir`/`--work-tree`) to its work
+  tree, compared by canonical top level, so a linked worktree is its own tree
+  and a symlink to the start repository is still it. Another tree's
+  pre-existing changes are captured on the run's first touch of it, before
+  that call runs, and protected the same way; a target that cannot be read
+  keeps the old reading against the start repository. **Behaviour change:**
+  a session that starts in a clean repository now has a guard as well, for the
+  other trees it touches.
 - **An idle prompt no longer writes to the terminal.** The input cursor blinked,
   repainting the input box about twice a second for as long as the prompt
   waited, so a host watching for output to stop never saw it stop and a

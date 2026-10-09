@@ -136,9 +136,11 @@ func (b *Baseline) Settle(policy Policy, onOwnBranch bool, own ...string) (*Base
 	return after.Without(own...), fmt.Sprintf("committed %d pre-existing change(s) as %s", n, sha), nil
 }
 
-// Guard returns b's CheckTool, or nil when there is nothing to protect.
+// Guard returns b's CheckTool, or nil without a baseline. A clean start
+// repository still gets a guard: other work trees the run touches are
+// protected from the first touch on (see target.go).
 func (b *Baseline) Guard() func(tool string, input []byte, cwd string) string {
-	if b.Empty() {
+	if b == nil {
 		return nil
 	}
 	return b.CheckTool
