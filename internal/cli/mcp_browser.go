@@ -9,17 +9,6 @@ import (
 	"github.com/greenthread-ai/klaudia/internal/browsermcp"
 )
 
-func newMcpCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:           "mcp",
-		Short:         "MCP servers for an embedding host (Codex)",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-	}
-	cmd.AddCommand(newMcpBrowserCommand())
-	return cmd
-}
-
 func newMcpBrowserCommand() *cobra.Command {
 	var allowPrivate bool
 	cmd := &cobra.Command{
