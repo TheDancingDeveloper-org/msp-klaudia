@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/greenthread-ai/klaudia/internal/gitprobe"
 )
@@ -48,7 +49,7 @@ type site struct {
 // passes — to the work tree git would use, capturing that work tree's baseline
 // if this is the run's first touch of it.
 func (b *Baseline) locate(dir string, gitOpts []string) site {
-	top, prefix, err := b.probe(dir, gitOpts)
+	top, prefix, gitDir, err := b.probe(dir, gitOpts)
 	if err != nil {
 		// Not in a work tree git can find, so a git command there fails
 		// before it changes anything. A directory under the start
@@ -62,12 +63,12 @@ func (b *Baseline) locate(dir string, gitOpts []string) site {
 	if canonical(top) == canonical(b.Root) {
 		return site{base: b, dir: filepath.Join(b.Root, filepath.FromSlash(prefix))}
 	}
-	o := b.other(top)
+	// A work tree whose state could not be read is not one to let a
+	// command loose in unprotected. Fail closed: judge it as an
+	// unreadable target is judged, against the start repository with
+	// every protected path in reach.
+	o := b.other(top, gitDir)
 	if o == nil {
-		// A work tree whose state could not be read is not one to let a
-		// command loose in unprotected. Fail closed: judge it as an
-		// unreadable target is judged, against the start repository with
-		// every protected path in reach.
 		return site{base: b, dir: dir, all: true}
 	}
 	return site{base: o, dir: filepath.Join(o.Root, filepath.FromSlash(prefix))}
@@ -88,16 +89,32 @@ func (b *Baseline) touch(path string) {
 // first use. The lock is held across the capture so that two calls touching a
 // new repository at once both wait for the one baseline taken before either
 // ran.
-func (b *Baseline) other(top string) *Baseline {
+//
+// A baseline is remembered only while the tree is still the tree it was
+// captured for. The identity — the .git entry and the configs of the git dir it
+// resolved to — is re-read from the filesystem before the baseline is handed
+// back, and it is keyed by the tree's top, so it holds whichever directory the
+// command was aimed at (#295). A tree that no longer matches is not
+// re-captured: the remembered baseline is dropped and the command is refused,
+// because re-capturing would record files the run wrote since the first touch
+// as the user's. The next touch, finding nothing remembered, captures afresh.
+func (b *Baseline) other(top, gitDir string) *Baseline {
 	key := canonical(top)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if o, ok := b.others[key]; ok {
-		return o
+		if o.id.same(key) {
+			return o
+		}
+		delete(b.others, key)
+		return nil
 	}
 	o, err := Capture(top)
 	if err != nil {
 		return nil // not remembered: the next touch tries again
+	}
+	if id, ok := identityOf(key, gitDir); ok {
+		o.id = id
 	}
 	if b.others == nil {
 		b.others = map[string]*Baseline{}
@@ -113,50 +130,168 @@ func (b *Baseline) contains(p string) bool {
 }
 
 // probed is a work tree found by probe: its top level, the prefix of the
-// directory that was asked about, and the identity the answer was taken under.
-// The identity is the .git entry's type and mtime plus the mtime of the config
-// inside the git dir it resolved to. A directory's path does not change when
-// its .git is swapped for a `gitdir:` file pointing at the start repository, or
-// when that git dir's config gains a core.worktree, but this does (#295).
-type probed struct {
-	top, prefix string
-	id          gitIdentity
-}
+// directory that was asked about, and the absolute git dir it resolved to.
+type probed struct{ top, prefix, gitDir string }
 
-// gitIdentity is what probe re-checks before trusting a remembered answer: the
-// .git entry as it stands, and the config of the git dir it pointed at.
+// gitIdentity is what a remembered baseline is trusted on: the .git entry at
+// the tree's top, and the config files of the git dir it resolved to. It is
+// keyed by the tree's top, not by the directory a command was aimed at, so a
+// first touch at the top and a command run from a subdirectory are judged by
+// the same identity (#295).
+//
+// The .git entry is recorded by what cannot be forged from userland and does
+// not move during ordinary git work: its type, and its device and inode. A
+// directory's mtime changes whenever git renames a file inside it — index.lock
+// to index on a status refresh, an add, a commit — and stamping that would drop
+// the baseline and re-record the run's own files as the user's. A `gitdir:`
+// file is recorded by its content, which is exactly the pointer a swap
+// rewrites. The config files are recorded by inode and ctime, which `touch`
+// cannot set back.
 type gitIdentity struct {
-	dotGit     fileStamp
-	config     fileStamp
-	configPath string
+	dotGit   entryStamp
+	gitdir   string // content of a .git file; "" when .git is a directory
+	configs  []configStamp
+	noConfig bool // no config file could be read: the identity is not trustworthy
 }
 
-// fileStamp records whether a path exists, whether it is a directory, and when
-// it was last modified.
-type fileStamp struct {
+// entryStamp records a .git entry's type and, when it could be read, the
+// device and inode it occupies.
+type entryStamp struct {
 	exists bool
 	isDir  bool
-	mtime  int64
+	dev    uint64
+	ino    uint64
+	known  bool // dev and ino were readable
 }
 
-func stampOf(p string) fileStamp {
+// configStamp records one config file by the device and inode it occupies and
+// its ctime, neither of which userland can forge.
+type configStamp struct {
+	path string
+	dev  uint64
+	ino  uint64
+	nsec int64
+}
+
+// identityOf reads the identity of the work tree rooted at top that resolves
+// through gitDir. ok is false when no identity can be taken — there is no .git
+// entry, or no git dir to read — in which case the baseline is still captured
+// but not trusted past this call.
+func identityOf(top, gitDir string) (gitIdentity, bool) {
+	id := gitIdentity{dotGit: stampEntry(filepath.Join(top, ".git"))}
+	if !id.dotGit.exists {
+		return id, false
+	}
+	if !id.dotGit.isDir {
+		content, err := os.ReadFile(filepath.Join(top, ".git"))
+		if err != nil {
+			return id, false
+		}
+		id.gitdir = string(content)
+	}
+	if gitDir == "" {
+		return id, false
+	}
+	id.configs = stampConfigs(gitDir)
+	id.noConfig = len(id.configs) == 0
+	return id, !id.noConfig
+}
+
+// stampEntry reads the type, device and inode of p without following a symlink.
+func stampEntry(p string) entryStamp {
 	fi, err := os.Lstat(p)
 	if err != nil {
-		return fileStamp{}
+		return entryStamp{}
 	}
-	return fileStamp{exists: true, isDir: fi.IsDir(), mtime: fi.ModTime().UnixNano()}
+	s := entryStamp{exists: true, isDir: fi.IsDir()}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		s.dev, s.ino, s.known = uint64(st.Dev), st.Ino, true
+	}
+	return s
 }
 
-// identityOf reads the identity of the work tree at dir that resolves through
-// gitDir. The config stamp follows a `gitdir:` file to the git dir it names, so
-// a config written in the repository that file points at is seen here.
-func identityOf(dir, gitDir string) gitIdentity {
-	return gitIdentity{dotGit: stampOf(filepath.Join(dir, ".git")), config: stampOf(filepath.Join(gitDir, "config")), configPath: gitDir}
+// stampConfigs reads the config files of a git dir: its own config, the common
+// config a linked worktree shares with its main checkout, and config.worktree
+// where one is present. A path that does not exist is not stamped; a path that
+// exists but cannot be read fails the whole set, so the identity is not trusted.
+func stampConfigs(gitDir string) []configStamp {
+	paths := []string{filepath.Join(gitDir, "config")}
+	if common := commonDir(gitDir); common != "" && canonical(common) != canonical(gitDir) {
+		paths = append(paths, filepath.Join(common, "config"))
+	}
+	paths = append(paths, filepath.Join(gitDir, "config.worktree"))
+	var out []configStamp
+	for _, p := range paths {
+		fi, err := os.Lstat(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok {
+			return nil
+		}
+		out = append(out, configStamp{path: p, dev: uint64(st.Dev), ino: st.Ino, nsec: int64(st.Ctim.Sec)*1e9 + int64(st.Ctim.Nsec)})
+	}
+	return out
 }
 
-// same reports whether id still describes the work tree at dir.
-func (id gitIdentity) same(dir string) bool {
-	return id == identityOf(dir, id.configPath)
+// commonDir reads the commondir a linked worktree's git dir names, or "" when
+// there is none.
+func commonDir(gitDir string) string {
+	content, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		return ""
+	}
+	rel := strings.TrimSpace(string(content))
+	if rel == "" {
+		return ""
+	}
+	if filepath.IsAbs(rel) {
+		return rel
+	}
+	return filepath.Join(gitDir, rel)
+}
+
+// same reports whether id still describes the work tree rooted at top. It
+// re-reads the filesystem and does not run git: a .git entry replaced by a
+// gitdir file, a gitdir file rewritten, or a config rewritten in place all
+// fail it, while a status, add or commit — which only rename files inside the
+// .git directory — does not.
+func (id gitIdentity) same(top string) bool {
+	if id.noConfig {
+		return false
+	}
+	cur, ok := identityOf(top, id.configDir())
+	if !ok {
+		return false
+	}
+	return id.dotGit == cur.dotGit && id.gitdir == cur.gitdir && stampsEqual(id.configs, cur.configs)
+}
+
+// configDir is the git dir the config stamps were taken from: the directory of
+// the first, which stampConfigs always records as the git dir's own config.
+func (id gitIdentity) configDir() string {
+	if len(id.configs) == 0 {
+		return ""
+	}
+	return filepath.Dir(id.configs[0].path)
+}
+
+// stampsEqual reports whether the two config sets name the same files with the
+// same inode and ctime. Order follows stampConfigs, so it is compared directly.
+func stampsEqual(a, b []configStamp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // probe is runProbe, remembered by canonical directory so that the touch every
@@ -166,40 +301,23 @@ func (id gitIdentity) same(dir string) bool {
 // "no" would let a command into that tree unprotected, where a stale "yes"
 // only keeps the tree that was there protected.
 //
-// A remembered answer is reused only while the tree is still the tree it was
-// taken for. Before it is returned the tree's identity — its .git entry and its
-// git dir's config — is re-read from the filesystem, which needs no git. A tree
-// whose .git was replaced, or whose config was rewritten to point its work tree
-// elsewhere, no longer matches, so the stale baseline is dropped and the tree
-// is probed again.
-func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix string, err error) {
+// Whether the tree is still the tree the remembered baseline describes is not
+// decided here. That identity is kept on the baseline, keyed by the tree's top,
+// and re-checked in other whatever directory the command was aimed at.
+func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix, gitDir string, err error) {
 	if len(gitOpts) > 0 {
-		top, prefix, _, err = runProbe(dir, gitOpts)
-		return top, prefix, err
+		return runProbe(dir, gitOpts)
 	}
 	key := canonical(dir)
 	if p, ok := b.probes.Load(key); ok {
 		old := p.(probed)
-		if old.id.same(dir) {
-			return old.top, old.prefix, nil
-		}
-		b.probes.Delete(key)
-		b.forget(old.top)
+		return old.top, old.prefix, old.gitDir, nil
 	}
-	top, prefix, gitDir, err := runProbe(dir, nil)
-	if err == nil {
-		b.probes.Store(key, probed{top, prefix, identityOf(dir, gitDir)})
+	top, prefix, gitDir, err = runProbe(dir, nil)
+	if err == nil && gitDir != "" {
+		b.probes.Store(key, probed{top, prefix, gitDir})
 	}
-	return top, prefix, err
-}
-
-// forget drops the baseline captured for the work tree rooted at top, so the
-// next touch re-captures it. A tree whose git dir has changed is no longer the
-// tree that baseline describes.
-func (b *Baseline) forget(top string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	delete(b.others, canonical(top))
+	return top, prefix, gitDir, err
 }
 
 // runProbe asks git for the top level of the work tree dir belongs to, dir's

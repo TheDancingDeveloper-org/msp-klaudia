@@ -509,3 +509,63 @@ func TestGuardDropsBaselineWhenGitDirChanges(t *testing.T) {
 		})
 	}
 }
+
+// The identity belongs to the baseline, keyed by the tree's top, so it holds
+// whichever directory the command was aimed at. A first touch at the top and a
+// destructive command run from a subdirectory — or the reverse — must still be
+// refused after the tree's .git is swapped for a gitdir file (#295).
+func TestGuardIdentityHoldsAcrossDirectories(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct{ name, touch, attack string }{
+		{"touch at top, attack from subdir", "", "sub"},
+		{"touch in subdir, attack from top", "sub", ""},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			other := clean(t)
+			if err := os.Mkdir(filepath.Join(other, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if msg := b.CheckCommand("git status", filepath.Join(other, route.touch)); msg != "" {
+				t.Fatalf("first touch was refused: %s", msg)
+			}
+			if err := os.RemoveAll(filepath.Join(other, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			gitdir := "gitdir: " + filepath.Join(a, ".git") + "\n"
+			if err := os.WriteFile(filepath.Join(other, ".git"), []byte(gitdir), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cmd := "cd " + filepath.Join(other, route.attack) + " && git add -A"
+			if msg := b.CheckCommand(cmd, a); msg == "" {
+				t.Errorf("%s was allowed; the baseline cached for a different directory was reused", cmd)
+			}
+		})
+	}
+}
+
+// Ordinary git work must not drop the baseline. status, add and commit rename
+// files inside the .git directory, which changes its mtime, and a baseline
+// re-captured after that would count files the run wrote as the user's. The
+// identity is the .git entry's type and inode plus its config, so a file the
+// run writes, then a status, then an add and commit, is the run's to commit.
+func TestGuardKeepsBaselineAcrossGitActivity(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := clean(t)
+	if msg := b.CheckCommand("git status --short", other); msg != "" {
+		t.Fatalf("status in a clean tree was refused: %s", msg)
+	}
+	// Written after the first touch, so it is the run's, and the status above
+	// has already renamed files inside .git.
+	write(t, other, "one.go", "package one\n")
+	if msg := b.CheckCommand("git add -A && git commit -qm c", other); msg != "" {
+		t.Errorf("committing the run's own file was refused after a status: %s", msg)
+	}
+}
