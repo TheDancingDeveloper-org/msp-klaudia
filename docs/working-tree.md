@@ -124,8 +124,8 @@ Files the run writes in a tree after that first touch are its own, so a
 sub-agent can `git add -A` in its own worktree. Where the target cannot be read
 — `cd "$X"`, a `cd` that may not have run (in a subshell, a pipeline, after
 `||` or a failed `&&`, into a directory that does not exist), `GIT_DIR` or
-`GIT_WORK_TREE`, `env -C` — the command is judged against the start
-repository with every protected path in reach. A session that starts in a
+`GIT_WORK_TREE`, `env -C` — or whose state cannot be read, the command is
+judged against the start repository with every protected path in reach. A session that starts in a
 clean repository has a guard too, for the other trees it touches.
 
 This exists because the first production run undid a one-line change of its own

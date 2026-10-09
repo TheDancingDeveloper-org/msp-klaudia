@@ -38,8 +38,9 @@ port mirrors (see `internal/version`).
   tree, compared by canonical top level, so a linked worktree is its own tree
   and a symlink to the start repository is still it. Another tree's
   pre-existing changes are captured on the run's first touch of it, before
-  that call runs, and protected the same way; a target that cannot be read
-  keeps the old reading against the start repository. **Behaviour change:**
+  that call runs, and protected the same way; a target that cannot be read,
+  or a tree whose state cannot be, keeps the old reading against the start
+  repository. **Behaviour change:**
   a session that starts in a clean repository now has a guard as well, for the
   other trees it touches.
 - **An idle prompt no longer writes to the terminal.** The input cursor blinked,

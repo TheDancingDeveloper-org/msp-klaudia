@@ -47,6 +47,7 @@ type Baseline struct {
 
 	mu     sync.Mutex
 	others map[string]*Baseline // other work trees the run has touched, by canonical root
+	probes sync.Map             // canonical dir → probed, see Baseline.probe
 }
 
 // ErrNotRepo is returned by Capture outside a git work tree.
@@ -243,9 +244,10 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 		}
 		// An unreadable target is judged against the start repository, with
 		// every protected path in reach.
-		at, pathsKnown := site{b, gdir}, false
+		at, pathsKnown := site{base: b, dir: gdir}, false
 		if known && readable && !envMoved && !chdirWrapped(c) {
-			at, pathsKnown = b.locate(gdir, gitOpts), len(gitOpts) == 0
+			at = b.locate(gdir, gitOpts)
+			pathsKnown = len(gitOpts) == 0 && !at.all
 		}
 		if at.base.Empty() {
 			continue
