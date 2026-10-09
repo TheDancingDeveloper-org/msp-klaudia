@@ -243,11 +243,15 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 			continue
 		}
 		// An unreadable target is judged against the start repository, with
-		// every protected path in reach.
+		// every protected path in reach. So is any --git-dir or --work-tree:
+		// the index a command writes belongs to the git dir, which need not be
+		// the work tree locate would find, so following the work tree could
+		// judge a command clean while it rewrites the start repository's
+		// index (#293).
 		at, pathsKnown := site{base: b, dir: gdir}, false
-		if known && readable && !envMoved && !chdirWrapped(c) {
-			at = b.locate(gdir, gitOpts)
-			pathsKnown = len(gitOpts) == 0 && !at.all
+		if known && readable && !envMoved && !chdirWrapped(c) && len(gitOpts) == 0 {
+			at = b.locate(gdir, nil)
+			pathsKnown = !at.all
 		}
 		if at.base.Empty() {
 			continue
