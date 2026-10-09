@@ -705,3 +705,22 @@ func TestGuardLastpipeIsNotFollowed(t *testing.T) {
 		}
 	}
 }
+
+// The lastpipe mention check is defeated by quote removal, so the reading must
+// not depend on it: the final side of a pipe keeps its chain, so a cd there is
+// followed whatever lastpipe's state — set, unset, or spelled so the raw-text
+// check misses it (#296, the B3 class from #301).
+func TestGuardQuotedLastpipeStillFollowed(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The quoted spelling defeats the mention check, so the cd in the final
+	// pipe side is followed — it moves the shell, and the clean is judged
+	// against the start repository it landed in, which refuses.
+	cmd := "shopt -s last''pipe; true | cd " + a + " && git clean -fdx"
+	if msg := b.CheckCommand(cmd, a); msg == "" {
+		t.Error("quoted lastpipe line was allowed; the final pipe side was skipped as a subshell")
+	}
+}
