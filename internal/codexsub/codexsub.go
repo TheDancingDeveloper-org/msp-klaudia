@@ -359,10 +359,16 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 // codex runs one child and reads its final message.
 //
 // The posture is always explicit. -s workspace-write confines the child's
-// writes to the checkout --cd names, and -a never means a command outside
-// that sandbox is refused rather than escalated. Both are passed on every
-// spawn: the child's own config, and on a Vogt pod the wrapper that
-// otherwise forces full access, must not get to decide.
+// writes to the checkout --cd names. There is no approval flag: `codex exec`
+// has none (it is TUI-only, codex-rs/tui/src/cli.rs) and hard-codes approval
+// Never (exec/src/lib.rs), so passing -a makes every spawn fail with a clap
+// error.
+//
+// -s conflicts with the full-access wrapper's
+// --dangerously-bypass-approvals-and-sandbox, and clap rejects both at
+// once. That is the failure mode we want: a misconfigured wrapper fails the
+// spawn instead of quietly widening it. --codex must point at the real
+// binary, not the wrapper.
 //
 // --json prints an event per line; the last {"type":"item.completed"} whose
 // item is an agent message is the answer. -o writes the same answer to a file,
@@ -384,7 +390,7 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, st
 	}
 	args := []string{
 		"exec", "--cd", dir,
-		"-s", sandbox, "-a", "never",
+		"-s", sandbox,
 		"--json", "--ephemeral", "-o", last,
 	}
 	if len(req.OutputSchema) > 0 {

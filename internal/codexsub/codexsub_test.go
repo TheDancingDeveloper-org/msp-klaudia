@@ -1,6 +1,7 @@
 package codexsub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -269,10 +270,13 @@ env > "$CODEXSUB_ENV"
 	}
 	// The posture is set on every spawn, not inherited. A sandboxed parent
 	// must not be able to get an unsandboxed child out of this.
-	for _, want := range []string{"-s workspace-write", "-a never", "--cd", "--json", "--ephemeral"} {
+	for _, want := range []string{"-s workspace-write", "--cd", "--json", "--ephemeral"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("args missing %q: %s", want, got)
 		}
+	}
+	if strings.Contains(string(got), "-a ") {
+		t.Errorf("codex exec has no approval flag; passing one fails every spawn: %s", got)
 	}
 	if strings.Contains(string(got), "--session-id") {
 		t.Errorf("passed --session-id before WI-1126: %s", got)
@@ -311,6 +315,49 @@ func TestSessionIDIsUUID(t *testing.T) {
 	}
 	if strings.Contains(res.SessionID, filepath.Base(root)) {
 		t.Fatal("session id is the directory name, which WI-1126 will reject")
+	}
+}
+
+// TestRealCodexAcceptsOurFlags checks the argv against an actual codex, which
+// the fake script cannot: a fake accepts whatever it is handed, and -a never
+// was shipped that way even though `codex exec` rejects it.
+//
+// Set KLAUDIA_TEST_CODEX to the binary, or leave it unset to use codex on
+// PATH. The wrapper on a Vogt pod is skipped: it injects
+// --dangerously-bypass-approvals-and-sandbox, which conflicts with -s, so its
+// help says nothing about the binary underneath.
+func TestRealCodexAcceptsOurFlags(t *testing.T) {
+	bin := os.Getenv("KLAUDIA_TEST_CODEX")
+	if bin == "" {
+		var err error
+		bin, err = exec.LookPath("codex")
+		if err != nil {
+			t.Skip("no codex on PATH")
+		}
+	}
+	b, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A shell wrapper is what injects the bypass flag. The native binary mentions
+	// the same flag in its own help text, and skipping it would skip the
+	// check this test exists to make.
+	head := b
+	if len(head) > 256 {
+		head = head[:256]
+	}
+	if bytes.Contains(head, []byte("#!/")) && bytes.Contains(b, []byte("dangerously-bypass-approvals-and-sandbox")) {
+		t.Skip("codex on PATH is the full-access wrapper, not the binary")
+	}
+	out, _ := exec.Command(bin, "exec", "--help").CombinedOutput()
+	help := string(out)
+	for _, flag := range []string{"--cd", "-s, --sandbox", "--json", "--ephemeral", "--output-schema", "-o, --output-last-message"} {
+		if !strings.Contains(help, flag) {
+			t.Errorf("codex exec --help does not accept %s", flag)
+		}
+	}
+	if strings.Contains(help, "--session-id") {
+		t.Log("--session-id is accepted; sessionIDSupported should now be true")
 	}
 }
 

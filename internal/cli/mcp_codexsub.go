@@ -41,16 +41,17 @@ func newMCPCodexSubagentCommand() *cobra.Command {
 		Short: "MCP server: spawn a Codex child in a seeded worktree and adopt its changes",
 		Long: `Serve spawn_isolated over stdio MCP until stdin closes.
 
-The child always runs with an explicit posture, -s workspace-write -a never,
-so it can write inside the checkout it is given and nowhere else, and a
-command outside that sandbox is refused rather than escalated. --sandbox
-widens it. That is a flag on this command, not a tool argument: the model
-that calls the tool must not be able to widen its own child.
+		The child always runs with an explicit posture, -s workspace-write. Codex
+		exec hard-codes approval Never and has no -a flag, so none is passed.
+--sandbox widens the posture. That is a flag on this command, not a tool
+argument: the model that calls the tool must not be able to widen its own
+child.
 
---codex defaults to whatever "codex" resolves to on PATH. On a Vogt pod that
-is the full-access wrapper, which forces
---dangerously-bypass-approvals-and-sandbox and silently undoes the posture
-above, so point --codex at the real binary there.
+-s conflicts with --dangerously-bypass-approvals-and-sandbox, which the
+full-access wrapper forces, and clap rejects the two together. A wrapper
+pointed at by mistake therefore fails the spawn rather than widening it.
+--codex defaults to whatever "codex" resolves to on PATH; point it at the
+real binary, not that wrapper.
 
 working_dir is confined to the directories named with --root, or to this
 process's own working directory when none is named. A child cannot be pointed
