@@ -686,3 +686,22 @@ func TestGuardFollowsCdAcrossPipes(t *testing.T) {
 		t.Errorf("add and commit after cd .. && cd back was refused: %s", msg)
 	}
 }
+
+// lastpipe runs a pipe's last command in the current shell, so the cd there
+// does move the shell that runs the git after it. A line that mentions it is
+// not read as sequential: where the git runs is not something this reading can
+// vouch for, so the command is judged against the start repository, which
+// refuses (fail-closed) rather than following a cd that may or may not have run.
+func TestGuardLastpipeIsNotFollowed(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, shopt := range []string{"shopt -s lastpipe", "set -o lastpipe"} {
+		cmd := shopt + "; true | cd " + a + " && git clean -fdx"
+		if msg := b.CheckCommand(cmd, a); msg == "" {
+			t.Errorf("%s; … was allowed; the lastpipe cd was skipped as a subshell", shopt)
+		}
+	}
+}
