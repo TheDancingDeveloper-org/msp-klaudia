@@ -1202,6 +1202,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	// session, so they are safe in scripts and CI.
 	cmd.AddCommand(newDoctorCommand())
 	cmd.AddCommand(newConfigCommand())
+	cmd.AddCommand(newHookCommand())
 
 	cmd.AddCommand(newLoginCommand())
 
