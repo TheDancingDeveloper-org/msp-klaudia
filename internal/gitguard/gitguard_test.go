@@ -259,6 +259,12 @@ func TestGuardFollowsTargetRepo(t *testing.T) {
 		{"git --git-dir=" + a + "/.git reset --hard", other},
 		{"git -C " + other + " --git-dir=" + a + "/.git add -A", other},
 		{"git --git-dir=" + other + "/.git --work-tree=" + other + " add -A", a},
+		// So does anything else that points git at the start repository's
+		// index, refs or work tree from another tree.
+		{"GIT_INDEX_FILE=" + a + "/.git/index git add -A", other},
+		{"env GIT_INDEX_FILE=" + a + "/.git/index git add -A", other},
+		{"GIT_COMMON_DIR=" + a + "/.git git add -A", other},
+		{"git config core.worktree " + a + " && git checkout -- . && git clean -fdx", other},
 	}
 	for _, c := range refuse {
 		if msg := b.CheckCommand(c.cmd, c.cwd); msg == "" {

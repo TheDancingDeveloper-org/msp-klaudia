@@ -28,6 +28,9 @@ port mirrors (see `internal/version`).
   hunks, renames and deletions lost). A command with either option is judged
   against the start repository again, with every protected path in reach, as
   before #290. `-C` and `cd` into another tree still follow that tree.
+  `GIT_INDEX_FILE`, `GIT_COMMON_DIR` and `core.worktree` on the line are
+  treated the same way as `GIT_DIR`, so they also keep the start repository's
+  reading.
 - **A sub-agent's `working_dir` may be a linked worktree of the session's
   repository.** A session opened on a main checkout could not launch a
   sub-agent — background writers included — into a sibling `git worktree`

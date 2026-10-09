@@ -199,9 +199,16 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 		}
 		return nil, "", false
 	}
-	// GIT_DIR and GIT_WORK_TREE move git somewhere this reader does not
-	// follow, whether set on the command, through env, or exported earlier.
-	envMoved := strings.Contains(cmd, "GIT_DIR") || strings.Contains(cmd, "GIT_WORK_TREE")
+	// These move git somewhere this reader does not follow, whether set on the
+	// command, through env, or exported earlier: GIT_DIR and GIT_WORK_TREE the
+	// repository, GIT_INDEX_FILE the index a command writes, GIT_COMMON_DIR the
+	// refs, and core.worktree (set by `git config` earlier on the line) the work
+	// tree a later command touches (#293, #295). Any of them keeps the reading
+	// on the start repository.
+	envMoved := false
+	for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "core.worktree"} {
+		envMoved = envMoved || strings.Contains(cmd, moved)
+	}
 	// dir is where the next command runs, while known. pending is the chain
 	// whose cd set it without being sure to run: once past that chain, dir
 	// is no longer known.
