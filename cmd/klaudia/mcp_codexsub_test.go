@@ -62,7 +62,7 @@ printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"d
 	defer cancel()
 	client := mcpsdk.NewClient(&mcpsdk.Implementation{Name: "test", Version: "0"}, nil)
 	session, err := client.Connect(ctx, &mcpsdk.CommandTransport{
-		Command: exec.Command(bin, "mcp", "codex-subagent", "--codex", fake),
+		Command: exec.Command(bin, "mcp", "codex-subagent", "--codex", fake, "--root", root),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

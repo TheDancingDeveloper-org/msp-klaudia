@@ -22,18 +22,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/greenthread-ai/klaudia/internal/worktree"
 )
+
+// DepthEnv is the environment variable the server sets in the child's
+// environment and reads from its own. A child that calls spawn_isolated again
+// runs this server at depth+1, and the default ceiling refuses that.
+const DepthEnv = "KLAUDIA_CODEXSUB_DEPTH"
 
 // sessionIDSupported reports whether the installed codex accepts --session-id.
 //
 // TODO(WI-1126): the fork patch that threads ThreadStartParams.thread_id into
 // reserved_thread_id has not landed, so codex exec rejects --session-id today.
 // Until it has, the flag is never passed. Once `codex exec --help` names it,
-// this becomes true and the flag is added. Check rather than assume: a binary
-// built from the fork and one built from upstream can both be called `codex`.
+// this becomes true and the flag is added with a fresh UUID. Check rather
+// than assume: a binary built from the fork and one built from upstream can
+// both be called `codex`.
 func sessionIDSupported(bin string) bool {
 	out, err := exec.Command(bin, "exec", "--help").CombinedOutput()
 	if err != nil && len(out) == 0 {
@@ -41,6 +48,11 @@ func sessionIDSupported(bin string) bool {
 	}
 	return strings.Contains(string(out), "--session-id")
 }
+
+// defaultMaxJobs bounds how many background children one server will run at
+// once. A model that loops on background=true should fill the cap and be told
+// so, not fork until the machine does.
+const defaultMaxJobs = 4
 
 // Request is one spawn.
 type Request struct {
@@ -74,6 +86,9 @@ type Result struct {
 	Adopted    []string `json:"adopted,omitempty"`
 	Conflicted []string `json:"conflicted,omitempty"`
 	Summary    string   `json:"summary,omitempty"`
+	// SessionID is the UUID passed as --session-id, once the binary accepts
+	// it (WI-1126). The caller resumes the child by it. Empty until then.
+	SessionID string `json:"session_id,omitempty"`
 	// Job is set when the spawn was backgrounded, or when this result is a poll.
 	Job string `json:"job,omitempty"`
 	// State is "running", "done" or "failed" for a background job.
@@ -92,13 +107,34 @@ const (
 
 // Runner executes children. Tests substitute one; the zero value runs codex.
 type Runner struct {
-	// Bin is the codex executable. Empty means "codex" on PATH.
+	// Bin is the codex executable. Empty means "codex" on PATH. The operator
+	// points this at a binary that honours -s and -a: on a Vogt pod `codex`
+	// is the full-access wrapper, which forces
+	// --dangerously-bypass-approvals-and-sandbox and would undo the posture
+	// this runner sets.
 	Bin string
+	// Sandbox is the child's -s value. Empty means workspace-write, the
+	// narrowest posture that can still edit the checkout. danger-full-access
+	// is only reachable through the server's operator flag, never a tool
+	// argument, so a model cannot widen its own child.
+	Sandbox string
+	// Roots are the directories working_dir must fall inside, resolved
+	// through symlinks. Empty means the server's own working directory.
+	Roots []string
+	// MaxDepth is how many times a child may itself spawn. 0 refuses at
+	// depth 1, which is the default: one level, no grandchildren.
+	MaxDepth int
+	// MaxJobs caps concurrent background jobs. 0 means defaultMaxJobs.
+	MaxJobs int
+	// Depth is this server's own depth, read from DepthEnv. Tests set it
+	// directly rather than through the environment.
+	Depth int
 	// Now names jobs. Tests pin it.
 	Now func() time.Time
 
 	mu   sync.Mutex
 	jobs map[string]*job
+	live int
 	seq  int
 }
 
@@ -107,6 +143,9 @@ type job struct {
 	done   chan struct{}
 	result Result
 	err    string
+	// read is set once a poll has returned the finished result, which is
+	// when prune may drop it.
+	read bool
 }
 
 func (r *Runner) bin() string {
@@ -131,7 +170,10 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 	if strings.TrimSpace(req.Task) == "" {
 		return Result{}, errors.New("task is empty")
 	}
-	dir, err := validateDir(req.WorkingDir)
+	if r.Depth > r.MaxDepth {
+		return Result{}, fmt.Errorf("codex sub-agent depth %d exceeds the limit of %d", r.Depth, r.MaxDepth)
+	}
+	dir, err := r.confine(req.WorkingDir)
 	if err != nil {
 		return Result{}, err
 	}
@@ -144,7 +186,7 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 		return Result{}, errors.New("output_schema is not valid JSON")
 	}
 	if req.Background {
-		return r.start(ctx, req, dir), nil
+		return r.start(ctx, req, dir)
 	}
 	res, err := r.execute(ctx, req, dir)
 	if err != nil {
@@ -154,7 +196,13 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 	return res, nil
 }
 
-func validateDir(dir string) (string, error) {
+// confine resolves dir and checks it sits inside one of the roots.
+//
+// Symlinks are resolved on both sides before the prefix check. A root of
+// /srv/work and a working_dir of /srv/work/link, where link points at
+// /etc, must be refused: the child would otherwise get workspace-write
+// wherever the link leads.
+func (r *Runner) confine(dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", errors.New("working_dir is empty")
 	}
@@ -162,44 +210,88 @@ func validateDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("working_dir: %w", err)
 	}
-	info, err := os.Stat(abs)
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("working_dir: %w", err)
+	}
+	info, err := os.Stat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("working_dir: %w", err)
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("working_dir %s is not a directory", abs)
+		return "", fmt.Errorf("working_dir %s is not a directory", resolved)
 	}
-	return abs, nil
+	roots := r.Roots
+	if len(roots) == 0 {
+		cwd, cerr := os.Getwd()
+		if cerr != nil {
+			return "", fmt.Errorf("server working directory: %w", cerr)
+		}
+		roots = []string{cwd}
+	}
+	for _, root := range roots {
+		rr, rerr := filepath.EvalSymlinks(root)
+		if rerr != nil {
+			continue
+		}
+		if resolved == rr || strings.HasPrefix(resolved, rr+string(filepath.Separator)) {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("working_dir %s is outside the server's roots", resolved)
 }
 
-func (r *Runner) start(ctx context.Context, req Request, dir string) Result {
+func (r *Runner) start(ctx context.Context, req Request, dir string) (Result, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.prune()
+	cap := r.MaxJobs
+	if cap <= 0 {
+		cap = defaultMaxJobs
+	}
+	if r.live >= cap {
+		return Result{}, fmt.Errorf("%d background jobs already running (limit %d)", r.live, cap)
+	}
 	r.seq++
+	r.live++
 	id := fmt.Sprintf("codexsub-%s-%d", r.now().UTC().Format("20060102-150405"), r.seq)
 	j := &job{id: id, done: make(chan struct{})}
 	if r.jobs == nil {
 		r.jobs = map[string]*job{}
 	}
 	r.jobs[id] = j
-	r.mu.Unlock()
 
 	// The job outlives the tool call that started it, so it keeps its own
 	// context rather than the request's, which the server cancels on return.
+	// The runner's own context still bounds it: Close cancels that, which is
+	// how a child dies when the server exits.
 	go func() {
 		defer close(j.done)
 		res, err := r.execute(context.WithoutCancel(ctx), req, dir)
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		r.live--
 		if err != nil {
 			j.err = err.Error()
-			j.result.State = stateFailed
+			j.result = Result{Job: id, State: stateFailed, Error: j.err}
 			return
 		}
 		res.State = stateDone
 		res.Job = id
 		j.result = res
 	}()
-	return Result{Job: id, State: stateRunning}
+	return Result{Job: id, State: stateRunning}, nil
+}
+
+// prune drops jobs that have finished and been read. A job nobody has polled
+// yet stays, so a caller that is slow to check still finds it. The cap
+// counts running jobs, not retained ones, so this only bounds memory.
+func (r *Runner) prune() {
+	for id, j := range r.jobs {
+		if j.read {
+			delete(r.jobs, id)
+		}
+	}
 }
 
 func (r *Runner) poll(ctx context.Context, id string, wait bool) (Result, error) {
@@ -223,6 +315,7 @@ func (r *Runner) poll(ctx context.Context, id string, wait bool) (Result, error)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	j.read = true
 	if j.err != "" {
 		return Result{Job: id, State: stateFailed, Error: j.err}, nil
 	}
@@ -242,7 +335,7 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 		defer tree.Remove(ctx) //nolint:errcheck // a leaked checkout is pruned later
 	}
 
-	final, err := r.codex(ctx, work, req)
+	final, sessionID, err := r.codex(ctx, work, req)
 	if err != nil {
 		return Result{}, err
 	}
@@ -250,7 +343,7 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 		return Result{}, fmt.Errorf("final message does not match output_schema: %w", verr)
 	}
 
-	res := Result{Final: final}
+	res := Result{Final: final, SessionID: sessionID}
 	if tree != nil {
 		rep, aerr := tree.Adopt(ctx)
 		if aerr != nil {
@@ -265,38 +358,59 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 
 // codex runs one child and reads its final message.
 //
+// The posture is always explicit. -s workspace-write confines the child's
+// writes to the checkout --cd names, and -a never means a command outside
+// that sandbox is refused rather than escalated. Both are passed on every
+// spawn: the child's own config, and on a Vogt pod the wrapper that
+// otherwise forces full access, must not get to decide.
+//
 // --json prints an event per line; the last {"type":"item.completed"} whose
 // item is an agent message is the answer. -o writes the same answer to a file,
-// which is the fallback when the event stream has no such item — a child that
-// exits 0 having said nothing is reported as empty, not as success-shaped
-// silence the caller cannot tell from a real answer. --ephemeral keeps the
-// child out of the user's session list: it was spawned, not started by them.
-func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, error) {
+// which is the fallback when the event stream has no such item. --ephemeral
+// keeps the child out of the user's session list: it was spawned, not
+// started by them.
+func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, string, error) {
 	bin := r.bin()
 	tmp, err := os.MkdirTemp("", "codexsub-")
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer os.RemoveAll(tmp)
 	last := filepath.Join(tmp, "last.txt")
 
-	args := []string{"exec", "--cd", dir, "--json", "--ephemeral", "-o", last}
+	sandbox := r.Sandbox
+	if sandbox == "" {
+		sandbox = "workspace-write"
+	}
+	args := []string{
+		"exec", "--cd", dir,
+		"-s", sandbox, "-a", "never",
+		"--json", "--ephemeral", "-o", last,
+	}
 	if len(req.OutputSchema) > 0 {
 		schema := filepath.Join(tmp, "schema.json")
 		if werr := os.WriteFile(schema, req.OutputSchema, 0o600); werr != nil {
-			return "", werr
+			return "", "", werr
 		}
 		args = append(args, "--output-schema", schema)
 	}
-	// TODO(WI-1126): pass --session-id once the fork accepts it. See sessionIDSupported.
+	// The session id has to be a UUID. WI-1126 parses --session-id as a
+	// ThreadId, and the worktree's directory name is not one, so passing
+	// that would make every spawn fail the moment the flag is accepted.
+	sessionID := uuid.NewString()
+	// TODO(WI-1126): the flag is withheld until the binary accepts it. See sessionIDSupported.
 	if sessionIDSupported(bin) {
-		args = append(args, "--session-id", filepath.Base(dir))
+		args = append(args, "--session-id", sessionID)
+	} else {
+		sessionID = ""
 	}
 	args = append(args, req.Task)
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "CODEX_NONINTERACTIVE=1")
+	// Depth travels in the environment because the child runs its own copy
+	// of this server, and that copy has no other way to know it is a child.
+	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", DepthEnv, r.Depth+1))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -313,9 +427,9 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, er
 		if msg == "" {
 			msg = runErr.Error()
 		}
-		return "", fmt.Errorf("codex exec: %s", msg)
+		return "", "", fmt.Errorf("codex exec: %s", msg)
 	}
-	return final, nil
+	return final, sessionID, nil
 }
 
 // finalFromEvents scans codex's --json stream for the last agent message.

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // fakeCodex is a stand-in for the codex binary. It records the arguments it
@@ -18,7 +20,12 @@ func fakeCodex(t *testing.T, body string) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "codex")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+	// The runner probes `codex exec --help` before every spawn. A script that
+	// does not special-case it would run the task twice and report the probe's
+	// empty output as a missing --session-id, which is what the real binary
+	// does today.
+	wrapped := "if [ \"$1\" = \"exec\" ] && [ \"$2\" = \"--help\" ]; then echo \"$CODEXSUB_HELP\"; exit 0; fi\n" + body
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+wrapped), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -62,6 +69,7 @@ func repo(t *testing.T) string {
 	}
 	sh("add", "-A")
 	sh("commit", "--quiet", "-m", "first")
+	t.Chdir(root)
 	return root
 }
 
@@ -82,7 +90,7 @@ done
 if ! grep -q dirty "$cd/a.txt"; then echo "seed missing the parent's edit" >&2; exit 1; fi
 printf 'child was here\n' > "$cd/child.txt"
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
-`)}
+`), Roots: []string{root}}
 
 	res, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root})
 	if err != nil {
@@ -241,32 +249,111 @@ func TestSharedSkipsWorktree(t *testing.T) {
 	}
 }
 
-func TestSessionIDFlagWaitsForTheFork(t *testing.T) {
+func TestChildArgv(t *testing.T) {
 	root := repo(t)
-	var got string
+	args := filepath.Join(t.TempDir(), "args")
+	env := filepath.Join(t.TempDir(), "env")
 	bin := fakeCodex(t, `printf '%s\n' "$*" > "$CODEXSUB_ARGS"
+env > "$CODEXSUB_ENV"
 `+echoAgent("done"))
-	t.Setenv("CODEXSUB_ARGS", filepath.Join(t.TempDir(), "args"))
+	t.Setenv("CODEXSUB_ARGS", args)
+	t.Setenv("CODEXSUB_ENV", env)
 	r := &Runner{Bin: bin}
 
 	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root}); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(os.Getenv("CODEXSUB_ARGS"))
+	got, err := os.ReadFile(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got = string(b)
-	if strings.Contains(got, "--session-id") {
-		t.Fatalf("passed --session-id before WI-1126: %s", got)
+	// The posture is set on every spawn, not inherited. A sandboxed parent
+	// must not be able to get an unsandboxed child out of this.
+	for _, want := range []string{"-s workspace-write", "-a never", "--cd", "--json", "--ephemeral"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("args missing %q: %s", want, got)
+		}
 	}
-	for _, want := range []string{"--cd", "--json", "--ephemeral", "--output-schema"} {
-		if want == "--output-schema" {
-			continue
-		}
-		if !strings.Contains(got, want) {
-			t.Errorf("args missing %s: %s", want, got)
-		}
+	if strings.Contains(string(got), "--session-id") {
+		t.Errorf("passed --session-id before WI-1126: %s", got)
+	}
+	e, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(e), "KLAUDIA_CODEXSUB_DEPTH=1") {
+		t.Errorf("child env = %s", e)
+	}
+	if strings.Contains(string(e), "CODEX_NONINTERACTIVE") {
+		t.Errorf("CODEX_NONINTERACTIVE is not a Codex variable: %s", e)
+	}
+}
+
+func TestSessionIDIsUUID(t *testing.T) {
+	root := repo(t)
+	args := filepath.Join(t.TempDir(), "args")
+	bin := fakeCodex(t, `printf '%s\n' "$*" > "$CODEXSUB_ARGS"
+`+echoAgent("done"))
+	t.Setenv("CODEXSUB_ARGS", args)
+	t.Setenv("CODEXSUB_HELP", "--session-id <uuid>")
+	r := &Runner{Bin: bin}
+
+	res, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(args)
+	if !strings.Contains(string(got), "--session-id "+res.SessionID) {
+		t.Fatalf("args %s, session %q", got, res.SessionID)
+	}
+	if _, err := uuid.Parse(res.SessionID); err != nil {
+		t.Fatalf("session id %q is not a UUID", res.SessionID)
+	}
+	if strings.Contains(res.SessionID, filepath.Base(root)) {
+		t.Fatal("session id is the directory name, which WI-1126 will reject")
+	}
+}
+
+func TestWorkingDirConfined(t *testing.T) {
+	root := repo(t)
+	r := &Runner{Bin: fakeCodex(t, echoAgent("done")), Roots: []string{root}}
+
+	outside := t.TempDir()
+	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: outside, Isolation: "shared"}); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("outside path: %v", err)
+	}
+
+	// A symlink inside the root that points outside it is the same escape.
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: link, Isolation: "shared"}); err == nil || !strings.Contains(err.Error(), "outside") {
+		t.Fatalf("symlink escape: %v", err)
+	}
+}
+
+func TestDepthAndJobCaps(t *testing.T) {
+	root := repo(t)
+	r := &Runner{Bin: fakeCodex(t, echoAgent("done")), Depth: 1}
+	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root}); err == nil || !strings.Contains(err.Error(), "depth") {
+		t.Fatalf("nested spawn: %v", err)
+	}
+
+	held := make(chan struct{})
+	slow := fakeCodex(t, "while [ ! -f \"$CODEXSUB_RELEASE\" ]; do sleep 0.01; done\n"+echoAgent("done"))
+	release := filepath.Join(t.TempDir(), "release")
+	t.Setenv("CODEXSUB_RELEASE", release)
+	capped := &Runner{Bin: slow, MaxJobs: 1}
+	if _, err := capped.Run(context.Background(), Request{Task: "do it", WorkingDir: root, Background: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capped.Run(context.Background(), Request{Task: "do it", WorkingDir: root, Background: true}); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("over cap: %v", err)
+	}
+	close(held)
+	if err := os.WriteFile(release, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
