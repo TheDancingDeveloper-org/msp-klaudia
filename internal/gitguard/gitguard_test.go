@@ -614,3 +614,75 @@ func TestGuardReprobesWhenGitDirAppearsBelow(t *testing.T) {
 		})
 	}
 }
+
+// A linked worktree of the start repository is judged by its own tree, so an
+// explicit add there is not refused over the start repository's untracked files
+// (#296). The worktree is clean apart from the one file being added.
+func TestGuardAllowsExplicitAddInLinkedWorktree(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", wt, "HEAD")
+	// The run touches the worktree before it writes, as a Bash call into it
+	// would, so the file it writes afterwards is its own.
+	if msg := b.CheckCommand("git status", wt); msg != "" {
+		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
+	}
+	write(t, wt, "one.go", "package one\n")
+	cmd := "git -C " + wt + " add -- one.go"
+	if msg := b.CheckCommand(cmd, a); msg != "" {
+		t.Errorf("explicit add in a linked worktree was refused: %s", msg)
+	}
+}
+
+// A commit message carried as a quoted heredoc inside a command substitution is
+// still a commit in the tree the line names. A literal leading cd into a linked
+// worktree, then add and commit, must be judged by that worktree (#296).
+func TestGuardFollowsLeadingCdBeforeHeredoc(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", wt, "HEAD")
+	if msg := b.CheckCommand("git status", wt); msg != "" {
+		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
+	}
+	write(t, wt, "one.go", "package one\n")
+	cmd := "cd " + wt + " && git add -- one.go && git commit -m \"$(cat <<'EOF'\nsubject\n\nbody\nEOF\n)\""
+	if msg := b.CheckCommand(cmd, a); msg != "" {
+		t.Errorf("add and commit after a literal cd was refused: %s", msg)
+	}
+}
+
+// A cd on the far side of a pipe does not move the shell that runs the git
+// after it, so the git is judged where the line started. A cd that comes back
+// before the git does move it (#296).
+func TestGuardFollowsCdAcrossPipes(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := clean(t)
+	if msg := b.CheckCommand("git status", other); msg != "" {
+		t.Fatalf("first touch of a clean tree was refused: %s", msg)
+	}
+	// The pipe's cd never runs in this shell: git add -A runs in the start
+	// repository and must be refused.
+	piped := "cd " + other + " | true && git add -A"
+	if msg := b.CheckCommand(piped, a); msg == "" {
+		t.Error("git add -A after a piped cd was allowed; the cd was taken to move this shell")
+	}
+	// Coming back before the git lands it in the clean tree, whose own file is
+	// the run's to commit.
+	back := "cd " + other + " | true && cd .. && cd " + other + " && git add -A && git commit -qm c"
+	write(t, other, "one.go", "package one\n")
+	if msg := b.CheckCommand(back, a); msg != "" {
+		t.Errorf("add and commit after cd .. && cd back was refused: %s", msg)
+	}
+}

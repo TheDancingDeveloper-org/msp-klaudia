@@ -291,6 +291,11 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 // pipeline or conditional) leaves the directory unknown. A known target is
 // touched: if it is another work tree, its baseline is captured now.
 func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []bashparser.Word, dir string, known bool) (string, bool, int) {
+	// A piped cd runs in a subshell and never moves this one; treating it as a
+	// chdir would read the commands after the pipe as running where it landed.
+	if c.Subshell {
+		return dir, false, -1
+	}
 	if !a.Sequential || bashparser.Base(c.Name) != "cd" || len(words) != 1 || !words[0].Literal {
 		return dir, false, -1
 	}
