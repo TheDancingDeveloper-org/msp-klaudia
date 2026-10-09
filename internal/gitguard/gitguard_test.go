@@ -569,3 +569,48 @@ func TestGuardKeepsBaselineAcrossGitActivity(t *testing.T) {
 		t.Errorf("committing the run's own file was refused after a status: %s", msg)
 	}
 }
+
+// A cached probe is trusted only while the directory still belongs to the tree
+// it names. After the run has probed a subdirectory, a .git entry written there
+// — a fresh repository, or a gitdir file pointing at the start repository —
+// makes git run in that subdirectory target a different tree, while the cached
+// top's own .git is unchanged. The command must be judged by the tree it now
+// lands in, not by the cached answer (#295).
+func TestGuardReprobesWhenGitDirAppearsBelow(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct {
+		name  string
+		plant func(sub string)
+	}{
+		{"git init in the subdirectory", func(sub string) {
+			git(t, sub, "init", "-q")
+			write(t, sub, "secret.txt", "the user's\n")
+		}},
+		{"gitdir file pointing at the start repository", func(sub string) {
+			gitdir := "gitdir: " + filepath.Join(a, ".git") + "\n"
+			if err := os.WriteFile(filepath.Join(sub, ".git"), []byte(gitdir), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			other := clean(t)
+			sub := filepath.Join(other, "sub")
+			if err := os.Mkdir(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The first touch caches the probe: sub belongs to other.
+			if msg := b.CheckCommand("git status", sub); msg != "" {
+				t.Fatalf("first touch of a subdirectory was refused: %s", msg)
+			}
+			route.plant(sub)
+			if msg := b.CheckCommand("cd "+sub+" && git add -A", a); msg == "" {
+				t.Errorf("git add -A was allowed after %s; the probe cached before it appeared was reused", route.name)
+			}
+		})
+	}
+}

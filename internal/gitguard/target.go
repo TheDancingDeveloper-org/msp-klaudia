@@ -304,6 +304,14 @@ func stampsEqual(a, b []configStamp) bool {
 // Whether the tree is still the tree the remembered baseline describes is not
 // decided here. That identity is kept on the baseline, keyed by the tree's top,
 // and re-checked in other whatever directory the command was aimed at.
+//
+// What is decided here is that the directory still belongs to that tree. A
+// remembered answer is reused only while no .git entry has appeared between dir
+// and the cached top: a `git init` in a subdirectory, or a .git file written
+// there pointing at another repository, makes git run in that subdirectory
+// target a different tree while the cached top's own .git is untouched. The
+// walk is an Lstat per directory and runs no git. When one has appeared the
+// remembered answer is dropped and the directory is probed again.
 func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix, gitDir string, err error) {
 	if len(gitOpts) > 0 {
 		return runProbe(dir, gitOpts)
@@ -311,13 +319,34 @@ func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix, gitDir stri
 	key := canonical(dir)
 	if p, ok := b.probes.Load(key); ok {
 		old := p.(probed)
-		return old.top, old.prefix, old.gitDir, nil
+		if !gitDirAppeared(key, old.top) {
+			return old.top, old.prefix, old.gitDir, nil
+		}
+		b.probes.Delete(key)
 	}
 	top, prefix, gitDir, err = runProbe(dir, nil)
 	if err == nil && gitDir != "" {
 		b.probes.Store(key, probed{top, prefix, gitDir})
 	}
 	return top, prefix, gitDir, err
+}
+
+// gitDirAppeared reports whether a .git entry now exists in dir or one of its
+// ancestors below top. top itself is not checked: its .git is the entry the
+// cached answer was taken under, and the baseline's identity watches that one.
+func gitDirAppeared(dir, top string) bool {
+	top = canonical(top)
+	for d := dir; canonical(d) != top; {
+		if _, err := os.Lstat(filepath.Join(d, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			return false
+		}
+		d = parent
+	}
+	return false
 }
 
 // runProbe asks git for the top level of the work tree dir belongs to, dir's
