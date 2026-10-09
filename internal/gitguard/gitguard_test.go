@@ -441,7 +441,7 @@ func TestProbeIsCachedForWorkTreesOnly(t *testing.T) {
 	}
 	calls := map[string]int{}
 	real := runProbe
-	runProbe = func(dir string, gitOpts []string) (string, string, error) {
+	runProbe = func(dir string, gitOpts []string) (string, string, string, error) {
 		calls[dir]++
 		return real(dir, gitOpts)
 	}
@@ -464,5 +464,48 @@ func TestProbeIsCachedForWorkTreesOnly(t *testing.T) {
 	write(t, plain, "users.txt", "the user's\n")
 	if msg := b.CheckCommand("git add -A", plain); msg == "" {
 		t.Error("a directory that became a dirty work tree was left unprotected")
+	}
+}
+
+// A cached baseline is trusted only while the tree is still the tree it was
+// captured for. After the run has touched a clean other tree — so both the
+// probe and the baseline are cached — swapping that tree's .git for a
+// `gitdir:` file that points at the start repository, or writing
+// core.worktree into its config, must not let `git add -A` through on the
+// stale baseline: both redirect the command at the start repository (#295).
+func TestGuardDropsBaselineWhenGitDirChanges(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []struct {
+		name string
+		swap func(other string)
+	}{
+		{"gitdir file swap", func(other string) {
+			if err := os.RemoveAll(filepath.Join(other, ".git")); err != nil {
+				t.Fatal(err)
+			}
+			gitdir := "gitdir: " + filepath.Join(a, ".git") + "\n"
+			if err := os.WriteFile(filepath.Join(other, ".git"), []byte(gitdir), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"core.worktree config", func(other string) {
+			git(t, other, "config", "core.worktree", a)
+		}},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			other := clean(t)
+			// The first touch caches a clean baseline and its git dir.
+			if msg := b.CheckCommand("git status", other); msg != "" {
+				t.Fatalf("first touch of a clean tree was refused: %s", msg)
+			}
+			route.swap(other)
+			if msg := b.CheckCommand("cd "+other+" && git add -A", a); msg == "" {
+				t.Errorf("git add -A was allowed after %s; the cached baseline was reused", route.name)
+			}
+		})
 	}
 }
