@@ -5,6 +5,7 @@
 package bashparser
 
 import (
+	"sort"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -38,6 +39,11 @@ type Command struct {
 	// or one enclosing it, ends in `&` — `a &`, `(a; b) &`, `(a &)`, `a | b &`.
 	// `&&` and the redirections `&>`, `>&`, `2>&1` are not backgrounding.
 	Background bool
+
+	// Subshell reports that the command runs in a subshell of its own — one side
+	// of a pipe. A cd among them never moves the shell that runs the commands
+	// after it, so a reader following the working directory skips it.
+	Subshell bool
 
 	// Chain is the index of the top-level statement the command belongs to,
 	// and ChainStart whether it is the first command of that statement's
@@ -92,8 +98,8 @@ func Parse(input string) (Analysis, error) {
 	// under a backgrounded statement. Walk calls f(nil) after a node's
 	// children, which is where its entry is popped.
 	bg := []bool{false}
-	calls := map[*syntax.CallExpr]int{} // recorded call → index in a.Commands
-	substituted := false
+	background := map[*syntax.CallExpr]bool{}
+	var found []*syntax.CallExpr
 	syntax.Walk(prog, func(node syntax.Node) bool {
 		if node == nil {
 			bg = bg[:len(bg)-1]
@@ -105,8 +111,6 @@ func Parse(input string) (Analysis, error) {
 		}
 		bg = append(bg, inBg)
 		switch n := node.(type) {
-		case *syntax.CmdSubst, *syntax.ProcSubst:
-			substituted = true
 		case *syntax.BinaryCmd:
 			if n.Op == syntax.Pipe || n.Op == syntax.PipeAll {
 				a.HasPipe = true
@@ -136,51 +140,108 @@ func Parse(input string) (Analysis, error) {
 				}
 			}
 		case *syntax.CallExpr:
-			if len(n.Args) == 0 {
-				return true
-			}
-			ws := make([]Word, 0, len(n.Args))
-			for _, w := range n.Args {
-				expanded := word(w)
-				if !expanded.Literal {
-					a.HasExpansion = true
-				}
-				ws = append(ws, expanded)
-			}
-			// The command is recorded even when its name is an expansion
-			// ("$SUDO apt-get install"). Dropping it, as this used to, made the
-			// whole invocation invisible to anything reading Commands.
-			args := make([]string, 0, len(ws)-1)
-			for _, w := range ws[1:] {
-				args = append(args, w.Text)
-			}
-			calls[n] = len(a.Commands)
-			a.Commands = append(a.Commands, Command{
-				Name:       ws[0].Text,
-				Args:       args,
-				NameWord:   ws[0],
-				ArgWords:   ws[1:],
-				Background: inBg,
-			})
+			found = append(found, n)
+			background[n] = inBg
 		}
 		return true
 	})
-	a.Sequential = !substituted && sequential(prog, a.Commands, calls)
+	// The walk visits a word's command substitution before the call the word
+	// belongs to, so `git commit -m "$(cat …)"` is seen as cat and then git.
+	// The shell runs them the other way round, and the reading of the working
+	// directory follows the shell, so the calls are recorded in source order.
+	sort.SliceStable(found, func(i, j int) bool {
+		return found[i].Pos().Offset() < found[j].Pos().Offset()
+	})
+	calls := map[*syntax.CallExpr]int{} // recorded call → index in a.Commands
+	for _, n := range found {
+		if len(n.Args) == 0 {
+			continue
+		}
+		ws := make([]Word, 0, len(n.Args))
+		for _, w := range n.Args {
+			expanded := word(w)
+			if !expanded.Literal {
+				a.HasExpansion = true
+			}
+			ws = append(ws, expanded)
+		}
+		args := make([]string, 0, len(ws)-1)
+		for _, w := range ws[1:] {
+			args = append(args, w.Text)
+		}
+		calls[n] = len(a.Commands)
+		a.Commands = append(a.Commands, Command{
+			Name:       ws[0].Text,
+			Args:       args,
+			NameWord:   ws[0],
+			ArgWords:   ws[1:],
+			Background: background[n],
+		})
+	}
+	a.Sequential = sequential(prog, a.Commands, calls)
 	return a, nil
 }
 
 // sequential reports whether prog is a plain list of `&&` chains of simple
 // commands, and if so numbers each recorded command's chain (Command.Chain).
+//
+// A command substitution breaks it only when its body contains a cd. A
+// substitution runs in its own shell, so that cd never moves the parent, but the
+// parser records it as a command of the line and would otherwise read the rest
+// as running where it landed. A substitution that only reads — a heredoc fed to
+// cat, redirects included — cannot do that.
+//
+// A pipe's own commands run in subshells, so they are not part of the chain the
+// `&&` continues in, and a pipe with nothing after it is not a chain at all. A
+// cd inside the pipe must not be read as moving this shell; the commands joined
+// to the pipe by `&&` still are.
 func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]int) bool {
+	piped := map[*syntax.Stmt]bool{}
+	var mark func(syntax.Node)
+	mark = func(n syntax.Node) {
+		if s, ok := n.(*syntax.Stmt); ok {
+			mark(s.Cmd)
+			return
+		}
+		b, ok := n.(*syntax.BinaryCmd)
+		if !ok {
+			return
+		}
+		if b.Op == syntax.Pipe || b.Op == syntax.PipeAll {
+			piped[b.X], piped[b.Y] = true, true
+		}
+		mark(b.X)
+		mark(b.Y)
+	}
+	for _, s := range prog.Stmts {
+		mark(s)
+	}
 	var chain func(s *syntax.Stmt) ([]*syntax.CallExpr, bool)
 	chain = func(s *syntax.Stmt) ([]*syntax.CallExpr, bool) {
-		if s == nil || s.Background || s.Negated || s.Coprocess || s.Disown {
+		if s == nil || s.Background || s.Negated || s.Coprocess || s.Disown || substitutionMoves(s) {
 			return nil, false
 		}
 		switch c := s.Cmd.(type) {
 		case *syntax.CallExpr:
+			if piped[s] {
+				// A pipe's side runs in its own subshell, so its cd never moves
+				// this shell; it joins no chain, and is marked so a reader of
+				// Commands can tell.
+				if k, ok := calls[c]; ok {
+					cmds[k].Subshell = true
+				}
+				return nil, true
+			}
 			return []*syntax.CallExpr{c}, true
 		case *syntax.BinaryCmd:
+			if c.Op == syntax.Pipe || c.Op == syntax.PipeAll {
+				_, ok := chain(c.X)
+				if !ok {
+					return nil, false
+				}
+				_, ok = chain(c.Y)
+				return nil, ok
+			}
 			if c.Op != syntax.AndStmt {
 				return nil, false
 			}
@@ -189,22 +250,70 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 				return nil, false
 			}
 			y, ok := chain(c.Y)
-			return append(x, y...), ok
+			if !ok {
+				return nil, false
+			}
+			return append(x, y...), true
 		}
 		return nil, false
 	}
+	seq := true
+	assigned := 0
 	for i, s := range prog.Stmts {
 		cs, ok := chain(s)
 		if !ok {
-			return false
+			seq = false
+			break
 		}
 		for j, c := range cs {
 			if k, ok := calls[c]; ok {
 				cmds[k].Chain, cmds[k].ChainStart = i, j == 0
+				assigned++
 			}
 		}
 	}
-	return true
+	// A line whose every command sat in a pipe subshell has no chain of its own;
+	// where it runs is not something this reading can vouch for.
+	return seq && assigned > 0
+}
+
+// substitutionMoves reports whether a statement's command substitutions contain
+// a cd. Such a cd is recorded as a command of the line even though it runs in
+// its own shell and never moves the parent.
+func substitutionMoves(s *syntax.Stmt) bool {
+	moves := false
+	var walk func([]*syntax.Stmt)
+	walk = func(stmts []*syntax.Stmt) {
+		for _, st := range stmts {
+			syntax.Walk(st, func(node syntax.Node) bool {
+				switch n := node.(type) {
+				case *syntax.CallExpr:
+					if len(n.Args) > 0 && wordText(n.Args[0]) == "cd" {
+						moves = true
+					}
+				case *syntax.CmdSubst:
+					walk(n.Stmts)
+					return false
+				case *syntax.ProcSubst:
+					walk(n.Stmts)
+					return false
+				}
+				return true
+			})
+		}
+	}
+	syntax.Walk(s, func(node syntax.Node) bool {
+		switch n := node.(type) {
+		case *syntax.CmdSubst:
+			walk(n.Stmts)
+			return false
+		case *syntax.ProcSubst:
+			walk(n.Stmts)
+			return false
+		}
+		return true
+	})
+	return moves
 }
 
 // Prefix returns a permission specifier for the first command: the program
