@@ -28,10 +28,22 @@ func TestHookGitguardRefusesDiscardingCommands(t *testing.T) {
 		t.Fatalf("startup exit %d: %s", code, stderr)
 	}
 
-	// resume must not recapture, so a later edit of our own stays committable.
+	// resume of a session that already has a file must not recapture, so a
+	// later edit of our own stays committable.
 	writeFile(t, filepath.Join(repo, "ours.go"), "package ours\n")
+	before, err := os.ReadFile(filepath.Join(home, "gitguard", sid+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if code, _, stderr := runHook(t, payload(sid, repo, "SessionStart", "resume", "", nil)); code != 0 {
 		t.Fatalf("resume exit %d: %s", code, stderr)
+	}
+	after, err := os.ReadFile(filepath.Join(home, "gitguard", sid+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("resume recaptured over an existing baseline")
 	}
 
 	cases := []struct {
@@ -164,6 +176,58 @@ func TestHookGitguardApplyPatchTouchesOtherRepo(t *testing.T) {
 	code, _, stderr = runHook(t, toolHook(sid, repo, "apply_patch", map[string]string{"command": del}))
 	if code != 2 || !strings.Contains(stderr, "Refused") {
 		t.Fatalf("delete of protected file: %d %q", code, stderr)
+	}
+}
+
+func TestHookGitguardLateCaptureAndMissingBaseline(t *testing.T) {
+	repo := hookGitRepo(t)
+	writeFile(t, filepath.Join(repo, "keep.txt"), "user\n")
+	git(t, repo, "add", "keep.txt")
+	git(t, repo, "commit", "-m", "base")
+	writeFile(t, filepath.Join(repo, "keep.txt"), "user edit\n")
+
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+
+	// fork (or a resume of a session that predates the hook) has no file.
+	// SessionStart captures rather than leaving the session unable to run.
+	sid := "forked"
+	if code, _, stderr := runHook(t, payload(sid, repo, "SessionStart", "fork", "", nil)); code != 0 {
+		t.Fatalf("fork with no file: %d %s", code, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "gitguard", sid+".json")); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := runHook(t, bashHook(sid, repo, "git checkout -- keep.txt", ""))
+	if code != 2 || !strings.Contains(stderr, "Refused") {
+		t.Fatalf("late capture did not protect: %d %q", code, stderr)
+	}
+
+	// resume with a file already on disk leaves it byte-identical.
+	existing := "resumed"
+	raw, err := gitguard.MarshalBaseline(&gitguard.Baseline{Root: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := append(raw, '\n')
+	if err := os.WriteFile(filepath.Join(home, "gitguard", existing+".json"), marker, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, stderr := runHook(t, payload(existing, repo, "SessionStart", "resume", "", nil)); code != 0 {
+		t.Fatalf("resume with a file: %d %s", code, stderr)
+	}
+	got, err := os.ReadFile(filepath.Join(home, "gitguard", existing+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, marker) {
+		t.Fatalf("resume rewrote the baseline:\n got %q\nwant %q", got, marker)
+	}
+
+	// PreToolUse with no file and no SessionStart still blocks.
+	code, _, stderr = runHook(t, bashHook("never-started", repo, "git status", ""))
+	if code != 2 || strings.TrimSpace(stderr) == "" {
+		t.Fatalf("missing baseline: %d %q", code, stderr)
 	}
 }
 

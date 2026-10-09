@@ -124,17 +124,35 @@ func hookStatePath(sessionID string) (string, error) {
 }
 
 func hookSessionStart(cmd *cobra.Command, in hookPayload) error {
-	// Only a fresh start captures. resume, fork and compact would record the
-	// run's own edits as protected and then refuse the run its own work.
-	if in.Source != "startup" {
-		return nil
+	// Any source may be the first time this session_id is seen. `codex fork`
+	// mints a new id, and a resume of a session that predates the hook (or
+	// whose CODEX_HOME moved) has none either. Keep a file that already
+	// exists: recapturing over it would treat the run's own edits as the
+	// user's. When there is no file, capture. That over-protects — earlier
+	// edits of this run count as the user's — which is the safe direction,
+	// and far better than a session that can never run a shell command.
+	path, err := hookStatePath(in.SessionID)
+	if err != nil {
+		return blockHook(cmd.ErrOrStderr(), "gitguard: "+err.Error())
 	}
+	unlock, err := lockBaseline(path)
+	if err != nil {
+		return blockHook(cmd.ErrOrStderr(), "gitguard: "+err.Error())
+	}
+	defer unlock()
+
+	if _, statErr := os.Stat(path); statErr == nil {
+		return nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return blockHook(cmd.ErrOrStderr(), "gitguard: reading baseline: "+statErr.Error())
+	}
+
 	cwd := in.Cwd
 	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return blockHook(cmd.ErrOrStderr(), "gitguard: no cwd: "+err.Error())
+		var wdErr error
+		cwd, wdErr = os.Getwd()
+		if wdErr != nil {
+			return blockHook(cmd.ErrOrStderr(), "gitguard: no cwd: "+wdErr.Error())
 		}
 	}
 	b, err := gitguard.Capture(cwd)
