@@ -112,9 +112,52 @@ func (b *Baseline) contains(p string) bool {
 	return err == nil && r != ".." && !strings.HasPrefix(r, "../")
 }
 
-// probed is a work tree found by probe: its top level and the prefix of the
-// directory that was asked about.
-type probed struct{ top, prefix string }
+// probed is a work tree found by probe: its top level, the prefix of the
+// directory that was asked about, and the identity the answer was taken under.
+// The identity is the .git entry's type and mtime plus the mtime of the config
+// inside the git dir it resolved to. A directory's path does not change when
+// its .git is swapped for a `gitdir:` file pointing at the start repository, or
+// when that git dir's config gains a core.worktree, but this does (#295).
+type probed struct {
+	top, prefix string
+	id          gitIdentity
+}
+
+// gitIdentity is what probe re-checks before trusting a remembered answer: the
+// .git entry as it stands, and the config of the git dir it pointed at.
+type gitIdentity struct {
+	dotGit     fileStamp
+	config     fileStamp
+	configPath string
+}
+
+// fileStamp records whether a path exists, whether it is a directory, and when
+// it was last modified.
+type fileStamp struct {
+	exists bool
+	isDir  bool
+	mtime  int64
+}
+
+func stampOf(p string) fileStamp {
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{exists: true, isDir: fi.IsDir(), mtime: fi.ModTime().UnixNano()}
+}
+
+// identityOf reads the identity of the work tree at dir that resolves through
+// gitDir. The config stamp follows a `gitdir:` file to the git dir it names, so
+// a config written in the repository that file points at is seen here.
+func identityOf(dir, gitDir string) gitIdentity {
+	return gitIdentity{dotGit: stampOf(filepath.Join(dir, ".git")), config: stampOf(filepath.Join(gitDir, "config")), configPath: gitDir}
+}
+
+// same reports whether id still describes the work tree at dir.
+func (id gitIdentity) same(dir string) bool {
+	return id == identityOf(dir, id.configPath)
+}
 
 // probe is runProbe, remembered by canonical directory so that the touch every
 // Bash call makes does not run git each time. Only answers found are kept, and
@@ -122,36 +165,61 @@ type probed struct{ top, prefix string }
 // stop being true — a `git init` or `git worktree add` there — and a stale
 // "no" would let a command into that tree unprotected, where a stale "yes"
 // only keeps the tree that was there protected.
+//
+// A remembered answer is reused only while the tree is still the tree it was
+// taken for. Before it is returned the tree's identity — its .git entry and its
+// git dir's config — is re-read from the filesystem, which needs no git. A tree
+// whose .git was replaced, or whose config was rewritten to point its work tree
+// elsewhere, no longer matches, so the stale baseline is dropped and the tree
+// is probed again.
 func (b *Baseline) probe(dir string, gitOpts []string) (top, prefix string, err error) {
 	if len(gitOpts) > 0 {
-		return runProbe(dir, gitOpts)
+		top, prefix, _, err = runProbe(dir, gitOpts)
+		return top, prefix, err
 	}
 	key := canonical(dir)
 	if p, ok := b.probes.Load(key); ok {
-		return p.(probed).top, p.(probed).prefix, nil
+		old := p.(probed)
+		if old.id.same(dir) {
+			return old.top, old.prefix, nil
+		}
+		b.probes.Delete(key)
+		b.forget(old.top)
 	}
-	top, prefix, err = runProbe(dir, nil)
+	top, prefix, gitDir, err := runProbe(dir, nil)
 	if err == nil {
-		b.probes.Store(key, probed{top, prefix})
+		b.probes.Store(key, probed{top, prefix, identityOf(dir, gitDir)})
 	}
 	return top, prefix, err
 }
 
-// runProbe asks git for the top level of the work tree dir belongs to and
-// dir's path inside it ("" at the top level). A variable so a test can count
-// the calls.
-var runProbe = func(dir string, gitOpts []string) (top, prefix string, err error) {
-	args := append(append([]string{}, gitOpts...), "rev-parse", "--show-toplevel", "--show-prefix")
+// forget drops the baseline captured for the work tree rooted at top, so the
+// next touch re-captures it. A tree whose git dir has changed is no longer the
+// tree that baseline describes.
+func (b *Baseline) forget(top string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.others, canonical(top))
+}
+
+// runProbe asks git for the top level of the work tree dir belongs to, dir's
+// path inside it ("" at the top level), and the absolute git dir it resolved
+// to. A variable so a test can count the calls.
+var runProbe = func(dir string, gitOpts []string) (top, prefix, gitDir string, err error) {
+	args := append(append([]string{}, gitOpts...), "rev-parse", "--show-toplevel", "--show-prefix", "--absolute-git-dir")
 	out, err := gitprobe.Command(dir, args...).Output()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
 	top = lines[0]
 	if len(lines) > 1 {
 		prefix = lines[1]
 	}
-	return top, prefix, nil
+	if len(lines) > 2 {
+		gitDir = lines[2]
+	}
+	return top, prefix, gitDir, nil
 }
 
 // canonical resolves symlinks, so two spellings of one directory compare
