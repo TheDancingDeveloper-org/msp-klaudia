@@ -211,6 +211,16 @@ func TestSequential(t *testing.T) {
 		{"if true; then cd a; fi; git add -A", false, nil},
 		{"f() { cd a; }; git add -A", false, nil},
 		{"echo $(cd a); git add -A", false, nil},
+		// A cd on any side of a pipe must break Sequential: without
+		// `shopt -s lastpipe` (non-default) the final side of a pipe runs in
+		// a subshell, but we do not model the shopt, so fail closed.
+		{"true | cd a && git add -A", false, nil},
+		// `${ …; }` and `${| …; }` substitutions run in the current shell
+		// (unlike `$( … )`, a true subshell), so a cd inside them really
+		// moves the parent shell's working directory.
+		{"${ cd a; }; git add -A", false, nil},
+		{"${|cd a;}; git add -A", false, nil},
+		{"echo ${ eval 'cd a'; }; git add -A", false, nil},
 	}
 	for _, tc := range cases {
 		a, err := Parse(tc.line)

@@ -40,11 +40,6 @@ type Command struct {
 	// `&&` and the redirections `&>`, `>&`, `2>&1` are not backgrounding.
 	Background bool
 
-	// Subshell reports that the command runs in a subshell of its own — one side
-	// of a pipe. A cd among them never moves the shell that runs the commands
-	// after it, so a reader following the working directory skips it.
-	Subshell bool
-
 	// Chain is the index of the top-level statement the command belongs to,
 	// and ChainStart whether it is the first command of that statement's
 	// `&&` chain. Both are meaningful only when Analysis.Sequential is set:
@@ -92,14 +87,6 @@ func Parse(input string) (Analysis, error) {
 	if err != nil {
 		return Analysis{}, err
 	}
-	// lastpipe makes bash run the last command of a pipe in the current shell, so
-	// a cd there does move the shell that runs what follows. It can be enabled at
-	// any point of the line before the pipe, and whether it is on is shell state
-	// this reading does not track, so a line that mentions it is not sequential:
-	// no cd on it is followed, and every git on it is judged where the line
-	// started. (The same goes for `set -o lastpipe`: the mention test covers it.)
-	lastpipe := strings.Contains(input, "lastpipe")
-
 	var a Analysis
 	// bg is a stack parallel to the walk: whether the node being visited sits
 	// under a backgrounded statement. Walk calls f(nil) after a node's
@@ -185,7 +172,7 @@ func Parse(input string) (Analysis, error) {
 			Background: background[n],
 		})
 	}
-	a.Sequential = sequential(prog, a.Commands, calls) && !lastpipe
+	a.Sequential = sequential(prog, a.Commands, calls)
 	return a, nil
 }
 
@@ -198,45 +185,12 @@ func Parse(input string) (Analysis, error) {
 // as running where it landed. A substitution that only reads — a heredoc fed to
 // cat, redirects included — cannot do that.
 //
-// A pipe's own commands run in subshells, so they are not part of the chain the
-// `&&` continues in, and a pipe with nothing after it is not a chain at all. A
-// cd inside the pipe must not be read as moving this shell; the commands joined
-// to the pipe by `&&` still are.
+// A pipe breaks the chain: its sides run in subshells by default, but bash's
+// lastpipe option can run the final side in this shell, and whether it is on is
+// shell state this reading does not track — it can be enabled anywhere earlier
+// on the line, including through eval. Fail closed: no piped line is
+// sequential, so no cd on one is followed and no command on one is joined.
 func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]int) bool {
-	piped := map[*syntax.Stmt]bool{}
-	var mark func(syntax.Node)
-	mark = func(n syntax.Node) {
-		if s, ok := n.(*syntax.Stmt); ok {
-			mark(s.Cmd)
-			return
-		}
-		b, ok := n.(*syntax.BinaryCmd)
-		if !ok {
-			return
-		}
-		if b.Op == syntax.Pipe || b.Op == syntax.PipeAll {
-			// Only the non-final sides are marked. lastpipe, when set, runs the
-			// final side in this shell, and its state is not tracked here, so the
-			// final side keeps its chain: a cd there is followed, the
-			// conservative reading whatever lastpipe is.
-			piped[b.X] = true
-			// `a | b | c` parses as (a | b) | c, so the marked left side is
-			// itself a pipe; its non-final sides are marked in turn.
-			for x := b.X; ; {
-				inner, ok := x.Cmd.(*syntax.BinaryCmd)
-				if !ok || (inner.Op != syntax.Pipe && inner.Op != syntax.PipeAll) {
-					break
-				}
-				piped[inner.X] = true
-				x = inner.X
-			}
-		}
-		mark(b.X)
-		mark(b.Y)
-	}
-	for _, s := range prog.Stmts {
-		mark(s)
-	}
 	var chain func(s *syntax.Stmt) ([]*syntax.CallExpr, bool)
 	chain = func(s *syntax.Stmt) ([]*syntax.CallExpr, bool) {
 		if s == nil || s.Background || s.Negated || s.Coprocess || s.Disown || substitutionMoves(s) {
@@ -244,24 +198,12 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 		}
 		switch c := s.Cmd.(type) {
 		case *syntax.CallExpr:
-			if piped[s] {
-				// A pipe's side runs in its own subshell, so its cd never moves
-				// this shell; it joins no chain, and is marked so a reader of
-				// Commands can tell.
-				if k, ok := calls[c]; ok {
-					cmds[k].Subshell = true
-				}
-				return nil, true
-			}
 			return []*syntax.CallExpr{c}, true
 		case *syntax.BinaryCmd:
 			if c.Op == syntax.Pipe || c.Op == syntax.PipeAll {
-				_, ok := chain(c.X)
-				if !ok {
-					return nil, false
-				}
-				_, ok = chain(c.Y)
-				return nil, ok
+				// Fail closed: the final side may run in this shell if
+				// lastpipe is set, so a cd on any side cannot be vouched for.
+				return nil, false
 			}
 			if c.Op != syntax.AndStmt {
 				return nil, false
@@ -298,9 +240,12 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 	return seq && assigned > 0
 }
 
-// substitutionMoves reports whether a statement's command substitutions contain
-// a cd. Such a cd is recorded as a command of the line even though it runs in
-// its own shell and never moves the parent.
+// substitutionMoves reports whether a statement's command substitutions
+// contain a cd. A plain `$( …; )` runs in its own shell and never moves the
+// parent, so a cd there is only recorded as a command of the line. But bash
+// 5.3's `${ …; }` and `${| …; }` forms run in the *current* shell — mvdan.cc/sh
+// parses them as CmdSubst with TempFile or ReplyVar set — so a cd inside one
+// (even via eval) moves the parent and must break sequential analysis.
 func substitutionMoves(s *syntax.Stmt) bool {
 	moves := false
 	var walk func([]*syntax.Stmt)
@@ -313,6 +258,9 @@ func substitutionMoves(s *syntax.Stmt) bool {
 						moves = true
 					}
 				case *syntax.CmdSubst:
+					if n.ReplyVar || n.TempFile {
+						moves = true
+					}
 					walk(n.Stmts)
 					return false
 				case *syntax.ProcSubst:
@@ -326,6 +274,9 @@ func substitutionMoves(s *syntax.Stmt) bool {
 	syntax.Walk(s, func(node syntax.Node) bool {
 		switch n := node.(type) {
 		case *syntax.CmdSubst:
+			if n.ReplyVar || n.TempFile {
+				moves = true
+			}
 			walk(n.Stmts)
 			return false
 		case *syntax.ProcSubst:
