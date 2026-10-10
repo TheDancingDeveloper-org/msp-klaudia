@@ -659,9 +659,12 @@ func TestGuardFollowsLeadingCdBeforeHeredoc(t *testing.T) {
 	}
 }
 
-// A cd on the far side of a pipe does not move the shell that runs the git
-// after it, so the git is judged where the line started. A cd that comes back
-// before the git does move it (#296).
+// A cd on any side of a pipe is not vouched for: lastpipe is non-default, so
+// the final side may run in this shell after all, and a cd there moves the
+// shell that runs the git after it. A line with a pipe is therefore not read
+// as sequential: where the git runs is not something this reading can vouch
+// for, so the command is judged against the start repository, which refuses
+// (fail-closed) rather than following a cd that may or may not have run.
 func TestGuardFollowsCdAcrossPipes(t *testing.T) {
 	a := repo(t)
 	b, err := Capture(a)
@@ -672,26 +675,35 @@ func TestGuardFollowsCdAcrossPipes(t *testing.T) {
 	if msg := b.CheckCommand("git status", other); msg != "" {
 		t.Fatalf("first touch of a clean tree was refused: %s", msg)
 	}
-	// The pipe's cd never runs in this shell: git add -A runs in the start
-	// repository and must be refused.
+	// The pipe's cd may run in this shell (lastpipe), so the git's location is
+	// unknown and the command must be refused from the start repository.
 	piped := "cd " + other + " | true && git add -A"
 	if msg := b.CheckCommand(piped, a); msg == "" {
-		t.Error("git add -A after a piped cd was allowed; the cd was taken to move this shell")
+		t.Error("git add -A after a piped cd was allowed; the piped cd was treated as a subshell")
 	}
-	// Coming back before the git lands it in the clean tree, whose own file is
-	// the run's to commit.
-	back := "cd " + other + " | true && cd .. && cd " + other + " && git add -A && git commit -qm c"
+	// The same holds for the stream-both spelling and for a cd buried in a
+	// middle or final stage.
+	for _, cmd := range []string{
+		"true |& cd " + other + " && git add -A",
+		"cd X | true | cd " + other + " && git add -A",
+		"true | cd " + other + " | true && git add -A",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg == "" {
+			t.Errorf("%q was allowed; a cd inside a pipe was treated as a subshell", cmd)
+		}
+	}
 	write(t, other, "one.go", "package one\n")
-	if msg := b.CheckCommand(back, a); msg != "" {
-		t.Errorf("add and commit after cd .. && cd back was refused: %s", msg)
+	back := "cd " + other + " | true && cd .. && cd " + other + " && git add -A && git commit -qm c"
+	if msg := b.CheckCommand(back, a); msg == "" {
+		t.Error("line with a piped cd followed by cd .. && cd back was allowed; the pipe should have broken the reading")
 	}
 }
 
-// lastpipe runs a pipe's last command in the current shell, so the cd there
-// does move the shell that runs the git after it. A line that mentions it is
-// not read as sequential: where the git runs is not something this reading can
-// vouch for, so the command is judged against the start repository, which
-// refuses (fail-closed) rather than following a cd that may or may not have run.
+// With lastpipe set, a pipe's final command runs in the current shell, so the
+// cd there does move the shell that runs the git after it. A line with a pipe
+// is not read as sequential — see TestGuardFollowsCdAcrossPipes — so the
+// command is judged against the start repository, which refuses (fail-closed)
+// rather than following a cd that may or may not have run.
 func TestGuardLastpipeIsNotFollowed(t *testing.T) {
 	a := repo(t)
 	b, err := Capture(a)
@@ -706,21 +718,46 @@ func TestGuardLastpipeIsNotFollowed(t *testing.T) {
 	}
 }
 
-// The lastpipe mention check is defeated by quote removal, so the reading must
-// not depend on it: the final side of a pipe keeps its chain, so a cd there is
-// followed whatever lastpipe's state — set, unset, or spelled so the raw-text
-// check misses it (#296, the B3 class from #301).
+// The reading does not depend on lastpipe's state or spelling: a pipe breaks
+// the sequential reading whatever the shopt looks like, so a cd in the final
+// side is refused even when the shopt is spelled so a raw-text check would
+// miss it (#296, the B3 class from #301).
 func TestGuardQuotedLastpipeStillFollowed(t *testing.T) {
 	a := repo(t)
 	b, err := Capture(a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The quoted spelling defeats the mention check, so the cd in the final
-	// pipe side is followed — it moves the shell, and the clean is judged
-	// against the start repository it landed in, which refuses.
+	// The quoted spelling changes nothing: the pipe still breaks the reading,
+	// so the cd in the final pipe side is judged against the start repository
+	// it lands in, which refuses.
 	cmd := "shopt -s last''pipe; true | cd " + a + " && git clean -fdx"
 	if msg := b.CheckCommand(cmd, a); msg == "" {
 		t.Error("quoted lastpipe line was allowed; the final pipe side was skipped as a subshell")
+	}
+}
+
+// bash 5.3's ${ …; } and ${ | …; } run in the current shell, not a subshell,
+// so a cd inside them moves the shell that runs the git after it — whatever
+// the body holds. A line that contains either form is not read as sequential:
+// the command is judged against the start repository, which refuses
+// (fail-closed) rather than guessing where the shell ended up.
+func TestGuardShellValSubstitutionIsNotFollowed(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{
+		"${ cd " + a + "; } && git clean -fdx",
+		"${|cd " + a + ";} && git clean -fdx",
+		// The body's cd need not announce itself as a leading word — eval runs
+		// it in this shell just the same. The form must break the reading
+		// whatever the body holds.
+		"${ eval 'cd " + a + "'; } && git clean -fdx",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg == "" {
+			t.Errorf("%q was allowed; the ${ …; } form was treated as a subshell", cmd)
+		}
 	}
 }
