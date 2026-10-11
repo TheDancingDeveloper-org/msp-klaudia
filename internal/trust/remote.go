@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/greenthread-ai/klaudia/internal/native/bashparser"
@@ -219,7 +220,7 @@ func classifyRemote(prog string, args []bashparser.Word, c *cmdCtx, as *Assessme
 	// paths a command in the script sees are not the ones written there.
 	feedsArgs := false
 	for _, w := range strings.Fields(script) {
-		switch strings.Trim(w, `'"();&|`) {
+		switch filepath.Base(strings.Trim(w, `'"();&|`)) {
 		case "xargs", "parallel", "-exec", "-execdir", "-ok", "-okdir":
 			feedsArgs = true
 		}
