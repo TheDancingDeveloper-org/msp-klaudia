@@ -119,8 +119,12 @@ func (c *cmdCtx) pathEffect(kind Kind, w bashparser.Word, evidence string) (Effe
 		// Another host's file, spelled out in full. It is not resolved against
 		// this machine's filesystem (a local symlink says nothing about that
 		// host), only cleaned, and it stays uncertain; see Effect.Spelled.
+		// A word the remote shell would rewrite — braces, globs, a backslash —
+		// is not spelled out: `/scope/.{.,}/.{.,}/etc/x` cleans inside the
+		// scope but expands outside it. Nor is anything sent to this machine
+		// under another name (`ssh localhost`).
 		e := c.effect(kind, "path", filepath.Clean(w.Text), evidence, true)
-		e.Spelled = !e.Certain
+		e.Spelled = !e.Certain && !strings.ContainsAny(w.Text, "{}*?[]\\") && !loopback(c.target.Host)
 		return e, true
 	}
 	resolved := c.roots.Resolve(c.cwd, w.Text)
@@ -256,4 +260,19 @@ var writePrograms = map[string]bool{
 	"mkdir": true, "rmdir": true, "chmod": true, "chown": true, "chgrp": true,
 	"truncate": true, "touch": true, "patch": true, "dd": true, "shred": true,
 	"rsync": true,
+}
+
+// loopback reports whether a remote target is this machine after all.
+func loopback(host string) bool {
+	if i := strings.LastIndexByte(host, '@'); i >= 0 {
+		host = host[i+1:]
+	}
+	if i := strings.IndexByte(host, ':'); i >= 0 && !strings.Contains(host[i+1:], ":") {
+		host = host[:i]
+	}
+	switch strings.Trim(strings.ToLower(host), "[]") {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0", "localhost.localdomain":
+		return true
+	}
+	return strings.HasPrefix(host, "127.")
 }
