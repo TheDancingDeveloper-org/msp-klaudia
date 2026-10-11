@@ -212,13 +212,31 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 	// CDPATH steers a relative cd somewhere other than where chdir looks, and
 	// it can be set on the line by an assignment, read, mapfile or printf -v.
 	envMoved := strings.Contains(strings.ToLower(cmd), "core.worktree") || strings.Contains(cmd, "CDPATH")
-	for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
-		envMoved = envMoved || strings.Contains(cmd, moved)
+	// The raw text misses a name split by quotes (GIT''_DIR, CD''PATH), which
+	// bash joins before the command sees it, so the words as bash passes them
+	// are checked too.
+	texts := []string{cmd}
+	for _, c := range a.Commands {
+		texts = append(texts, c.NameWord.Text)
+		for _, w := range c.ArgWords {
+			texts = append(texts, w.Text)
+		}
+	}
+	for _, text := range texts {
+		envMoved = envMoved || strings.Contains(strings.ToLower(text), "core.worktree") || strings.Contains(text, "CDPATH")
+		for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
+			envMoved = envMoved || strings.Contains(text, moved)
+		}
 	}
 	// dir is where the next command runs, while known. pending is the chain
 	// whose cd set it without being sure to run: once past that chain, dir
 	// is no longer known.
 	dir, known, pending := cwd, cwdKnown, -1
+	// varsSet is whether a builtin that can set a shell variable has run on
+	// the line. Any of them may have set CDPATH — under a name the text check
+	// above cannot see, like CD''PATH — so a relative cd after one is not
+	// followed.
+	varsSet := false
 	for _, c := range a.Commands {
 		if pending >= 0 && c.Chain != pending {
 			known, pending = false, -1
@@ -243,7 +261,17 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 		words := c.ArgWords[len(c.ArgWords)-len(args):]
 		switch bashparser.Base(name) {
 		case "cd", "pushd", "popd":
-			dir, known, pending = b.chdir(a, c, words, dir, known)
+			dir, known, pending = b.chdir(a, c, words, dir, known, varsSet)
+			continue
+		case "read", "declare", "typeset", "export", "local", "readonly", "let", "getopts":
+			varsSet = true
+			continue
+		case "printf":
+			for _, a := range args {
+				if strings.HasPrefix(a, "-v") || !literalWord(words, a) {
+					varsSet = true
+				}
+			}
 			continue
 		case "eval", "source", ".", "builtin", "command", "mapfile", "readarray", "trap", "enable", "alias":
 			// These run code in this shell — a sourced file, an eval'd
@@ -307,7 +335,7 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 // Anything else (pushd, popd, `cd -`, `cd ~`, an expansion, a cd in a subshell,
 // pipeline or conditional) leaves the directory unknown. A known target is
 // touched: if it is another work tree, its baseline is captured now.
-func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []bashparser.Word, dir string, known bool) (string, bool, int) {
+func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []bashparser.Word, dir string, known, varsSet bool) (string, bool, int) {
 	if !a.Sequential || bashparser.Base(c.Name) != "cd" || len(words) != 1 || !words[0].Literal {
 		return dir, false, -1
 	}
@@ -321,7 +349,9 @@ func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []ba
 		}
 		// bash searches an inherited CDPATH before the current directory
 		// for a relative name that does not start with ./ or ../.
-		if os.Getenv("CDPATH") != "" && !strings.HasPrefix(t, "./") && !strings.HasPrefix(t, "../") && t != "." && t != ".." {
+		// So does one set earlier on the line.
+		explicit := strings.HasPrefix(t, "./") || strings.HasPrefix(t, "../") || t == "." || t == ".."
+		if !explicit && (varsSet || os.Getenv("CDPATH") != "") {
 			return dir, false, -1
 		}
 		t = filepath.Join(dir, t)
@@ -334,6 +364,16 @@ func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []ba
 		return t, true, -1
 	}
 	return t, true, c.Chain
+}
+
+// literalWord reports whether the argument text a came from a literal word.
+func literalWord(words []bashparser.Word, a string) bool {
+	for _, w := range words {
+		if w.Text == a {
+			return w.Literal
+		}
+	}
+	return false
 }
 
 // chdirWrapped reports whether a wrapper in front of git changes directory

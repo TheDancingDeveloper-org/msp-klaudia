@@ -830,6 +830,9 @@ func TestGuardStopsFollowingAfterShellMovers(t *testing.T) {
 		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
 	}
 	parent, name := filepath.Dir(a), filepath.Base(a)
+	// A directory in the worktree named like the start repository, so a cd
+	// steered by CDPATH and one that is not both land somewhere real.
+	write(t, wt, filepath.Join(name, "keep"), "x")
 	for _, cmd := range []string{
 		"shopt -s lastpipe; cd " + wt + " && printf 'x\\n' | mapfile -t -C 'cd " + a + " #' -c 1 arr && git add -A",
 		"shopt -s lastpipe; cd " + wt + " && printf 'x\\n' | readarray -t -C 'cd " + a + " #' -c 1 arr && git add -A",
@@ -841,6 +844,10 @@ func TestGuardStopsFollowingAfterShellMovers(t *testing.T) {
 		"cd " + wt + " && CDPATH=" + parent + " && cd " + name + " && git add -A",
 		"cd " + wt + " && source ./env.sh && git add -A",
 		"cd " + wt + " && $X " + a + " && git add -A",
+		"cd " + wt + " && read CD''PATH <<< " + parent + " && cd " + name + " && git add -A",
+		"cd " + wt + " && printf -v CD''PATH %s " + parent + " && cd " + name + " && git add -A",
+		"cd " + wt + " && export GIT''_DIR=" + a + "/.git GIT''_WORK_TREE=" + a + " && git add -A",
+		"cd " + wt + " && env GIT''_DIR=" + a + "/.git GIT''_WORK_TREE=" + a + " git add -A",
 	} {
 		if msg := b.CheckCommand(cmd, a); msg == "" {
 			t.Errorf("%q was allowed; the shell may have moved after the cd", cmd)
