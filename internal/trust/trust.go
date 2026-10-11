@@ -153,6 +153,10 @@ type Effect struct {
 	// `ssh host rm -f /var/x/file` was refused again straight after the user
 	// approved deleting /var/x/file.
 	Spelled bool
+	// Recursive marks a delete that removes a tree (`rm -r`). A scope path
+	// the user named may be deleted, but never recursively: approving work on
+	// /etc/nginx must not authorise `rm -rf /etc/nginx`.
+	Recursive bool
 }
 
 // Assessment is everything a tool call was found to do.

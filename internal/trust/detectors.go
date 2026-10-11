@@ -628,12 +628,19 @@ func detectWrite(prog string) detector {
 			}
 		case "rm", "shred":
 			recursive := hasFlag(lits, "-r", "-R", "-rf", "-fr", "--recursive")
+			tree := recursive || anyShortFlag(lits, 'r', 'R')
 			for _, w := range nonFlagWords(args) {
 				kind := KindDelete
 				if recursive && c.isBulkTarget(w) {
 					kind = KindDestructiveBulk
 				}
+				before := len(out)
 				add(w, kind)
+				if tree {
+					for i := before; i < len(out); i++ {
+						out[i].Recursive = true
+					}
+				}
 			}
 		case "dd":
 			for _, w := range args {
@@ -762,4 +769,25 @@ func detectSSHKeygen(c *cmdCtx, args []bashparser.Word) []Effect {
 		}
 	}
 	return nil
+}
+
+// anyShortFlag reports whether any short-option cluster (`-rfv`, `-Rf`) holds
+// one of the letters. Long options and `--` are not short clusters.
+func anyShortFlag(args []string, letters ...rune) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if len(a) < 2 || a[0] != '-' || a[1] == '-' {
+			continue
+		}
+		for _, r := range a[1:] {
+			for _, l := range letters {
+				if r == l {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

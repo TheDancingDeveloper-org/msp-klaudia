@@ -306,7 +306,7 @@ func (s Scope) allows(e Effect) bool {
 			// /etc/nginx/nginx.conf" widens to /etc/nginx so the rest of the
 			// operation can proceed; it must not thereby authorise
 			// `rm -rf /etc/nginx`.
-			if e.Kind == KindDelete && e.Res.ID == p && !contains(s.Named, p) {
+			if e.Kind == KindDelete && e.Res.ID == p && (e.Recursive || !contains(s.Named, p)) {
 				continue
 			}
 			return true
@@ -438,7 +438,7 @@ func (l *Ledger) MintFromEffects(summary, reason string, effects []Effect) (*Gra
 	req.Summary = summary
 	req.Reason = reason
 	for _, e := range effects {
-		if (!e.Certain && !spelledRemote(e)) || e.Kind == KindDestructiveBulk || e.Kind == KindOpaque {
+		if !e.Certain || e.Kind == KindDestructiveBulk || e.Kind == KindOpaque {
 			continue
 		}
 		switch e.Res.Class {

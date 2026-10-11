@@ -222,9 +222,15 @@ func classifyRemote(prog string, args []bashparser.Word, c *cmdCtx, as *Assessme
 			before := len(as.Effects)
 			classifyAnalysis(inner, remote, as, depth+1)
 			// Everything the nested pass produced belongs to the remote host.
+			// When a word of the command was dropped as not literal (`"$X"`,
+			// `$(…)`), the script read here is not the one that runs, so
+			// nothing in it counts as spelled out.
 			for i := before; i < len(as.Effects); i++ {
 				as.Effects[i].Zone = remoteZone(as.Effects[i].Zone)
 				as.Effects[i].Target = c.target
+				if dropped {
+					as.Effects[i].Spelled = false
+				}
 			}
 			if len(as.Effects) > before {
 				return
