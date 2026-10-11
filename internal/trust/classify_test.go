@@ -409,3 +409,28 @@ func TestRemoteSpelledPaths(t *testing.T) {
 		}
 	}
 }
+
+// GNU rm takes any unique prefix of --recursive, so every spelling marks the
+// delete recursive (#305 review).
+func TestRmRecursiveSpellings(t *testing.T) {
+	roots := NewRoots(t.TempDir(), t.TempDir())
+	for _, cmd := range []string{
+		"rm -r /srv/app", "rm -Rf /srv/app", "rm -fr /srv/app", "rm -rfv /srv/app",
+		"rm --recursive /srv/app", "rm --rec /srv/app", "rm --r -f /srv/app",
+	} {
+		in, _ := json.Marshal(map[string]string{"command": cmd})
+		as := ClassifyToolCall("Bash", in, roots.Project[0], roots)
+		found := false
+		for _, e := range as.Effects {
+			if e.Res.ID == "/srv/app" {
+				found = true
+				if !e.Recursive && e.Kind != KindDestructiveBulk {
+					t.Errorf("%q: not marked recursive: %+v", cmd, e)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("%q: no effect on /srv/app: %+v", cmd, as.Effects)
+		}
+	}
+}
