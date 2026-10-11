@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/greenthread-ai/klaudia/internal/native/bashparser"
@@ -113,6 +114,14 @@ func (c *cmdCtx) pathEffect(kind Kind, w bashparser.Word, evidence string) (Effe
 			Evidence: evidence,
 			Certain:  false,
 		}, true
+	}
+	if !c.target.Local && filepath.IsAbs(w.Text) {
+		// Another host's file, spelled out in full. It is not resolved against
+		// this machine's filesystem (a local symlink says nothing about that
+		// host), only cleaned, and it stays uncertain; see Effect.Spelled.
+		e := c.effect(kind, "path", filepath.Clean(w.Text), evidence, true)
+		e.Spelled = !e.Certain
+		return e, true
 	}
 	resolved := c.roots.Resolve(c.cwd, w.Text)
 	if resolved == "" {

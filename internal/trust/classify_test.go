@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -361,6 +362,50 @@ func TestWritingABlockDeviceStillAsks(t *testing.T) {
 		as := ClassifyCommandIn(cmd, proj, roots)
 		if _, ask := as.NeedsAgreement(); !ask {
 			t.Errorf("%q was allowed; writing a block device destroys a disk", cmd)
+		}
+	}
+}
+
+// #305: a remote path spelled out as an absolute literal is marked Spelled —
+// still uncertain, but matchable against a scope. Anything the command does
+// not spell out in full is not.
+func TestRemoteSpelledPaths(t *testing.T) {
+	roots := NewRoots(t.TempDir(), t.TempDir())
+	cases := []struct {
+		cmd     string
+		spelled bool
+		id      string
+	}{
+		{"ssh h 'rm -f /srv/app/file.txt'", true, "/srv/app/file.txt"},
+		{"ssh h 'rm -f /srv/app/../app/file.txt'", true, "/srv/app/file.txt"},
+		{"ssh h 'rm -f $F'", false, ""},
+		{"ssh h 'rm -f ~/x'", false, ""},
+		{"ssh h 'cd /srv && rm -f x'", false, ""},
+	}
+	for _, c := range cases {
+		in, _ := json.Marshal(map[string]string{"command": c.cmd})
+		as := ClassifyToolCall("Bash", in, roots.Project[0], roots)
+		var got *Effect
+		for i := range as.Effects {
+			if as.Effects[i].Kind == KindDelete {
+				got = &as.Effects[i]
+				break
+			}
+		}
+		if got == nil {
+			if c.spelled {
+				t.Errorf("%q: no delete effect: %+v", c.cmd, as.Effects)
+			}
+			continue
+		}
+		if got.Spelled != c.spelled {
+			t.Errorf("%q: Spelled = %v, want %v (%+v)", c.cmd, got.Spelled, c.spelled, *got)
+		}
+		if got.Certain {
+			t.Errorf("%q: a remote path must stay uncertain", c.cmd)
+		}
+		if c.spelled && got.Res.ID != c.id {
+			t.Errorf("%q: path %q, want %q", c.cmd, got.Res.ID, c.id)
 		}
 	}
 }
