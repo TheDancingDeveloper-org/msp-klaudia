@@ -761,3 +761,54 @@ func TestGuardShellValSubstitutionIsNotFollowed(t *testing.T) {
 		}
 	}
 }
+
+// A pipe of ordinary programs after a literal cd cannot move the shell, so the
+// cd is still followed: a worker staging its own files in a linked worktree
+// with `2>&1 | tail` or `| head` on the line is judged by that worktree, not
+// by the start repository's untracked files (#289, still seen after #296).
+func TestGuardFollowsCdBeforeHarmlessPipe(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", wt, "HEAD")
+	if msg := b.CheckCommand("git status", wt); msg != "" {
+		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
+	}
+	write(t, wt, "one.go", "package one\n")
+	for _, cmd := range []string{
+		"cd " + wt + " && git add -A 2>&1 | tail -3",
+		"cd " + wt + " && git add -- one.go && git status --short | head",
+		"cd " + wt + " && git status --short | head && git add -A && git commit -qm c 2>&1 | tail -1",
+		"cd " + wt + " && git add -A |& grep -v warning",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg != "" {
+			t.Errorf("%q was refused: %s", cmd, msg)
+		}
+	}
+	// The same lines aimed at the start repository still reach its changes.
+	for _, cmd := range []string{
+		"cd " + a + " && git add -A 2>&1 | tail -3",
+		"cd " + wt + " && cd " + a + " && git clean -fdx | cat",
+	} {
+		if msg := b.CheckCommand(cmd, wt); msg == "" {
+			t.Errorf("%q was allowed in the start repository", cmd)
+		}
+	}
+	// A pipe side that could move this shell under lastpipe still breaks the
+	// reading, so the git after it is judged against the start repository.
+	for _, cmd := range []string{
+		"cd " + wt + " && true | builtin cd " + a + " && git add -A",
+		"cd " + wt + " && true | eval 'cd " + a + "' && git add -A",
+		"cd " + wt + " && true | command cd " + a + " && git add -A",
+		"cd " + wt + " && true | source ./x && git add -A",
+		"cd " + wt + " && true | $X && git add -A",
+		"cd " + wt + " && true | shopt -s lastpipe && git add -A",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg == "" {
+			t.Errorf("%q was allowed; a pipe side that can move the shell was followed", cmd)
+		}
+	}
+}
