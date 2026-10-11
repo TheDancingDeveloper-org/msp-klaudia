@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -208,7 +209,9 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 	// on the start repository.
 	// The variable names are case-sensitive; git config keys are not, so
 	// core.worktree is matched without regard to case.
-	envMoved := strings.Contains(strings.ToLower(cmd), "core.worktree")
+	// CDPATH steers a relative cd somewhere other than where chdir looks, and
+	// it can be set on the line by an assignment, read, mapfile or printf -v.
+	envMoved := strings.Contains(strings.ToLower(cmd), "core.worktree") || strings.Contains(cmd, "CDPATH")
 	for _, moved := range []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"} {
 		envMoved = envMoved || strings.Contains(cmd, moved)
 	}
@@ -224,16 +227,30 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 			if hits, what, stage := b.scan(payload, dir, known, depth+1); len(hits) > 0 {
 				return hits, what, stage
 			}
+			if bashparser.Base(c.Name) == "eval" {
+				// eval runs its payload in this shell: a cd there moves
+				// the shell the rest of the line runs in.
+				known, pending = false, -1
+			}
 			continue
 		}
 		name, args, ok := trust.Unwrapped(c)
 		if !ok {
+			// A command whose name is an expansion may be cd itself.
+			known, pending = false, -1
 			continue
 		}
 		words := c.ArgWords[len(c.ArgWords)-len(args):]
 		switch bashparser.Base(name) {
 		case "cd", "pushd", "popd":
 			dir, known, pending = b.chdir(a, c, words, dir, known)
+			continue
+		case "eval", "source", ".", "builtin", "command", "mapfile", "readarray", "trap", "enable", "alias":
+			// These run code in this shell — a sourced file, an eval'd
+			// string, a mapfile -C callback, a trap — or rename what a
+			// later word runs, so where the shell is afterwards is not
+			// something this reading can follow.
+			known, pending = false, -1
 			continue
 		case "git":
 		default:
@@ -300,6 +317,11 @@ func (b *Baseline) chdir(a bashparser.Analysis, c bashparser.Command, words []ba
 	}
 	if !filepath.IsAbs(t) {
 		if !known {
+			return dir, false, -1
+		}
+		// bash searches an inherited CDPATH before the current directory
+		// for a relative name that does not start with ./ or ../.
+		if os.Getenv("CDPATH") != "" && !strings.HasPrefix(t, "./") && !strings.HasPrefix(t, "../") && t != "." && t != ".." {
 			return dir, false, -1
 		}
 		t = filepath.Join(dir, t)
