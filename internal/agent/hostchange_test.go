@@ -414,6 +414,12 @@ func TestApprovedScopeCoversRemoteSpelledPaths(t *testing.T) {
 		"ssh root@winrarhost 'ln -s / /mnt/2tnvme/docker/volumes/z2m_data/r'",
 		// Arguments appended at run time.
 		"ssh root@winrarhost 'xargs -a /tmp/list rm -f /mnt/2tnvme/docker/volumes/z2m_data/x'",
+		"ssh root@winrarhost '/usr/bin/xargs -a /tmp/l rm -f /mnt/2tnvme/docker/volumes/z2m_data/x'",
+		// Writes through a remote scope are never covered: a write can plant
+		// a link that takes a later in-scope path anywhere.
+		"ssh root@winrarhost 'cp -s /etc/shadow /mnt/2tnvme/docker/volumes/z2m_data/r'",
+		"ssh root@winrarhost 'mv /tmp/lnk /mnt/2tnvme/docker/volumes/z2m_data/r'",
+		"ssh root@winrarhost 'tee /mnt/2tnvme/docker/volumes/z2m_data/r </dev/null'",
 	} {
 		if body := run("Bash", map[string]string{"command": cmd}); !strings.Contains(body, "RequestHostChange") {
 			t.Errorf("%q ran outside the approved scope: %s", cmd, body)

@@ -477,9 +477,18 @@ func (l *Ledger) MintFromEffects(summary, reason string, effects []Effect) (*Gra
 
 // spelledRemote reports whether an uncertain effect may still be matched
 // against a scope: a path on another host spelled out as an absolute literal.
+//
+// Only a non-recursive delete qualifies. A remote path cannot be resolved from
+// here, so a scope on another host is matched by name alone, and a write
+// inside it can plant a symlink (`cp -s`, `mv`, `rsync`, `tar`) that makes a
+// later path "inside" the scope land anywhere. Writes through a remote scope
+// therefore stay with the user every time; only deleting the named files —
+// the #305 case — is covered. A delete through a symlink that already exists
+// on that host is a residual risk this reader cannot see.
 func spelledRemote(e Effect) bool {
 	return e.Spelled && e.Zone == ZoneRemote && e.Res.Class == "path" &&
-		e.Res.ID != "" && filepath.IsAbs(e.Res.ID)
+		e.Res.ID != "" && filepath.IsAbs(e.Res.ID) &&
+		e.Kind == KindDelete && !e.Recursive
 }
 
 func contains(list []string, v string) bool {
