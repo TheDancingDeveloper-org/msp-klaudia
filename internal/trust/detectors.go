@@ -619,6 +619,7 @@ func detectWrite(prog string) detector {
 			// `ln -s $(pwd)/tool ~/.local/bin/tool` ask about a path it never
 			// touches.
 			ops := nonFlagWords(args)
+			before := len(out)
 			switch {
 			case len(ops) >= 2:
 				add(ops[len(ops)-1], KindWrite)
@@ -626,8 +627,17 @@ func detectWrite(prog string) detector {
 				// `ln -s /opt/x/tool` links ./tool in the working directory.
 				add(bashparser.Word{Text: "./", Literal: true}, KindWrite)
 			}
+			// A link inside a scope can point anywhere, and the scope is matched
+			// by name: `ln -s / /scope/r` would make /scope/r/etc/shadow look
+			// in scope. On another host, where nothing can be resolved, a link
+			// is never spelled out.
+			for i := before; i < len(out); i++ {
+				out[i].Spelled = false
+			}
 		case "rm", "shred":
-			recursive := hasFlag(lits, "-r", "-R", "-rf", "-fr", "--recursive")
+			// GNU rm takes any unique prefix of a long option, and --recursive
+			// is the only one starting with r: `rm --rec` removes a tree.
+			recursive := hasFlag(lits, "-r", "-R", "-rf", "-fr", "--recursive") || longPrefix(lits, "--recursive", 3)
 			tree := recursive || anyShortFlag(lits, 'r', 'R')
 			for _, w := range nonFlagWords(args) {
 				kind := KindDelete
@@ -787,6 +797,20 @@ func anyShortFlag(args []string, letters ...rune) bool {
 					return true
 				}
 			}
+		}
+	}
+	return false
+}
+
+// longPrefix reports whether any argument is an abbreviation of the long
+// option full at least min characters long (`--rec` for `--recursive`).
+func longPrefix(args []string, full string, min int) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if len(a) >= min && strings.HasPrefix(a, "--") && strings.HasPrefix(full, a) {
+			return true
 		}
 	}
 	return false

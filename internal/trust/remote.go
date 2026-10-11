@@ -215,6 +215,15 @@ func classifyRemote(prog string, args []bashparser.Word, c *cmdCtx, as *Assessme
 	// so the remote side is one script however it was quoted locally.
 	lits, dropped := literals(args)
 	script := strings.Join(lits, " ")
+	// xargs, parallel and find -exec append arguments read at run time, so the
+	// paths a command in the script sees are not the ones written there.
+	feedsArgs := false
+	for _, w := range strings.Fields(script) {
+		switch strings.Trim(w, `'"();&|`) {
+		case "xargs", "parallel", "-exec", "-execdir", "-ok", "-okdir":
+			feedsArgs = true
+		}
+	}
 
 	if depth < maxDepth {
 		if inner, err := bashparser.Parse(script); err == nil {
@@ -228,7 +237,7 @@ func classifyRemote(prog string, args []bashparser.Word, c *cmdCtx, as *Assessme
 			for i := before; i < len(as.Effects); i++ {
 				as.Effects[i].Zone = remoteZone(as.Effects[i].Zone)
 				as.Effects[i].Target = c.target
-				if dropped {
+				if dropped || feedsArgs {
 					as.Effects[i].Spelled = false
 				}
 			}

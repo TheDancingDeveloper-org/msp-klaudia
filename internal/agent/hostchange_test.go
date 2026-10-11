@@ -408,6 +408,12 @@ func TestApprovedScopeCoversRemoteSpelledPaths(t *testing.T) {
 		// A recursive delete of a path the user named.
 		"ssh root@winrarhost 'rm -rf /tmp/z2m_mqtt_pw'",
 		"ssh root@winrarhost 'rm -Rf /tmp/z2m_mqtt_pw'",
+		"ssh root@winrarhost 'rm --rec -f /tmp/z2m_mqtt_pw'",
+		"ssh root@winrarhost 'rm --recursiv /tmp/z2m_mqtt_pw'",
+		// A link in the scope that points out of it.
+		"ssh root@winrarhost 'ln -s / /mnt/2tnvme/docker/volumes/z2m_data/r'",
+		// Arguments appended at run time.
+		"ssh root@winrarhost 'xargs -a /tmp/list rm -f /mnt/2tnvme/docker/volumes/z2m_data/x'",
 	} {
 		if body := run("Bash", map[string]string{"command": cmd}); !strings.Contains(body, "RequestHostChange") {
 			t.Errorf("%q ran outside the approved scope: %s", cmd, body)
