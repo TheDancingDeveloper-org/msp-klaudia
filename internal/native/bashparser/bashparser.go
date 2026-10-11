@@ -185,11 +185,17 @@ func Parse(input string) (Analysis, error) {
 // as running where it landed. A substitution that only reads — a heredoc fed to
 // cat, redirects included — cannot do that.
 //
-// A pipe breaks the chain: its sides run in subshells by default, but bash's
-// lastpipe option can run the final side in this shell, and whether it is on is
-// shell state this reading does not track — it can be enabled anywhere earlier
-// on the line, including through eval. Fail closed: no piped line is
-// sequential, so no cd on one is followed and no command on one is joined.
+// A pipe's sides run in subshells by default, but bash's lastpipe option can
+// run the final side in this shell, and whether it is on is shell state this
+// reading does not track — it can be enabled anywhere earlier on the line,
+// including through eval. So a pipe breaks the chain whenever any of its sides
+// could change this shell's state if it ran here: a cd, pushd or popd, a
+// builtin that runs or reads other code (eval, source, builtin, command, exec),
+// one that sets shell options or variables, a bare assignment, or a command
+// whose name is not a literal (pipeSideMoves). A pipe whose every side is an
+// ordinary program — `cd wt && git add -A 2>&1 | tail -3` — cannot move the
+// shell whichever side runs where, so it stays in the chain and a cd before
+// it is still followed (#289).
 func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]int) bool {
 	var chain func(s *syntax.Stmt) ([]*syntax.CallExpr, bool)
 	chain = func(s *syntax.Stmt) ([]*syntax.CallExpr, bool) {
@@ -201,9 +207,17 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 			return []*syntax.CallExpr{c}, true
 		case *syntax.BinaryCmd:
 			if c.Op == syntax.Pipe || c.Op == syntax.PipeAll {
-				// Fail closed: the final side may run in this shell if
-				// lastpipe is set, so a cd on any side cannot be vouched for.
-				return nil, false
+				// The final side may run in this shell if lastpipe is set,
+				// so a side that could move it breaks the chain.
+				x, ok := chain(c.X)
+				if !ok || pipeSideMoves(x) {
+					return nil, false
+				}
+				y, ok := chain(c.Y)
+				if !ok || pipeSideMoves(y) {
+					return nil, false
+				}
+				return append(x, y...), true
 			}
 			if c.Op != syntax.AndStmt {
 				return nil, false
@@ -238,6 +252,33 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 	// A line whose every command sat in a pipe subshell has no chain of its own;
 	// where it runs is not something this reading can vouch for.
 	return seq && assigned > 0
+}
+
+// shellStateBuiltins are the builtins that, run in this shell, can change its
+// working directory, options, variables or what later names resolve to — or run
+// code that does.
+var shellStateBuiltins = map[string]bool{
+	"cd": true, "pushd": true, "popd": true,
+	"eval": true, "source": true, ".": true, "builtin": true, "command": true, "exec": true,
+	"shopt": true, "set": true, "export": true, "unset": true, "declare": true, "typeset": true,
+	"local": true, "readonly": true, "alias": true, "unalias": true, "enable": true, "hash": true,
+	"trap": true,
+}
+
+// pipeSideMoves reports whether any command on a pipe side could change this
+// shell's state if lastpipe ran it here. A command whose name is not one
+// literal word, or a bare assignment, fails closed.
+func pipeSideMoves(calls []*syntax.CallExpr) bool {
+	for _, c := range calls {
+		if len(c.Args) == 0 {
+			return true
+		}
+		name, literal := wordParts(c.Args[0])
+		if !literal || shellStateBuiltins[base(name)] {
+			return true
+		}
+	}
+	return false
 }
 
 // substitutionMoves reports whether a statement's command substitutions

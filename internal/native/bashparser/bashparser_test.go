@@ -215,6 +215,15 @@ func TestSequential(t *testing.T) {
 		// `shopt -s lastpipe` (non-default) the final side of a pipe runs in
 		// a subshell, but we do not model the shopt, so fail closed.
 		{"true | cd a && git add -A", false, nil},
+		{"true | eval x && git add -A", false, nil},
+		{"true | builtin cd a && git add -A", false, nil},
+		{"true | X=1 && git add -A", false, nil},
+		{"true | $X && git add -A", false, nil},
+		// A pipe of ordinary programs cannot move this shell whichever side
+		// runs here, so it stays in the chain and a cd before it is followed
+		// (#289).
+		{"cd a && git add -A 2>&1 | tail -3", true, []cmd{{0, true}, {0, false}, {0, false}}},
+		{"cd a && git status | head && git add -A", true, []cmd{{0, true}, {0, false}, {0, false}, {0, false}}},
 		// `${ …; }` and `${| …; }` substitutions run in the current shell
 		// (unlike `$( … )`, a true subshell), so a cd inside them really
 		// moves the parent shell's working directory.
