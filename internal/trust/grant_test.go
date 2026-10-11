@@ -222,3 +222,25 @@ func TestRelativeGrantPathsResolveAgainstTheProject(t *testing.T) {
 		t.Fatalf("scope paths = %v, want [%s]", g.Scope.Paths, want)
 	}
 }
+
+// #305: a path the request named and that was granted exactly (its parent is a
+// root, so it is not widened) may be deleted — that is what was approved —
+// while a widened scope still may not delete its own directory.
+func TestNamedExactPathMayBeDeleted(t *testing.T) {
+	l := NewLedger(NewRoots(t.TempDir(), t.TempDir()))
+	if _, err := l.Mint(Request{Summary: "s", Paths: []string{"/tmp/scratch-305", "/srv/app/conf.yaml"}}); err != nil {
+		t.Fatal(err)
+	}
+	del := func(p string) Effect {
+		return Effect{Zone: ZoneHost, Kind: KindDelete, Res: Resource{Class: "path", ID: p}, Certain: true}
+	}
+	if _, drift := l.Cover([]Effect{del("/tmp/scratch-305")}); len(drift) != 0 {
+		t.Errorf("deleting the exact approved path drifted: %+v", drift)
+	}
+	if _, drift := l.Cover([]Effect{del("/srv/app/conf.yaml")}); len(drift) != 0 {
+		t.Errorf("deleting a file inside the widened scope drifted: %+v", drift)
+	}
+	if _, drift := l.Cover([]Effect{del("/srv/app")}); len(drift) == 0 {
+		t.Error("a widened scope let its own directory be deleted")
+	}
+}

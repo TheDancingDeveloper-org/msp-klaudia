@@ -315,3 +315,92 @@ func TestApprovedDeclarationIsNotRecordedAsBlocked(t *testing.T) {
 		}
 	}
 }
+
+// #305: an approved scope covers the same paths when the command reaches them
+// over ssh, in a combined remote script, or through docker exec on that host —
+// the in-scope delete runs, while a path outside the scope, the scope root
+// itself and a bulk delete are still refused.
+func TestApprovedScopeCoversRemoteSpelledPaths(t *testing.T) {
+	g, proj := gateFixture(t)
+	g.DeclareTool = "RequestHostChange"
+	declare, err := tools.NewRequestHostChange()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, bash := testRegistry(t, declare)
+	l := New(nil, reg)
+
+	asked := 0
+	opts := Options{
+		WorkingDir: proj,
+		Host:       g,
+		Permission: permission.Context{Mode: permission.StaticMode(permission.ModeAutonomous)},
+		Approver: ApproverFunc(func(ctx context.Context, req ApprovalRequest) permission.Decision {
+			asked++
+			return permission.Decision{Behavior: permission.Allow}
+		}),
+	}
+	run := func(name string, input any) string {
+		raw, _ := json.Marshal(input)
+		tu := anthropic.BetaToolUseBlock{ID: "t", Name: name, Input: json.RawMessage(raw)}
+		return resultText(l.dispatch(context.Background(), tu, opts, 0, nil, nil,
+			newFailureState()))
+	}
+	const inScope = "ssh root@winrarhost 'rm -f /mnt/2tnvme/docker/volumes/z2m_data/.mqttpw'"
+
+	// Before any approval the remote delete is put to the user, and the
+	// refusal names the host it lands on, not this machine.
+	body := run("Bash", map[string]string{"command": inScope})
+	if !strings.Contains(body, "RequestHostChange") {
+		t.Fatalf("an unapproved remote delete ran: %s", body)
+	}
+	if !strings.Contains(body, "root@winrarhost") || strings.Contains(body, "this machine") {
+		t.Errorf("refusal should name the remote host: %s", body)
+	}
+
+	out := run("RequestHostChange", map[string]any{
+		"summary": "Delete two leftover MQTT password scratch files",
+		"reason":  "they hold a plaintext password",
+		"paths":   []string{"/mnt/2tnvme/docker/volumes/z2m_data/.mqttpw", "/tmp/z2m_mqtt_pw"},
+	})
+	if !strings.Contains(out, "Approved") {
+		t.Fatalf("declaration was not approved: %s", out)
+	}
+
+	before := len(bash.ran)
+	for _, cmd := range []string{
+		inScope,
+		"ssh root@winrarhost rm -f /mnt/2tnvme/docker/volumes/z2m_data/.mqttpw",
+		"ssh root@winrarhost 'rm -f /mnt/2tnvme/docker/volumes/z2m_data/.mqttpw; docker exec mosquitto rm -f /tmp/z2m_mqtt_pw'",
+		"ssh root@winrarhost docker exec mosquitto rm -f /tmp/z2m_mqtt_pw",
+		"ssh -p 22 root@winrarhost 'rm -f /tmp/z2m_mqtt_pw && ls /mnt/2tnvme/docker/volumes/z2m_data'",
+	} {
+		if body := run("Bash", map[string]string{"command": cmd}); strings.Contains(body, "RequestHostChange") {
+			t.Errorf("%q was refused inside the approved scope: %s", cmd, body)
+		}
+	}
+	if got := len(bash.ran) - before; got != 5 {
+		t.Fatalf("ran %d of 5 in-scope commands: %v", got, bash.ran)
+	}
+
+	for _, cmd := range []string{
+		// Outside the scope.
+		"ssh root@winrarhost 'rm -f /mnt/2tnvme/docker/volumes/other/x'",
+		"ssh root@winrarhost 'rm -f /etc/passwd'",
+		// The scope root itself: a grant changes what is inside it.
+		"ssh root@winrarhost 'rm -rf /mnt/2tnvme/docker/volumes/z2m_data'",
+		// Not spelled out: a variable, ~. (A relative path after a remote cd
+		// produces no effect at all and is not gated, before or after #305.)
+		"ssh root@winrarhost 'rm -f $F'",
+		"ssh root@winrarhost 'rm -f ~/.mqttpw'",
+		// In scope but bundled with an out-of-scope delete.
+		"ssh root@winrarhost 'rm -f /mnt/2tnvme/docker/volumes/z2m_data/.mqttpw /var/lib/other'",
+	} {
+		if body := run("Bash", map[string]string{"command": cmd}); !strings.Contains(body, "RequestHostChange") {
+			t.Errorf("%q ran outside the approved scope: %s", cmd, body)
+		}
+	}
+	if asked != 1 {
+		t.Errorf("asked %d times; one declaration should have been enough", asked)
+	}
+}

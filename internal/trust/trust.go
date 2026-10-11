@@ -144,6 +144,15 @@ type Effect struct {
 	// dozen. An uncertain mutating effect must never be auto-approved, and an
 	// uncertain read is not worth a prompt.
 	Certain bool
+	// Spelled marks an uncertain effect on another host whose path the command
+	// spells out in full: an absolute literal, no variable, no ~, no relative
+	// part. This machine cannot check that path (it is that host's file, and
+	// the remote working directory is unknown), so the effect stays uncertain
+	// and is still put to the user. But it names exactly the path a scope the
+	// user approved names, so a live grant may cover it (#305): without that,
+	// `ssh host rm -f /var/x/file` was refused again straight after the user
+	// approved deleting /var/x/file.
+	Spelled bool
 }
 
 // Assessment is everything a tool call was found to do.

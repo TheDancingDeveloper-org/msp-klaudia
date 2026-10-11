@@ -218,7 +218,7 @@ func (g *HostGate) refusal(as trust.Assessment, drift []trust.Effect, hadGrants 
 	if as.Unparsed {
 		b.WriteString("Klaudia could not read this command line, so it cannot tell whether it changes this machine. ")
 	} else {
-		b.WriteString("Changes this machine: ")
+		b.WriteString("Changes " + where(drift) + ": ")
 		b.WriteString(describeAll(drift))
 		b.WriteString(". ")
 	}
@@ -239,6 +239,30 @@ func (g *HostGate) refusal(as trust.Assessment, drift []trust.Effect, hadGrants 
 		"If it has to be done this way, call %s to describe the whole operation and why.",
 		g.DeclareTool))
 	return b.String()
+}
+
+// where names what the drift changes: another host when every effect lands
+// on the same one, this machine otherwise. Saying "this machine" about an
+// `ssh host rm …` sends the model looking for the wrong problem (#305).
+func where(drift []trust.Effect) string {
+	label := ""
+	for _, e := range drift {
+		if e.Target.Local || e.Zone != trust.ZoneRemote {
+			return "this machine"
+		}
+		l := e.Target.Label
+		if l == "" {
+			l = e.Target.Host
+		}
+		if l == "" || (label != "" && l != label) {
+			return "another host"
+		}
+		label = l
+	}
+	if label == "" {
+		return "this machine"
+	}
+	return label
 }
 
 func describeAll(effects []trust.Effect) string {
