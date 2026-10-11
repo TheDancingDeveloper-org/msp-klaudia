@@ -189,10 +189,9 @@ func Parse(input string) (Analysis, error) {
 // run the final side in this shell, and whether it is on is shell state this
 // reading does not track — it can be enabled anywhere earlier on the line,
 // including through eval. So a pipe breaks the chain whenever any of its sides
-// could change this shell's state if it ran here: a cd, pushd or popd, a
-// builtin that runs or reads other code (eval, source, builtin, command, exec),
-// one that sets shell options or variables, a bare assignment, or a command
-// whose name is not a literal (pipeSideMoves). A pipe whose every side is an
+// could change this shell's state if it ran here: any bash builtin but a few
+// inert ones, a bare assignment, or a command whose name is not a literal
+// (pipeSideMoves). A pipe whose every side is an
 // ordinary program — `cd wt && git add -A 2>&1 | tail -3` — cannot move the
 // shell whichever side runs where, so it stays in the chain and a cd before
 // it is still followed (#289).
@@ -254,28 +253,56 @@ func sequential(prog *syntax.File, cmds []Command, calls map[*syntax.CallExpr]in
 	return seq && assigned > 0
 }
 
-// shellStateBuiltins are the builtins that, run in this shell, can change its
-// working directory, options, variables or what later names resolve to — or run
-// code that does.
-var shellStateBuiltins = map[string]bool{
-	"cd": true, "pushd": true, "popd": true,
-	"eval": true, "source": true, ".": true, "builtin": true, "command": true, "exec": true,
-	"shopt": true, "set": true, "export": true, "unset": true, "declare": true, "typeset": true,
-	"local": true, "readonly": true, "alias": true, "unalias": true, "enable": true, "hash": true,
-	"trap": true,
+// bashBuiltins are the names bash runs inside the shell itself rather than as
+// a program. Under lastpipe the final pipe side runs in this shell, so any of
+// them there can change its state — its directory, its variables (CDPATH
+// steers a later cd), or code it runs (eval, source, mapfile -C, trap).
+var bashBuiltins = map[string]bool{
+	".": true, ":": true, "[": true, "alias": true, "bg": true, "bind": true, "break": true,
+	"builtin": true, "caller": true, "cd": true, "command": true, "compgen": true,
+	"complete": true, "compopt": true, "continue": true, "declare": true, "dirs": true,
+	"disown": true, "echo": true, "enable": true, "eval": true, "exec": true, "exit": true,
+	"export": true, "false": true, "fc": true, "fg": true, "getopts": true, "hash": true,
+	"help": true, "history": true, "jobs": true, "kill": true, "let": true, "local": true,
+	"logout": true, "mapfile": true, "popd": true, "printf": true, "pushd": true, "pwd": true,
+	"read": true, "readarray": true, "readonly": true, "return": true, "set": true,
+	"shift": true, "shopt": true, "source": true, "suspend": true, "test": true, "times": true,
+	"trap": true, "true": true, "type": true, "typeset": true, "ulimit": true, "umask": true,
+	"unalias": true, "unset": true, "wait": true,
+}
+
+// inertBuiltins are the builtins that read nothing into the shell and change
+// none of its state, so a pipe side may run them wherever it runs. printf is
+// one only without -v.
+var inertBuiltins = map[string]bool{
+	":": true, "[": true, "echo": true, "false": true, "printf": true, "pwd": true,
+	"test": true, "true": true,
 }
 
 // pipeSideMoves reports whether any command on a pipe side could change this
-// shell's state if lastpipe ran it here. A command whose name is not one
-// literal word, or a bare assignment, fails closed.
+// shell's state if lastpipe ran it here: any builtin but an inert one, printf
+// with -v, a bare assignment, or a command whose name is not one literal word.
+// A program (git, tail, grep, xargs, env) runs in a process of its own and
+// cannot.
 func pipeSideMoves(calls []*syntax.CallExpr) bool {
 	for _, c := range calls {
 		if len(c.Args) == 0 {
 			return true
 		}
 		name, literal := wordParts(c.Args[0])
-		if !literal || shellStateBuiltins[base(name)] {
+		if !literal {
 			return true
+		}
+		name = base(name)
+		if bashBuiltins[name] && !inertBuiltins[name] {
+			return true
+		}
+		if name == "printf" {
+			for _, a := range c.Args[1:] {
+				if strings.HasPrefix(wordText(a), "-v") {
+					return true
+				}
+			}
 		}
 	}
 	return false

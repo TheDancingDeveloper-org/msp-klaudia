@@ -812,3 +812,71 @@ func TestGuardFollowsCdBeforeHarmlessPipe(t *testing.T) {
 		}
 	}
 }
+
+// Builtins that run code in this shell, or set CDPATH, can move the shell
+// between a followed cd and the git after it — on a pipe's final side under
+// lastpipe or as a plain command in the chain. After one of them the reading
+// no longer knows where the shell is, so the git is judged against the start
+// repository (review of the #289 fix).
+func TestGuardStopsFollowingAfterShellMovers(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", wt, "HEAD")
+	if msg := b.CheckCommand("git status", wt); msg != "" {
+		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
+	}
+	parent, name := filepath.Dir(a), filepath.Base(a)
+	for _, cmd := range []string{
+		"shopt -s lastpipe; cd " + wt + " && printf 'x\\n' | mapfile -t -C 'cd " + a + " #' -c 1 arr && git add -A",
+		"shopt -s lastpipe; cd " + wt + " && printf 'x\\n' | readarray -t -C 'cd " + a + " #' -c 1 arr && git add -A",
+		"shopt -s lastpipe; cd " + wt + " && echo " + parent + " | read CDPATH && cd " + name + " && git add -A",
+		"shopt -s lastpipe; cd " + wt + " && echo " + parent + " | mapfile -t CDPATH && cd " + name + " && git add -A",
+		"cd " + wt + " && true | printf -v CDPATH %s " + parent + " && cd " + name + " && git add -A",
+		"cd " + wt + " && eval 'cd " + a + "' && git add -A",
+		"cd " + wt + " && mapfile -t -C 'cd " + a + " #' -c 1 arr <<< x && git add -A",
+		"cd " + wt + " && CDPATH=" + parent + " && cd " + name + " && git add -A",
+		"cd " + wt + " && source ./env.sh && git add -A",
+		"cd " + wt + " && $X " + a + " && git add -A",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg == "" {
+			t.Errorf("%q was allowed; the shell may have moved after the cd", cmd)
+		}
+	}
+	// Programs on a pipe, prefix assignments on a program and inert builtins
+	// do not move the shell.
+	write(t, wt, "one.go", "package one\n")
+	for _, cmd := range []string{
+		"cd " + wt + " && LC_ALL=C git status | head && git add -A",
+		"cd " + wt + " && git add -A | tee /dev/null && echo done | cat",
+		"cd " + wt + " && echo staging | cat && git add -A",
+	} {
+		if msg := b.CheckCommand(cmd, a); msg != "" {
+			t.Errorf("%q was refused: %s", cmd, msg)
+		}
+	}
+}
+
+// bash searches an inherited CDPATH before the current directory for a
+// relative cd, so with one set a relative cd is not followed.
+func TestGuardInheritedCdpathStopsRelativeCd(t *testing.T) {
+	a := repo(t)
+	b, err := Capture(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, a, "worktree", "add", "-q", wt, "HEAD")
+	write(t, wt, filepath.Join(filepath.Base(a), "keep"), "x")
+	if msg := b.CheckCommand("git status", wt); msg != "" {
+		t.Fatalf("first touch of a clean worktree was refused: %s", msg)
+	}
+	t.Setenv("CDPATH", filepath.Dir(a))
+	cmd := "cd " + wt + " && cd " + filepath.Base(a) + " && git add -A"
+	if msg := b.CheckCommand(cmd, a); msg == "" {
+		t.Error("a relative cd was followed with CDPATH set in the environment")
+	}
+}
