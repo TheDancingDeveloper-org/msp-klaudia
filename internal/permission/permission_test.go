@@ -68,7 +68,7 @@ func TestCheckModeIsLive(t *testing.T) {
 // fail loudly at startup rather than resolve to something that looks like it
 // worked.
 func TestLegacyModesAreNoLongerValid(t *testing.T) {
-	for _, m := range []Mode{"default", "acceptEdits", "dontAsk"} {
+	for _, m := range []Mode{"default", "dontAsk"} {
 		if m.Valid() {
 			t.Errorf("mode %q is still valid", m)
 		}
@@ -81,12 +81,12 @@ func TestLegacyModesAreNoLongerValid(t *testing.T) {
 }
 
 func TestResolveLegacyModes(t *testing.T) {
-	for _, m := range []Mode{"default", "acceptEdits", "dontAsk"} {
+	for _, m := range []Mode{"default", "dontAsk"} {
 		if got, dep := Resolve(m); got != ModeAutonomous || !dep {
 			t.Errorf("Resolve(%q) = %q, %v; want autonomous, deprecated", m, got, dep)
 		}
 	}
-	for _, m := range []Mode{ModeAutonomous, ModePlan, ModeBypassPermissions, "bogus"} {
+	for _, m := range []Mode{ModeAutonomous, ModeAcceptEdits, ModePlan, ModeBypassPermissions, "bogus"} {
 		if got, dep := Resolve(m); got != m || dep {
 			t.Errorf("Resolve(%q) = %q, %v; want unchanged", m, got, dep)
 		}

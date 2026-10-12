@@ -95,7 +95,7 @@ func (l *Loop) groupable(tu anthropic.BetaToolUseBlock, opts Options, preempt fu
 			return false
 		}
 	}
-	return permission.Check(opts.Permission, tool, tool.PermissionRequest(raw)).Behavior != permission.Ask
+	return permission.Check(permFor(opts), tool, tool.PermissionRequest(raw)).Behavior != permission.Ask
 }
 
 // dispatchGroup executes a run of calls concurrently, writing each result to

@@ -764,8 +764,11 @@ func TestSetModeErrors(t *testing.T) {
 	cwd := t.TempDir()
 	p := serveAgent(t, Options{CWD: cwd})
 	sid := p.newSession(cwd)
-	if res := p.call("session/set_mode", setModeParams{SessionID: sid, ModeID: "acceptEdits"}); res.Error == nil {
+	if res := p.call("session/set_mode", setModeParams{SessionID: sid, ModeID: "dontAsk"}); res.Error == nil {
 		t.Error("a mode Klaudia retired should be refused, not accepted and ignored")
+	}
+	if res := p.call("session/set_mode", setModeParams{SessionID: sid, ModeID: "acceptEdits"}); res.Error != nil {
+		t.Errorf("acceptEdits is a real mode again and should be accepted: %v", res.Error)
 	}
 	if res := p.call("session/set_mode", setModeParams{SessionID: "nope", ModeID: "plan"}); res.Error == nil {
 		t.Error("an unknown session should be refused")

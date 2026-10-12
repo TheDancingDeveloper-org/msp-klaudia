@@ -8,9 +8,11 @@ import (
 )
 
 // The intrinsic decisions below are what is left of per-tool permission once
-// zones took over. Only plan mode has anything to say: it is read-only
+// zones took over. Two modes have something to say. Plan mode is read-only
 // exploration, so the three categories of side effect are each refused with a
-// message naming what was blocked. Everything else runs.
+// message naming what was blocked. acceptEdits lets file edits in the
+// workspace through and asks about the other two categories, and about an edit
+// anywhere else. In autonomous everything runs.
 //
 // bypassPermissions never reaches here — permission.Check short-circuits it.
 // A change to this machine never reaches here either; agent.dispatch runs the
@@ -26,11 +28,15 @@ func editClassDecision(pctx permission.Context) permission.Decision {
 }
 
 // execClassDecision is the intrinsic decision for command-executing tools
-// (Bash). Running commands is the job; what a command may reach is decided by
-// the host gate before this is consulted.
+// (Bash, RestartJob). Running commands is the job; what a command may reach is
+// decided by the host gate before this is consulted. acceptEdits is the one
+// mode that puts every command to the user — that is what it is for.
 func execClassDecision(pctx permission.Context) permission.Decision {
-	if permission.CurrentMode(pctx) == permission.ModePlan {
+	switch permission.CurrentMode(pctx) {
+	case permission.ModePlan:
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; command execution is not allowed"}
+	case permission.ModeAcceptEdits:
+		return permission.Decision{Behavior: permission.Ask, Message: "acceptEdits mode asks before running a command"}
 	}
 	return permission.Decision{Behavior: permission.Allow}
 }
@@ -47,8 +53,11 @@ func allowAlways(permission.Context) permission.Decision {
 // work and changes nothing on this machine, but it is not side-effect-free, so
 // read-only plan mode still refuses it.
 func networkClassDecision(pctx permission.Context) permission.Decision {
-	if permission.CurrentMode(pctx) == permission.ModePlan {
+	switch permission.CurrentMode(pctx) {
+	case permission.ModePlan:
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; web/network access is not allowed"}
+	case permission.ModeAcceptEdits:
+		return permission.Decision{Behavior: permission.Ask, Message: "acceptEdits mode asks before web/network access"}
 	}
 	return permission.Decision{Behavior: permission.Allow}
 }
@@ -88,11 +97,21 @@ func execGranting(path string) bool {
 }
 
 // editPathDecision is editClassDecision for a write to path: where edits are
-// auto-accepted, an exec-granting path is asked about instead.
+// auto-accepted, an exec-granting path is asked about instead. In acceptEdits
+// an edit outside the workspace is asked about too. Autonomous leaves that to
+// the host gate, which lets the rest of $HOME through as the user's own data;
+// acceptEdits is the narrower promise ("edits to this project"), as in Claude
+// Code.
 func editPathDecision(pctx permission.Context, path string) permission.Decision {
 	d := editClassDecision(pctx)
-	if d.Behavior == permission.Allow && execGranting(path) {
+	if d.Behavior != permission.Allow {
+		return d
+	}
+	if execGranting(path) {
 		return permission.Decision{Behavior: permission.Ask, Message: path + " can make code run later (hooks, tasks, server or shell config), so it is not auto-approved"}
+	}
+	if permission.CurrentMode(pctx) == permission.ModeAcceptEdits && !permission.PathInWorkspace(pctx, path) {
+		return permission.Decision{Behavior: permission.Ask, Message: path + " is outside the workspace; acceptEdits only auto-approves edits inside it"}
 	}
 	return d
 }

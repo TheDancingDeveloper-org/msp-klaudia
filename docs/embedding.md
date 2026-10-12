@@ -58,8 +58,8 @@ unconfigured host:
     "ask_timeout_flag": "--ask-timeout"
   },
   "session": ["session-id", "resume", "resume-across-cwd", "fork-session", "continue"],
-  "permission_modes": ["autonomous", "plan", "bypassPermissions"],
-  "permission_mode_aliases": {"default": "autonomous", "acceptEdits": "autonomous", "dontAsk": "autonomous"},
+  "permission_modes": ["autonomous", "plan", "acceptEdits", "bypassPermissions"],
+  "permission_mode_aliases": {"default": "autonomous", "dontAsk": "autonomous"},
   "providers": ["anthropic", "openai"]
 }
 ```
@@ -175,15 +175,19 @@ This is sent only for a call nothing else could settle. There are no
 allow/deny rules (the per-command model was removed upstream, 0fa00a6): in
 `autonomous`, project work runs without asking, so what reaches the driver is
 a change to this machine or a write to project knowledge
-(`.klaudia/KNOWLEDGE.md`); `bypassPermissions` asks nothing. The turn blocks
+(`.klaudia/KNOWLEDGE.md`); in `acceptEdits`, every command, network or MCP
+call and every edit outside the workspace also reaches it (edits inside the
+workspace do not); `bypassPermissions` asks nothing. The turn blocks
 until the answer arrives, or until `--ask-timeout` passes (default 10m; `0`
 waits forever). After the timeout the call is denied with a tool result saying
 no answer came.
 
-The retired modes `default`, `acceptEdits` and `dontAsk` are still accepted on
-the command line, in config and over `set_permission_mode`, as aliases for
-`autonomous` (a `note:` line on stderr says so), so a launcher written against
-them keeps starting.
+The retired modes `default` and `dontAsk` are still accepted on the command
+line, in config and over `set_permission_mode`, as aliases for `autonomous` (a
+`note:` line on stderr says so), so a launcher written against them keeps
+starting. `acceptEdits` was a third alias. It is now a mode of its own and
+appears in `permission_modes`. A driver that sent it to mean autonomous gets
+the stricter mode, and `init`'s `permissionMode` says `acceptEdits`.
 
 ### `control_request` `ask_user` and `exit_plan` (stable)
 

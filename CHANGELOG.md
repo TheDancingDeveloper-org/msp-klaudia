@@ -6,6 +6,21 @@ port mirrors (see `internal/version`).
 ## Unreleased
 
 ### Added
+- **`acceptEdits` is a real permission mode (WI-1272).** File edits and writes
+  inside the workspace (the working directory and every `--add-dir`/`/add-dir`
+  directory, symlinks resolved) run without asking. Shell commands,
+  `RestartJob`, the browser/network tools, MCP calls and edits outside the
+  workspace ask, every time. Writes to files that make code run later ask, as
+  in autonomous. The host gate still runs first. It is selectable on
+  `--permission-mode`, in `[permissions] mode`, over `set_permission_mode`,
+  ACP `session/set_mode`, and `/mode` (third in the picker, so `plan` stays 2;
+  `bypassPermissions` is now 4). **Behaviour change:** `acceptEdits` was a
+  deprecated alias for `autonomous`. A launcher passing it now gets the
+  stricter mode, and the stream-json capabilities drop it from
+  `permission_mode_aliases` and list it in `permission_modes`. Nothing in the
+  Vogt estate passes it today: Vogt refuses `accept_edits` for Klaudia and
+  starts it in the default mode. `default` and `dontAsk` remain aliases for
+  `autonomous`. `autonomous`, `plan` and `bypassPermissions` are unchanged.
 - **`--prompt-interactive "<text>"`** opens the TUI and sends the text as the
   first message, exactly as if typed (slash commands, `@file`), and the session
   stays open. A positional prompt still means `-p` (headless, exit after one

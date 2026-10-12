@@ -90,7 +90,8 @@ declares what it intends to change and why, and the package install, config
 write, validate and restart that follow all proceed. Approvals are
 session-scoped, never written to disk, and there is no always-allow.
 
-Modes collapsed from six to three (autonomous, plan, bypass). Autonomous is
+Modes collapsed from six to three (autonomous, plan, bypass); `acceptEdits`
+later came back as a fourth (WI-1272, see trust.md). Autonomous is
 refused unless the guardrail is enforcing — without it, it would be
 `bypassPermissions` under a friendlier name.
 

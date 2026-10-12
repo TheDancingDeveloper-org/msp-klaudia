@@ -35,10 +35,16 @@ import (
 // A server you want available without that bet can be marked read-only in
 // .mcp.json and reached from a read-only sub-agent; that path is governed by
 // the readOnlyHint annotation rather than by the mode.
+//
+// acceptEdits asks: it auto-approves file edits and nothing else, and an MCP
+// call is not a file edit Klaudia can see.
 func mcpPermission(pctx permission.Context) permission.Decision {
-	if permission.CurrentMode(pctx) == permission.ModePlan {
+	switch permission.CurrentMode(pctx) {
+	case permission.ModePlan:
 		// Plan mode is read-only for every tool, trusted or not.
 		return permission.Decision{Behavior: permission.Deny, Message: "plan mode is read-only; MCP tools are not allowed"}
+	case permission.ModeAcceptEdits:
+		return permission.Decision{Behavior: permission.Ask, Message: "acceptEdits mode asks before calling an MCP tool"}
 	}
 	return permission.Decision{Behavior: permission.Allow}
 }

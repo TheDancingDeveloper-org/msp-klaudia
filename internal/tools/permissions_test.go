@@ -34,7 +34,6 @@ func TestIntrinsicPermissionClassOfEveryTool(t *testing.T) {
 		must[*BashOutput](t)(NewBashOutput(nil)),
 		must[*KillShell](t)(NewKillShell(nil)),
 		must[*Jobs](t)(NewJobs(nil)),
-		must[*RestartJob](t)(NewRestartJob(nil)),
 		must[*TodoWrite](t)(NewTodoWrite(&TodoStore{})),
 		must[*TaskCreate](t)(NewTaskCreate(store)),
 		must[*TaskGet](t)(NewTaskGet(store)),
@@ -59,6 +58,11 @@ func TestIntrinsicPermissionClassOfEveryTool(t *testing.T) {
 	execs := []Tool{
 		must[*Bash](t)(NewBash(sandbox.NewLocal())),
 	}
+	// RestartJob reruns a command Klaudia already started. Plan and autonomous
+	// let it through as before; acceptEdits asks, as it does for any command.
+	restarts := []Tool{
+		must[*RestartJob](t)(NewRestartJob(nil)),
+	}
 
 	type row struct {
 		mode permission.Mode
@@ -72,14 +76,24 @@ func TestIntrinsicPermissionClassOfEveryTool(t *testing.T) {
 		{"read-only", readOnly, []row{
 			{permission.ModePlan, permission.Allow},
 			{permission.ModeAutonomous, permission.Allow},
+			{permission.ModeAcceptEdits, permission.Allow},
 		}},
+		// The request here names no path, and the context no workspace, so
+		// acceptEdits cannot tell the edit is inside it and asks.
 		{"edit", edits, []row{
 			{permission.ModePlan, permission.Deny},
 			{permission.ModeAutonomous, permission.Allow},
+			{permission.ModeAcceptEdits, permission.Ask},
 		}},
 		{"exec", execs, []row{
 			{permission.ModePlan, permission.Deny},
 			{permission.ModeAutonomous, permission.Allow},
+			{permission.ModeAcceptEdits, permission.Ask},
+		}},
+		{"restart", restarts, []row{
+			{permission.ModePlan, permission.Allow},
+			{permission.ModeAutonomous, permission.Allow},
+			{permission.ModeAcceptEdits, permission.Ask},
 		}},
 	}
 	for _, c := range classes {
@@ -89,8 +103,8 @@ func TestIntrinsicPermissionClassOfEveryTool(t *testing.T) {
 				if got.Behavior != r.want {
 					t.Errorf("%s (%s) in %s: behavior = %q, want %q", tool.Name(), c.name, r.mode, got.Behavior, r.want)
 				}
-				if got.Behavior == permission.Deny && got.Message == "" {
-					t.Errorf("%s in %s: a denial must say why", tool.Name(), r.mode)
+				if got.Behavior != permission.Allow && got.Message == "" {
+					t.Errorf("%s in %s: a denial or an ask must say why", tool.Name(), r.mode)
 				}
 			}
 		}

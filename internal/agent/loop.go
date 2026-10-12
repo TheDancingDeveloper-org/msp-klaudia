@@ -1311,7 +1311,7 @@ func (l *Loop) dispatch(ctx context.Context, tu anthropic.BetaToolUseBlock, opts
 	}
 
 	req := tool.PermissionRequest(raw)
-	decision := permission.Check(opts.Permission, tool, req)
+	decision := permission.Check(permFor(opts), tool, req)
 	switch decision.Behavior {
 	case permission.Deny:
 		msg := decision.Message

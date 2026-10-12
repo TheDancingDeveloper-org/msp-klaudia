@@ -205,6 +205,8 @@ func shortMode(m permission.Mode) string {
 		// Of everything on this line, the mode is the one thing that must not
 		// be wrong.
 		return "autonomous"
+	case permission.ModeAcceptEdits:
+		return "accept edits"
 	case permission.ModeBypassPermissions:
 		return "bypass"
 	case permission.ModePlan:

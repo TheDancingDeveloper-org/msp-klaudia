@@ -133,6 +133,11 @@ func (t *RestartJob) PermissionRequest(json.RawMessage) permission.PermissionReq
 }
 
 func (t *RestartJob) CheckPermissions(pctx permission.Context, _ permission.PermissionRequest) permission.Decision {
+	// Restarting runs the job's command again, so acceptEdits, which asks
+	// before every command, asks before this one too.
+	if permission.CurrentMode(pctx) == permission.ModeAcceptEdits {
+		return execClassDecision(pctx)
+	}
 	return allowAlways(pctx) // restarting something we already started
 }
 

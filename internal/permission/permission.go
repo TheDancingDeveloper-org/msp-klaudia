@@ -19,10 +19,12 @@ package permission
 
 // Mode is the user's stance for the session.
 //
-// Three, not six. The old set — default, acceptEdits, dontAsk — asked the user
-// to pick a stance on file edits versus commands versus network, which is a
-// question about tool categories and never had a good answer. Zones answer it
-// now, so what is left is genuinely different intents.
+// Four, not six. The old default and dontAsk asked the user to pick a stance on
+// file edits versus commands versus network, which is a question about tool
+// categories and never had a good answer. Zones answer it now, so what is left
+// is genuinely different intents. acceptEdits came back (WI-1272) as one of
+// them: "edit this project freely, but show me every command" is a posture a
+// supervisor of a driven session wants, and nothing else expressed it.
 type Mode string
 
 const (
@@ -33,6 +35,12 @@ const (
 	// changes to this machine are stopped by the host gate before this package
 	// is consulted.
 	ModeAutonomous Mode = "autonomous"
+	// ModeAcceptEdits auto-approves file edits inside the workspace (the
+	// working directory and any added directories) and asks about everything
+	// else that has an effect: commands, network and browser tools, MCP calls,
+	// and edits outside the workspace. Claude Code's acceptEdits, without its
+	// allow rules. The host gate runs ahead of it exactly as in autonomous.
+	ModeAcceptEdits Mode = "acceptEdits"
 	// ModeBypassPermissions allows everything, including the host gate
 	// (--dangerously-skip-permissions).
 	ModeBypassPermissions Mode = "bypassPermissions"
@@ -43,7 +51,7 @@ const (
 // Valid reports whether m is a recognized mode.
 func (m Mode) Valid() bool {
 	switch m {
-	case ModeAutonomous, ModeBypassPermissions, ModePlan:
+	case ModeAutonomous, ModeAcceptEdits, ModeBypassPermissions, ModePlan:
 		return true
 	}
 	return false
@@ -55,6 +63,8 @@ func (m Mode) Label() string {
 	switch m {
 	case ModeAutonomous:
 		return "Autonomous — finish the task; ask before changing this machine"
+	case ModeAcceptEdits:
+		return "Accept edits — edit files in the workspace freely; ask before commands, network and anything else"
 	case ModeBypassPermissions:
 		return "Bypass ALL permission checks (dangerous — tools run without asking)"
 	case ModePlan:
@@ -64,9 +74,11 @@ func (m Mode) Label() string {
 	}
 }
 
-// SelectableModes are the modes a user may switch to interactively.
+// SelectableModes are the modes a user may switch to interactively. acceptEdits
+// joined after plan, so the picker numbers people already knew for autonomous
+// and plan did not move; bypass stays last.
 func SelectableModes() []Mode {
-	return []Mode{ModeAutonomous, ModePlan, ModeBypassPermissions}
+	return []Mode{ModeAutonomous, ModePlan, ModeAcceptEdits, ModeBypassPermissions}
 }
 
 // Behavior is the outcome of a permission check.
@@ -84,7 +96,8 @@ type Decision struct {
 	Message  string
 }
 
-// Context carries the active mode for a run.
+// Context carries the active mode for a run, and what the run counts as its
+// workspace.
 //
 // Mode is a function rather than a value so each check reads the live session
 // setting at decision time — when a user types `/mode bypass` mid-turn (or mid
@@ -93,6 +106,18 @@ type Decision struct {
 // single-shot) wrap their value with StaticMode.
 type Context struct {
 	Mode func() Mode
+	// InWorkspace reports whether a path, as written in a tool's input, lies
+	// in the run's workspace: its working directory or an added directory.
+	// Only acceptEdits consults it. Nil means no path is known to be in the
+	// workspace, so acceptEdits asks about every edit rather than guessing.
+	// The agent loop fills it per run (it knows the working directory, which
+	// differs for a sub-agent in its own worktree); see agent.permFor.
+	InWorkspace func(path string) bool
+}
+
+// PathInWorkspace reports c.InWorkspace(path), false when it is unset.
+func PathInWorkspace(c Context, path string) bool {
+	return c.InWorkspace != nil && c.InWorkspace(path)
 }
 
 // StaticMode returns a Mode-function that always reports m. Convenience for
@@ -147,13 +172,16 @@ func Check(pctx Context, tool IntrinsicChecker, req PermissionRequest) Decision 
 	return tool.CheckPermissions(pctx, req)
 }
 
-// legacyModes are the retired mode names (default, acceptEdits, dontAsk).
-// Upstream removed them; this fork still accepts them, as deprecated aliases
-// for ModeAutonomous, because launchers were built against them — the Vogt
-// Klaudia template (WI-950) passes `--permission-mode acceptEdits` — and an
-// unknown mode exits 2 before the session starts. The alias only selects the
-// mode: no allow/deny rules come back with it.
-var legacyModes = map[Mode]bool{"default": true, "acceptEdits": true, "dontAsk": true}
+// legacyModes are the retired mode names (default, dontAsk). Upstream removed
+// them; this fork still accepts them, as deprecated aliases for ModeAutonomous,
+// because launchers were built against them and an unknown mode exits 2 before
+// the session starts. The alias only selects the mode: no allow/deny rules
+// come back with it.
+//
+// acceptEdits was one of these until WI-1272 made it a real mode. A launcher
+// that passed it to mean "autonomous" now gets the stricter posture — commands
+// ask — which is what the name always said.
+var legacyModes = map[Mode]bool{"default": true, "dontAsk": true}
 
 // Resolve returns the mode a name selects, and whether it was a retired name
 // mapped to ModeAutonomous (callers print a one-line notice). An unknown name

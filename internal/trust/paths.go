@@ -287,6 +287,19 @@ func isSystemPrefix(p string) bool {
 	return false
 }
 
+// InProject reports whether an already-canonical path is one of the project
+// roots or inside one. Unlike ClassifyPath, it does not count anything else as
+// project work: the rest of $HOME, the temp dir and tool caches are all
+// outside.
+func (r Roots) InProject(path string) bool {
+	for _, root := range r.Project {
+		if under(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClassifyPath places an already-canonical path in a zone.
 //
 // Order matters and is deliberate:

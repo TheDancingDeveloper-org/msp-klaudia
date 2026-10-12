@@ -73,7 +73,7 @@ func GetCapabilities(modes, providers []string) Capabilities {
 		Session:         []string{"session-id", "resume", "resume-across-cwd", "fork-session", "continue"},
 		PermissionModes: modes,
 		PermissionModeAliases: map[string]string{
-			"default": "autonomous", "acceptEdits": "autonomous", "dontAsk": "autonomous",
+			"default": "autonomous", "dontAsk": "autonomous",
 		},
 		Providers: providers,
 	}
