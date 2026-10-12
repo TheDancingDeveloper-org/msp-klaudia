@@ -108,24 +108,33 @@ func TestHookGitguardAllowsEditedBaselineAndMerge(t *testing.T) {
 	writeFile(t, filepath.Join(merge, "shared.txt"), "base\n")
 	git(t, merge, "add", "shared.txt")
 	git(t, merge, "commit", "-m", "base")
-	git(t, merge, "checkout", "-b", "other")
-	writeFile(t, filepath.Join(merge, "shared.txt"), "other side\n")
-	git(t, merge, "commit", "-am", "other")
-	git(t, merge, "checkout", "main")
-	writeFile(t, filepath.Join(merge, "shared.txt"), "our side\n")
-	git(t, merge, "commit", "-am", "ours")
+	writeFile(t, filepath.Join(merge, "shared.txt"), "user left this dirty\n")
 	msid := "sess-merge"
 	if code, _, stderr := runHook(t, sessionStart(msid, merge)); code != 0 {
 		t.Fatalf("merge startup %d: %s", code, stderr)
 	}
-	c := exec.Command("git", "merge", "other")
-	c.Dir = merge
-	if out, err := c.CombinedOutput(); err == nil {
-		t.Fatalf("merge did not conflict:\n%s", out)
+	code, _, stderr = runHook(t, bashHook(msid, merge, "git add shared.txt", ""))
+	if code != 2 {
+		t.Fatalf("dirty shared.txt before the conflict: exit %d, want 2; stderr %s", code, stderr)
 	}
+	base := hookGitOut(t, merge, "rev-parse", "HEAD:shared.txt")
+	ours := hookHashObject(t, merge, "our side\n")
+	theirs := hookHashObject(t, merge, "other side\n")
+	stages := "100644 " + base + " 1\tshared.txt\n100644 " + ours + " 2\tshared.txt\n100644 " + theirs + " 3\tshared.txt\n"
+	c := exec.Command("git", "update-index", "--index-info")
+	c.Dir = merge
+	c.Stdin = strings.NewReader(stages)
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v\n%s", err, out)
+	}
+	writeFile(t, filepath.Join(merge, "shared.txt"), "<<<<<<< ours\nour side\n=======\nother side\n>>>>>>> theirs\n")
 	code, _, stderr = runHook(t, bashHook(msid, merge, "git add shared.txt", ""))
 	if code != 0 {
-		t.Fatalf("staging a merge resolution refused (%d): %s", code, stderr)
+		t.Fatalf("staging a merge resolution of a baseline path refused (%d): %s", code, stderr)
+	}
+	code, _, stderr = runHook(t, bashHook(msid, merge, "git checkout -- shared.txt", ""))
+	if code != 2 {
+		t.Fatalf("discard of a conflicted baseline path: exit %d, want 2; stderr %s", code, stderr)
 	}
 }
 
@@ -307,6 +316,29 @@ func bOthers(b *gitguard.Baseline) map[string]*gitguard.Baseline {
 		out[k] = &gitguard.Baseline{}
 	}
 	return out
+}
+
+func hookGitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func hookHashObject(t *testing.T, dir, body string) string {
+	t.Helper()
+	c := exec.Command("git", "hash-object", "-w", "--stdin")
+	c.Dir = dir
+	c.Stdin = strings.NewReader(body)
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func runHook(t *testing.T, in string) (int, string, string) {

@@ -1,6 +1,7 @@
 package gitguard
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,34 @@ func git(t *testing.T, dir string, args ...string) {
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitBlob(t *testing.T, dir, rev string) string {
+	t.Helper()
+	return gitOut(t, dir, "rev-parse", rev)
+}
+
+func gitHashObject(t *testing.T, dir, body string) string {
+	t.Helper()
+	c := exec.Command("git", "hash-object", "-w", "--stdin")
+	c.Dir = dir
+	c.Stdin = strings.NewReader(body)
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func write(t *testing.T, dir, rel, body string) {
@@ -250,20 +279,19 @@ func TestSessionMayStageWhatItEdited(t *testing.T) {
 	}
 }
 
-// Resolving a merge records the conflicted file. That file was not the
-// user's uncommitted work, and staging the resolution is allowed.
+// Resolving a merge records the conflicted file. That file may already have
+// been dirty when the session started: git refuses to merge over a dirty
+// work tree, so the conflict is planted in the index after capture. Staging
+// the resolution is allowed because the path is unmerged, not because the
+// session rewrote its bytes. An untouched dirty path in the same tree stays
+// protected, and so does discarding either file.
 func TestSessionMayStageMergeResolution(t *testing.T) {
 	dir := t.TempDir()
 	git(t, dir, "init", "-q", "-b", "main")
 	write(t, dir, "shared.txt", "base\n")
 	git(t, dir, "add", "-A")
 	git(t, dir, "commit", "-qm", "base")
-	git(t, dir, "checkout", "-q", "-b", "other")
-	write(t, dir, "shared.txt", "other side\n")
-	git(t, dir, "commit", "-qam", "other")
-	git(t, dir, "checkout", "-q", "main")
-	write(t, dir, "shared.txt", "our side\n")
-	git(t, dir, "commit", "-qam", "ours")
+	write(t, dir, "shared.txt", "user left this dirty\n")
 	write(t, dir, "aside.go", "package aside\n")
 	git(t, dir, "add", "aside.go")
 	git(t, dir, "commit", "-qm", "aside")
@@ -273,19 +301,31 @@ func TestSessionMayStageMergeResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := exec.Command("git", "merge", "other")
-	c.Dir = dir
-	if out, err := c.CombinedOutput(); err == nil {
-		t.Fatalf("merge did not conflict:\n%s", out)
+	if msg := b.CheckCommand("git add shared.txt", dir); msg == "" {
+		t.Fatal("dirty shared.txt was allowed before it became a conflict")
 	}
+	base := gitBlob(t, dir, "HEAD:shared.txt")
+	ours := gitHashObject(t, dir, "our side\n")
+	theirs := gitHashObject(t, dir, "other side\n")
+	stages := fmt.Sprintf("100644 %s 1\tshared.txt\n100644 %s 2\tshared.txt\n100644 %s 3\tshared.txt\n", base, ours, theirs)
+	c := exec.Command("git", "update-index", "--index-info")
+	c.Dir = dir
+	c.Stdin = strings.NewReader(stages)
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v\n%s", err, out)
+	}
+	write(t, dir, "shared.txt", "<<<<<<< ours\nour side\n=======\nother side\n>>>>>>> theirs\n")
 	if msg := b.CheckCommand("git add shared.txt", dir); msg != "" {
-		t.Fatalf("staging a merge resolution: %s", msg)
+		t.Fatalf("staging a merge resolution of a baseline path: %s", msg)
 	}
 	if msg := b.CheckCommand("git add aside.go", dir); msg == "" {
 		t.Fatal("an untouched dirty path was allowed during a merge")
 	}
 	if msg := b.CheckCommand("git checkout -- aside.go", dir); msg == "" {
 		t.Fatal("discard of an untouched dirty path was allowed during a merge")
+	}
+	if msg := b.CheckCommand("git checkout -- shared.txt", dir); msg == "" {
+		t.Fatal("discard of a conflicted baseline path was allowed")
 	}
 }
 
