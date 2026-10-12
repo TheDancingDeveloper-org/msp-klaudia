@@ -1,6 +1,7 @@
 package gitguard
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,34 @@ func git(t *testing.T, dir string, args ...string) {
 	if out, err := c.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
+}
+
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	c := exec.Command("git", args...)
+	c.Dir = dir
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("git %v: %v", args, err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func gitBlob(t *testing.T, dir, rev string) string {
+	t.Helper()
+	return gitOut(t, dir, "rev-parse", rev)
+}
+
+func gitHashObject(t *testing.T, dir, body string) string {
+	t.Helper()
+	c := exec.Command("git", "hash-object", "-w", "--stdin")
+	c.Dir = dir
+	c.Stdin = strings.NewReader(body)
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("hash-object: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func write(t *testing.T, dir, rel, body string) {
@@ -198,6 +227,105 @@ func TestGuardKeepsUserEditInRealRepo(t *testing.T) {
 	// The same command scoped to a file the user had not touched is allowed.
 	if msg := b.CheckCommand("git checkout -- src/b.py", dir); msg != "" {
 		t.Fatalf("guard refused a revert of an unprotected file: %s", msg)
+	}
+}
+
+// A path that was already dirty at start stays protected until the session
+// changes its bytes. After that change the session may stage and commit it.
+// Discarding it is refused either way.
+func TestSessionMayStageWhatItEdited(t *testing.T) {
+	dir := repo(t)
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Untouched baseline paths, tracked and untracked, stay out of the commit.
+	for _, cmd := range []string{
+		"git add src/a.py",
+		"git add todo.txt",
+		"git add docs/x.md",
+		"git add -A",
+		"git commit -am wip",
+	} {
+		if msg := b.CheckCommand(cmd, dir); msg == "" {
+			t.Errorf("untouched baseline path was allowed: %s", cmd)
+		}
+	}
+	// The session edits the dirty tracked file. Staging that new content is
+	// its own work; throwing the file back to HEAD is still not.
+	write(t, dir, "src/a.py", "session edit\n")
+	if msg := b.CheckCommand("git add src/a.py", dir); msg != "" {
+		t.Fatalf("staging a file the session edited: %s", msg)
+	}
+	if msg := b.CheckCommand("git checkout -- src/a.py", dir); msg == "" {
+		t.Fatal("discard of an edited baseline path was allowed")
+	}
+	// An untracked file the session rewrote may be added; one left alone may not.
+	write(t, dir, "todo.txt", "session notes\n")
+	if msg := b.CheckCommand("git add todo.txt", dir); msg != "" {
+		t.Fatalf("staging an untracked file the session edited: %s", msg)
+	}
+	if msg := b.CheckCommand("git add scratch/notes.txt", dir); msg == "" {
+		t.Fatal("untouched untracked file was allowed after a sibling was edited")
+	}
+	// A staged-only change becomes the session's once the index blob moves.
+	write(t, dir, "docs/x.md", "session rewrite\n")
+	if msg := b.CheckCommand("git add docs/x.md", dir); msg != "" {
+		t.Fatalf("re-staging a file the session rewrote: %s", msg)
+	}
+	// -A still reaches the paths the session never touched.
+	if msg := b.CheckCommand("git add -A", dir); msg == "" {
+		t.Fatal("git add -A was allowed while an untouched baseline path remains")
+	}
+}
+
+// Resolving a merge records the conflicted file. That file may already have
+// been dirty when the session started: git refuses to merge over a dirty
+// work tree, so the conflict is planted in the index after capture. Staging
+// the resolution is allowed because the path is unmerged, not because the
+// session rewrote its bytes. An untouched dirty path in the same tree stays
+// protected, and so does discarding either file.
+func TestSessionMayStageMergeResolution(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "shared.txt", "base\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "base")
+	write(t, dir, "shared.txt", "user left this dirty\n")
+	write(t, dir, "aside.go", "package aside\n")
+	git(t, dir, "add", "aside.go")
+	git(t, dir, "commit", "-qm", "aside")
+	write(t, dir, "aside.go", "package aside\n// user left this\n")
+
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := b.CheckCommand("git add shared.txt", dir); msg == "" {
+		t.Fatal("dirty shared.txt was allowed before it became a conflict")
+	}
+	base := gitBlob(t, dir, "HEAD:shared.txt")
+	ours := gitHashObject(t, dir, "our side\n")
+	theirs := gitHashObject(t, dir, "other side\n")
+	stages := fmt.Sprintf("100644 %s 1\tshared.txt\n100644 %s 2\tshared.txt\n100644 %s 3\tshared.txt\n", base, ours, theirs)
+	c := exec.Command("git", "update-index", "--index-info")
+	c.Dir = dir
+	c.Stdin = strings.NewReader(stages)
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("update-index: %v\n%s", err, out)
+	}
+	write(t, dir, "shared.txt", "<<<<<<< ours\nour side\n=======\nother side\n>>>>>>> theirs\n")
+	if msg := b.CheckCommand("git add shared.txt", dir); msg != "" {
+		t.Fatalf("staging a merge resolution of a baseline path: %s", msg)
+	}
+	if msg := b.CheckCommand("git add aside.go", dir); msg == "" {
+		t.Fatal("an untouched dirty path was allowed during a merge")
+	}
+	if msg := b.CheckCommand("git checkout -- aside.go", dir); msg == "" {
+		t.Fatal("discard of an untouched dirty path was allowed during a merge")
+	}
+	if msg := b.CheckCommand("git checkout -- shared.txt", dir); msg == "" {
+		t.Fatal("discard of a conflicted baseline path was allowed")
 	}
 }
 
