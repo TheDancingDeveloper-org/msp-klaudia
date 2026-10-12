@@ -9,6 +9,8 @@ type persisted struct {
 	Root      string                `json:"root"`
 	Tracked   []string              `json:"tracked,omitempty"`
 	Untracked []string              `json:"untracked,omitempty"`
+	Work      map[string]string     `json:"work,omitempty"`
+	Index     map[string]string     `json:"index,omitempty"`
 	Others    map[string]*persisted `json:"others,omitempty"`
 }
 
@@ -33,7 +35,7 @@ func toPersisted(b *Baseline) *persisted {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p := &persisted{Root: b.Root, Tracked: b.Tracked, Untracked: b.Untracked}
+	p := &persisted{Root: b.Root, Tracked: b.Tracked, Untracked: b.Untracked, Work: b.Work, Index: b.Index}
 	if len(b.others) > 0 {
 		p.Others = map[string]*persisted{}
 		for k, o := range b.others {
@@ -47,7 +49,7 @@ func fromPersisted(p *persisted) *Baseline {
 	if p == nil {
 		return nil
 	}
-	b := &Baseline{Root: p.Root, Tracked: p.Tracked, Untracked: p.Untracked}
+	b := &Baseline{Root: p.Root, Tracked: p.Tracked, Untracked: p.Untracked, Work: p.Work, Index: p.Index}
 	if len(p.Others) > 0 {
 		b.others = map[string]*Baseline{}
 		for k, o := range p.Others {

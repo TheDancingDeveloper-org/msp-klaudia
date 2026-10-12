@@ -201,6 +201,94 @@ func TestGuardKeepsUserEditInRealRepo(t *testing.T) {
 	}
 }
 
+// A path that was already dirty at start stays protected until the session
+// changes its bytes. After that change the session may stage and commit it.
+// Discarding it is refused either way.
+func TestSessionMayStageWhatItEdited(t *testing.T) {
+	dir := repo(t)
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Untouched baseline paths, tracked and untracked, stay out of the commit.
+	for _, cmd := range []string{
+		"git add src/a.py",
+		"git add todo.txt",
+		"git add docs/x.md",
+		"git add -A",
+		"git commit -am wip",
+	} {
+		if msg := b.CheckCommand(cmd, dir); msg == "" {
+			t.Errorf("untouched baseline path was allowed: %s", cmd)
+		}
+	}
+	// The session edits the dirty tracked file. Staging that new content is
+	// its own work; throwing the file back to HEAD is still not.
+	write(t, dir, "src/a.py", "session edit\n")
+	if msg := b.CheckCommand("git add src/a.py", dir); msg != "" {
+		t.Fatalf("staging a file the session edited: %s", msg)
+	}
+	if msg := b.CheckCommand("git checkout -- src/a.py", dir); msg == "" {
+		t.Fatal("discard of an edited baseline path was allowed")
+	}
+	// An untracked file the session rewrote may be added; one left alone may not.
+	write(t, dir, "todo.txt", "session notes\n")
+	if msg := b.CheckCommand("git add todo.txt", dir); msg != "" {
+		t.Fatalf("staging an untracked file the session edited: %s", msg)
+	}
+	if msg := b.CheckCommand("git add scratch/notes.txt", dir); msg == "" {
+		t.Fatal("untouched untracked file was allowed after a sibling was edited")
+	}
+	// A staged-only change becomes the session's once the index blob moves.
+	write(t, dir, "docs/x.md", "session rewrite\n")
+	if msg := b.CheckCommand("git add docs/x.md", dir); msg != "" {
+		t.Fatalf("re-staging a file the session rewrote: %s", msg)
+	}
+	// -A still reaches the paths the session never touched.
+	if msg := b.CheckCommand("git add -A", dir); msg == "" {
+		t.Fatal("git add -A was allowed while an untouched baseline path remains")
+	}
+}
+
+// Resolving a merge records the conflicted file. That file was not the
+// user's uncommitted work, and staging the resolution is allowed.
+func TestSessionMayStageMergeResolution(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "shared.txt", "base\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-qm", "base")
+	git(t, dir, "checkout", "-q", "-b", "other")
+	write(t, dir, "shared.txt", "other side\n")
+	git(t, dir, "commit", "-qam", "other")
+	git(t, dir, "checkout", "-q", "main")
+	write(t, dir, "shared.txt", "our side\n")
+	git(t, dir, "commit", "-qam", "ours")
+	write(t, dir, "aside.go", "package aside\n")
+	git(t, dir, "add", "aside.go")
+	git(t, dir, "commit", "-qm", "aside")
+	write(t, dir, "aside.go", "package aside\n// user left this\n")
+
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := exec.Command("git", "merge", "other")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err == nil {
+		t.Fatalf("merge did not conflict:\n%s", out)
+	}
+	if msg := b.CheckCommand("git add shared.txt", dir); msg != "" {
+		t.Fatalf("staging a merge resolution: %s", msg)
+	}
+	if msg := b.CheckCommand("git add aside.go", dir); msg == "" {
+		t.Fatal("an untouched dirty path was allowed during a merge")
+	}
+	if msg := b.CheckCommand("git checkout -- aside.go", dir); msg == "" {
+		t.Fatal("discard of an untouched dirty path was allowed during a merge")
+	}
+}
+
 // clean builds a repository with one commit and nothing uncommitted.
 func clean(t *testing.T) string {
 	t.Helper()

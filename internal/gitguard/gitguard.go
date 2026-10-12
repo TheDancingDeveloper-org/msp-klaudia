@@ -1,9 +1,15 @@
 // Package gitguard keeps an autonomous run from discarding work it does not
 // own. It records which paths already had uncommitted changes when the run
-// began (the baseline) and refuses shell commands whose git invocations would
-// throw those changes away: `git checkout -- <path>`, `git restore`,
-// `git reset --hard`, `git clean -f`, `git stash`, `git rm -f`, and the forced
-// branch switches.
+// began (the baseline), with a content hash of each, and refuses shell
+// commands whose git invocations would throw those changes away: `git checkout
+// -- <path>`, `git restore`, `git reset --hard`, `git clean -f`, `git stash`,
+// `git rm -f`, and the forced branch switches.
+//
+// Staging is judged by those hashes, not by the dirty bit. A baseline path the
+// session has edited since capture, and a path git has unmerged because the
+// session is resolving a merge, may be staged and committed. A baseline path
+// left untouched stays out of the commit. Discarding a baseline path is
+// refused either way.
 //
 // The goal loop is the caller. Its first production run undid a one-line edit
 // of its own with `git checkout -- <14 files>`, and that reverted every one of
@@ -24,6 +30,8 @@ package gitguard
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,10 +49,19 @@ import (
 // Baseline is the set of paths that had uncommitted changes at a moment in
 // time, relative to the repository root, with '/' separators. A directory entry
 // (an untracked directory git reports as a whole) ends in '/'.
+//
+// Work and Index are content hashes of those paths at capture, keyed by the
+// same relative path. A later stage or commit of a baseline path is allowed
+// only when the bytes the session would record differ from that hash — the
+// session edited the path after start — or the path is an unmerged merge
+// entry the session is resolving. A path whose hash cannot be re-read stays
+// protected. Discarding a baseline path is refused either way.
 type Baseline struct {
-	Root      string   // absolute repository root
-	Tracked   []string // tracked paths modified, staged, deleted or renamed
-	Untracked []string // untracked (not ignored) files and directories
+	Root      string            // absolute repository root
+	Tracked   []string          // tracked paths modified, staged, deleted or renamed
+	Untracked []string          // untracked (not ignored) files and directories
+	Work      map[string]string // path → hash of the work-tree bytes at capture
+	Index     map[string]string // tracked path → hash of the index blob at capture
 
 	mu     sync.Mutex
 	others map[string]*Baseline // other work trees the run has touched, by canonical root
@@ -92,7 +109,47 @@ func Capture(dir string) (*Baseline, error) {
 	}
 	sort.Strings(b.Tracked)
 	sort.Strings(b.Untracked)
+	b.snapshot()
 	return b, nil
+}
+
+// snapshot records the work-tree and index hashes of every protected path.
+// A path whose bytes cannot be read is stored as hashUnreadable, which never
+// compares equal to a later read, so the path stays protected.
+func (b *Baseline) snapshot() {
+	b.Work = map[string]string{}
+	b.Index = map[string]string{}
+	for _, p := range b.Untracked {
+		b.Work[p] = hashWork(b.Root, p)
+	}
+	for _, p := range b.Tracked {
+		b.Work[p] = hashWork(b.Root, p)
+		b.Index[p] = hashIndex(b.Root, p)
+	}
+}
+
+// hashUnreadable marks a path whose content could not be read. It never
+// matches a real hash, so a comparison fails closed.
+const hashUnreadable = "?"
+
+func hashWork(root, rel string) string {
+	if strings.HasSuffix(rel, "/") {
+		return hashUnreadable
+	}
+	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return hashUnreadable
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func hashIndex(root, rel string) string {
+	out, err := gitprobe.Command(root, "rev-parse", "--verify", ":"+rel).Output()
+	if err != nil {
+		return hashUnreadable
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // Without returns a copy of b with the given absolute paths dropped — for the
@@ -113,7 +170,22 @@ func (b *Baseline) Without(abs ...string) *Baseline {
 		}
 		return out
 	}
-	return &Baseline{Root: b.Root, Tracked: keep(b.Tracked), Untracked: keep(b.Untracked)}
+	keepMap := func(in map[string]string) map[string]string {
+		if len(in) == 0 {
+			return nil
+		}
+		out := map[string]string{}
+		for k, v := range in {
+			if !drop[k] {
+				out[k] = v
+			}
+		}
+		return out
+	}
+	return &Baseline{
+		Root: b.Root, Tracked: keep(b.Tracked), Untracked: keep(b.Untracked),
+		Work: keepMap(b.Work), Index: keepMap(b.Index),
+	}
 }
 
 // Empty reports whether nothing is protected.
@@ -316,6 +388,9 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 			hits = at.base.pick(d, nil, true)
 		} else {
 			hits = at.base.pick(d, at.base.resolve(d.paths, at.dir), len(d.paths) == 0)
+		}
+		if d.stage {
+			hits = at.base.stillBaseline(hits)
 		}
 		if len(hits) > 0 {
 			what := "git " + strings.Join(append([]string{args[0]}, d.flags...), " ")
@@ -642,6 +717,69 @@ func (b *Baseline) pick(d *discardSpec, specs []string, all bool) []string {
 }
 
 func (b *Baseline) all() []string { return append(append([]string{}, b.Tracked...), b.Untracked...) }
+
+// stillBaseline drops staging hits the session may record: a path whose
+// work-tree or index bytes differ from the hash taken at capture, and a
+// path git currently has unmerged because the session is resolving a merge.
+// A path with no stored hash, or whose bytes cannot be re-read, stays.
+func (b *Baseline) stillBaseline(hits []string) []string {
+	if len(hits) == 0 {
+		return nil
+	}
+	merging := b.unmerged()
+	var keep []string
+	for _, p := range hits {
+		if merging[strings.TrimSuffix(p, "/")] {
+			continue
+		}
+		if b.edited(p) {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	return keep
+}
+
+// edited reports whether the path's work-tree bytes or index blob differ
+// from the baseline. Missing hashes and unreadable content are not edits.
+func (b *Baseline) edited(p string) bool {
+	if len(b.Work) == 0 && len(b.Index) == 0 {
+		return false
+	}
+	if want, ok := b.Work[p]; ok && want != hashUnreadable {
+		if got := hashWork(b.Root, p); got != hashUnreadable && got != want {
+			return true
+		}
+	}
+	if want, ok := b.Index[p]; ok && want != hashUnreadable {
+		if got := hashIndex(b.Root, p); got != hashUnreadable && got != want {
+			return true
+		}
+	}
+	return false
+}
+
+// unmerged is the set of paths with an unmerged index stage, which is how
+// git records a file the session is resolving in a merge or a cherry-pick.
+// An unreadable index protects everything: the set comes back empty and
+// stillBaseline keeps the hits.
+func (b *Baseline) unmerged() map[string]bool {
+	out, err := gitprobe.Command(b.Root, "ls-files", "-u", "-z").Output()
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, f := range bytes.Split(out, []byte{0}) {
+		// "<mode> <object> <stage>\t<path>"
+		line := string(f)
+		tab := strings.IndexByte(line, '\t')
+		if tab < 0 || tab+1 >= len(line) {
+			continue
+		}
+		set[line[tab+1:]] = true
+	}
+	return set
+}
 
 // overlaps reports whether any pathspec names p, a directory containing p, or
 // (for an untracked directory entry) something inside it.

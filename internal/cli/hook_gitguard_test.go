@@ -74,6 +74,61 @@ func TestHookGitguardRefusesDiscardingCommands(t *testing.T) {
 	}
 }
 
+// The hook reloads the baseline from disk, hashes included. A path dirty at
+// start stays refused until the session changes its bytes; a merge resolution
+// may be staged.
+func TestHookGitguardAllowsEditedBaselineAndMerge(t *testing.T) {
+	repo := hookGitRepo(t)
+	writeFile(t, filepath.Join(repo, "keep.txt"), "base\n")
+	git(t, repo, "add", "keep.txt")
+	git(t, repo, "commit", "-m", "base")
+	writeFile(t, filepath.Join(repo, "keep.txt"), "user edit\n")
+
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	sid := "sess-edit"
+	if code, _, stderr := runHook(t, sessionStart(sid, repo)); code != 0 {
+		t.Fatalf("startup exit %d: %s", code, stderr)
+	}
+	code, _, stderr := runHook(t, bashHook(sid, repo, "git add keep.txt", ""))
+	if code != 2 {
+		t.Fatalf("untouched dirty path: exit %d, want 2; stderr %s", code, stderr)
+	}
+	writeFile(t, filepath.Join(repo, "keep.txt"), "session edit\n")
+	code, _, stderr = runHook(t, bashHook(sid, repo, "git add keep.txt", ""))
+	if code != 0 {
+		t.Fatalf("staging the session's edit refused (%d): %s", code, stderr)
+	}
+	code, _, stderr = runHook(t, bashHook(sid, repo, "git checkout -- keep.txt", ""))
+	if code != 2 {
+		t.Fatalf("discard after the edit: exit %d, want 2; stderr %s", code, stderr)
+	}
+
+	merge := hookGitRepo(t)
+	writeFile(t, filepath.Join(merge, "shared.txt"), "base\n")
+	git(t, merge, "add", "shared.txt")
+	git(t, merge, "commit", "-m", "base")
+	git(t, merge, "checkout", "-b", "other")
+	writeFile(t, filepath.Join(merge, "shared.txt"), "other side\n")
+	git(t, merge, "commit", "-am", "other")
+	git(t, merge, "checkout", "main")
+	writeFile(t, filepath.Join(merge, "shared.txt"), "our side\n")
+	git(t, merge, "commit", "-am", "ours")
+	msid := "sess-merge"
+	if code, _, stderr := runHook(t, sessionStart(msid, merge)); code != 0 {
+		t.Fatalf("merge startup %d: %s", code, stderr)
+	}
+	c := exec.Command("git", "merge", "other")
+	c.Dir = merge
+	if out, err := c.CombinedOutput(); err == nil {
+		t.Fatalf("merge did not conflict:\n%s", out)
+	}
+	code, _, stderr = runHook(t, bashHook(msid, merge, "git add shared.txt", ""))
+	if code != 0 {
+		t.Fatalf("staging a merge resolution refused (%d): %s", code, stderr)
+	}
+}
+
 func TestHookGitguardRefusesOtherDirtyRepo(t *testing.T) {
 	repo := hookGitRepo(t)
 	git(t, repo, "commit", "--allow-empty", "-m", "base")
