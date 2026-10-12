@@ -65,9 +65,10 @@ tool calls and their outcomes, plans, diffs, token usage, mode changes and the
 available commands; `session/request_permission` for every ask;
 `fs/read_text_file` when the client offers it.
 
-### Modes are Klaudia's three
+### Modes are Klaudia's four
 
-`availableModes` is `autonomous`, `plan` and `bypassPermissions` — the modes
+`availableModes` is `autonomous`, `plan`, `acceptEdits` and
+`bypassPermissions` — the modes
 `/mode` offers, with the same meanings [trust.md](trust.md) gives them, so the
 editor's mode picker *is* `/mode`. The mode is **per session**: a client with
 three threads open has three conversations, and one process-wide mode cannot be

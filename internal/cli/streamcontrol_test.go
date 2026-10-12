@@ -22,7 +22,8 @@ func TestStreamModeSetter(t *testing.T) {
 	}{
 		{"plan", permission.ModeAutonomous, "plan", "", permission.ModePlan},
 		{"retired dontAsk is autonomous", permission.ModePlan, "dontAsk", "", permission.ModeAutonomous},
-		{"retired acceptEdits is autonomous", permission.ModePlan, "acceptEdits", "", permission.ModeAutonomous},
+		{"retired default is autonomous", permission.ModePlan, "default", "", permission.ModeAutonomous},
+		{"acceptEdits is its own mode", permission.ModeAutonomous, "acceptEdits", "", permission.ModeAcceptEdits},
 		{"unknown", permission.ModeAutonomous, "yolo", "invalid permission mode", permission.ModeAutonomous},
 		{"autonomous", permission.ModePlan, "autonomous", "", permission.ModeAutonomous},
 		{"bypass not launched", permission.ModeAutonomous, "bypassPermissions", "dangerously-skip-permissions", permission.ModeAutonomous},

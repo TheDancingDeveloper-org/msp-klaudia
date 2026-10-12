@@ -655,6 +655,7 @@ set `[sandbox] mode = "os"`.
 | Flag | Mode | Behavior |
 |------|------|----------|
 | *(default)* | `autonomous` | Finish the task; ask before changing this machine |
+| `--permission-mode acceptEdits` | `acceptEdits` | Edit files in the workspace freely; ask before commands, network, MCP calls and edits outside it |
 | `--permission-mode plan` | `plan` | Read-only; mutations and network blocked |
 | `--dangerously-skip-permissions` | `bypassPermissions` | Allow everything, including host changes |
 
@@ -673,9 +674,11 @@ Running both models at once was the problem: a rule in a project config
 demoted the next session to a mode that asked before every edit, so "always"
 — the answer offered to stop a prompt — was what produced more of them.
 
-*Fork note:* `default`, `acceptEdits` and `dontAsk` are still accepted as
-deprecated aliases for `autonomous` (with a notice), so launchers built against
-the old names keep starting; they select the mode and nothing else.
+*Fork note:* `default` and `dontAsk` are still accepted as deprecated aliases
+for `autonomous` (with a notice), so launchers built against the old names keep
+starting; they select the mode and nothing else. `acceptEdits` is a real mode
+again, with Claude Code's meaning. It was an alias for `autonomous` until
+WI-1272. See [docs/trust.md](docs/trust.md#acceptedits).
 
 
 Full detail, including the zone table and what is deliberately *not* protected:

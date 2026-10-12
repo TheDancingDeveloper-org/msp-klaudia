@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"os"
+
 	"github.com/anthropics/anthropic-sdk-go"
 
 	"github.com/greenthread-ai/klaudia/internal/permission"
+	"github.com/greenthread-ai/klaudia/internal/trust"
 )
 
 // The permission mode was invisible to the model, and the model is the one
@@ -34,6 +37,14 @@ func modeClause(mode permission.Mode) string {
 			"available. Do not discover this by being refused: plan the work, including the " +
 			"steps you cannot take yet, and present it with ExitPlanMode. Note explicitly " +
 			"anything you could not verify because verifying it would have required acting."
+	case permission.ModeAcceptEdits:
+		return "\n\n# Permission mode: accept edits\n" +
+			"File edits and writes inside the workspace (the working directory and any added " +
+			"directories) run without asking. Everything else with an effect is put to the user " +
+			"first and may be declined: shell commands, web and browser tools, MCP calls, and " +
+			"edits outside the workspace or to files that make code run later. Prefer the edit " +
+			"tools to shell commands for changing files, and batch the commands you do need so " +
+			"the user is asked about each one once."
 	case permission.ModeBypassPermissions:
 		return "\n\n# Permission mode: bypass permissions\n" +
 			"Permission checks and the host gate are both off for this session; the user has " +
@@ -89,4 +100,34 @@ func announceMode(mode permission.Mode, emit Emitter, t *modeTracker) {
 		return
 	}
 	emit(Event{Type: "permission_mode", Content: string(mode)})
+}
+
+// permFor is the permission context for one tool decision in this run: the
+// caller's, with InWorkspace filled from the run's own working directory and
+// added directories when the caller did not supply one.
+//
+// It is filled here rather than where the context is built because the loop is
+// the one place that knows the workspace for this particular run. A sub-agent
+// in its own worktree shares the parent's mode function but not its working
+// directory, and the edits it should be trusted with are the worktree's.
+func permFor(opts Options) permission.Context {
+	pctx := opts.Permission
+	if pctx.InWorkspace == nil {
+		pctx.InWorkspace = workspaceCheck(opts.WorkingDir, opts.ExtraDirs)
+	}
+	return pctx
+}
+
+// workspaceCheck reports whether a path, as written in a tool's input, lies in
+// cwd or one of extra once both are canonical. Symlinks are resolved, so a
+// link in the project that points out of it is outside. The roots are built
+// on each call: it only runs for an edit in acceptEdits, and /add-dir can
+// change extra between calls.
+func workspaceCheck(cwd string, extra []string) func(string) bool {
+	return func(p string) bool {
+		home, _ := os.UserHomeDir()
+		roots := trust.NewRoots(home, append([]string{cwd}, extra...)...)
+		abs := roots.Resolve(cwd, p)
+		return abs != "" && roots.InProject(abs)
+	}
 }

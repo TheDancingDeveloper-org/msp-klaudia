@@ -771,6 +771,8 @@ func modeName(m permission.Mode) string {
 	switch m {
 	case permission.ModeAutonomous:
 		return "Autonomous"
+	case permission.ModeAcceptEdits:
+		return "Accept edits"
 	case permission.ModePlan:
 		return "Plan"
 	case permission.ModeBypassPermissions:

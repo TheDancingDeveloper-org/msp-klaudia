@@ -106,7 +106,9 @@ information and conferred no lasting permission, which is how people learn to
 approve without reading.
 
 Plan mode still refuses MCP calls. That is about what the session is for, not
-about who vouches for the call.
+about who vouches for the call. `acceptEdits` asks before every MCP call, the
+hard-to-answer prompt described above: it is the mode for someone who wants to
+see everything but file edits, and that is the price of choosing it.
 
 If you want a server available without granting it a trusting session, mark it
 read-only in `.mcp.json` and reach for it from a read-only sub-agent; that path
@@ -197,13 +199,57 @@ tells you what it could not do.
 
 ## Modes
 
-Three, not six:
+Four, not six:
 
 | Mode | Meaning |
 |---|---|
 | `autonomous` | Finish the task; ask before changing this machine. **Default.** |
+| `acceptEdits` | Edit files in the workspace without asking; ask before everything else with an effect. |
 | `plan` | Read-only exploration; mutations blocked. |
 | `bypassPermissions` | No checks at all, including the host gate. |
+
+### `acceptEdits`
+
+Claude Code's `acceptEdits`, without its allow rules. It is for a person who
+supervises a session and wants to see every command but not every edit.
+
+| Call | In `acceptEdits` |
+|---|---|
+| `Write`, `Edit`, `NotebookEdit` inside the workspace | runs |
+| the same, outside the workspace | asks |
+| the same, to a file that makes code run later (`.git/`, `.klaudia/`, `.envrc`, …) | asks, as in autonomous |
+| `Bash`, `RestartJob` | asks, every time |
+| `BrowserSearch`, `BrowserFetch`, `BrowserNavigate`, `BrowserSnapshot` | asks |
+| MCP tools | asks |
+| `KNOWLEDGE.md` writes | asks, as in autonomous |
+| reading, searching, LSP, tasks, `Agent`, `Skill`, `KillShell`, `AskUserQuestion` | runs |
+
+The **workspace** is the working directory plus every `--add-dir` / `/add-dir`
+directory, after symlinks are resolved. A link in the project that points out
+of it is outside. A sub-agent's workspace is its own working directory, so a
+writer in its own worktree edits that worktree freely. This is narrower than
+the host gate's project zone, which also counts the rest of `$HOME`, the temp
+directory and tool caches as ordinary work. Those count for autonomous, but in
+`acceptEdits` an edit there asks.
+
+The host gate runs first, exactly as in autonomous. A command that `acceptEdits`
+would ask about but that changes this machine is still stopped or declared by
+the gate. Answering the `acceptEdits` prompt does not get past it, and an
+approved host change does not skip the `acceptEdits` prompt.
+
+There is no "always" answer, as in every mode, so each command asks. A
+headless run (`-p`) has no one to ask and refuses each one with the reason. A
+stream-json or ACP driver receives each as a `can_use_tool` /
+`session/request_permission` ask. The model is told the mode, so it prefers
+edit tools to shell commands for changing files.
+
+Anthropic's server-side `web_search` and `web_fetch` run on the API, not on
+this machine, and cannot be asked about per call. `acceptEdits` keeps them, as
+plan mode does.
+
+Until WI-1272 `acceptEdits` was a deprecated alias for `autonomous`. A launcher
+that still passes it to mean autonomous now gets this stricter mode, which asks
+before commands. Pass `autonomous`, or nothing, for the old behaviour.
 
 `bypassPermissions` is the only way to stop the gate classifying. There is no
 separate "guardrail off" setting, because having one meant a session could sit
@@ -231,12 +277,14 @@ allow/deny rules, no `--allowedTools`/`--disallowedTools`, no `/allow` and
 `/deny`, no `[permissions] allow` or `[trust]` config, no `default`,
 `acceptEdits` or `dontAsk` modes, and no "always" answer on a prompt.
 
-*Fork note (msp-klaudia):* the three retired mode names are still **accepted**
-on `--permission-mode`, in `mode =` config and over stream-json, as deprecated
-aliases for `autonomous`, with a one-line notice. Launchers built against the
-old names (the Vogt Klaudia template passes `acceptEdits`) keep starting rather
-than exiting 2. Rules and `[trust]` are not revived: an alias only picks the
-mode.
+*Fork note (msp-klaudia):* the two retired mode names `default` and `dontAsk`
+are still **accepted** on `--permission-mode`, in `mode =` config and over
+stream-json, as deprecated aliases for `autonomous`, with a one-line notice.
+Launchers built against the old names keep starting rather than exiting 2.
+Rules and `[trust]` are not revived: an alias only picks the mode.
+`acceptEdits` was the third alias until it came back as a real mode (see
+[Modes](#modes)). It is the same name with the meaning it had in Claude Code,
+and without the allow rules that came with it there.
 
 Keeping both models running was worse than either on its own, in a way that
 only showed up in use. The two gates could each permit a call and neither
@@ -255,7 +303,7 @@ what it covers, and `/trust` lists it.
 If a project still has rules in `.klaudia/config.toml`, delete the
 `[permissions]` allow/deny entries and any `[trust]` section — Klaudia no
 longer reads them. `[permissions] mode` is still read, and now takes
-`autonomous`, `plan` or `bypassPermissions`.
+`autonomous`, `acceptEdits`, `plan` or `bypassPermissions`.
 
 ## Unattended runs
 

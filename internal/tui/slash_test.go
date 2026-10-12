@@ -571,8 +571,13 @@ func TestModeCommand(t *testing.T) {
 	}
 	m.handleSlash("/mode")
 	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("3")})
-	if m.sess.PermissionMode != string(permission.ModeBypassPermissions) {
+	if m.sess.PermissionMode != string(permission.ModeAcceptEdits) {
 		t.Errorf("picker choice 3 gave %q", m.sess.PermissionMode)
+	}
+	m.handleSlash("/mode")
+	m.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
+	if m.sess.PermissionMode != string(permission.ModeBypassPermissions) {
+		t.Errorf("picker choice 4 gave %q", m.sess.PermissionMode)
 	}
 }
 

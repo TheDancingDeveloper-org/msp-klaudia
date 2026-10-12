@@ -1168,7 +1168,7 @@ Shell completion: klaudia completion bash|zsh|fish|powershell
 	f.StringVar(&opts.fallbackModel, "fallback-model", "", "Model to use when the model is overloaded (retried once) or not found (for the rest of the session); overrides config fallbackModel")
 	f.StringVar(&opts.outputFormat, "output-format", "text", "Output format: text|json|stream-json")
 	f.StringVar(&opts.inputFormat, "input-format", "text", "Input format: text|stream-json|acp (stream-json and acp both drive a persistent agent over stdin; acp speaks the Agent Client Protocol for editors such as Zed)")
-	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|plan|bypassPermissions (default: config [permissions] mode, else autonomous). The retired default|acceptEdits|dontAsk are accepted as aliases for autonomous")
+	f.StringVar(&opts.permissionMode, "permission-mode", "", "Permission mode: autonomous|acceptEdits|plan|bypassPermissions (default: config [permissions] mode, else autonomous). The retired default|dontAsk are accepted as aliases for autonomous")
 	f.DurationVar(&opts.askTimeout, "ask-timeout", streamjson.DefaultAskTimeout, "With --input-format stream-json: how long a control_request (can_use_tool, ask_user, exit_plan) waits for the client's control_response before it is denied (0 = wait forever)")
 	f.BoolVar(&opts.allowHostChanges, "allow-host-changes", false, "Non-interactive runs: permit changes to this machine (packages, services, /etc, …) without a human to approve them")
 	f.BoolVar(&opts.dangerouslySkip, "dangerously-skip-permissions", false, "Skip all permission checks (sets bypassPermissions)")
@@ -1529,7 +1529,7 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 		fmt.Fprintln(cmd.ErrOrStderr(), "note:", permission.DeprecatedNotice(permission.Mode(modeStr)))
 	}
 	if !mode.Valid() {
-		return usageErrorf("invalid permission mode %q (autonomous|plan|bypassPermissions)", modeStr)
+		return usageErrorf("invalid permission mode %q (autonomous|acceptEdits|plan|bypassPermissions)", modeStr)
 	}
 	if opts.dangerouslySkip {
 		mode = permission.ModeBypassPermissions

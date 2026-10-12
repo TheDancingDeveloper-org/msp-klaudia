@@ -94,7 +94,7 @@ closed. `docs/trust.md` is the design record.
 
 | Feature | JS ref | Klaudia pkg | Status | Notes |
 | --- | --- | --- | --- | --- |
-| 5 permission modes | 07-app-features | `permission/` | 🔀 divergent | Deliberately three, not five: autonomous/plan/bypassPermissions. default/acceptEdits/dontAsk asked the user to take a stance on tool categories; zones answer that instead. |
+| 5 permission modes | 07-app-features | `permission/` | 🔀 divergent | Four, not five: autonomous/acceptEdits/plan/bypassPermissions. default/dontAsk asked the user to take a stance on tool categories; zones answer that instead. acceptEdits is Claude Code's, without allow rules (docs/trust.md). |
 | Allow/deny rule matching | 07-app-features | `permission/` | 🔀 divergent | Removed. Replaced by the host gate + session-scoped approvals: `/trust` grants by what an operation does, not by matching command text. `--allowedTools`/`--disallowedTools` went with it. |
 | Persisted rules in config | 07-app-features | `config/` | 🔀 divergent | Removed with the rules. `[permissions]` keeps only `mode`; there is no `[trust]` section. Grants are session-scoped by design — a trust decision made for one task should not silently outlive it. |
 | Host-change gate (zones, grants, ledger) | — | `agent/hostgate.go` + `trust/` | 🔀 divergent | New capability with no JS analogue: classifies a call by what it would change (project / user files / the machine) and asks only when it leaves the working tree. |

@@ -260,8 +260,8 @@ type Input struct {
 // turn everything off is the mode that says so.
 type Permissions struct {
 	// Mode is the starting permission mode when no --permission-mode flag is
-	// given: autonomous (default) | plan | bypassPermissions. The retired
-	// default | acceptEdits | dontAsk are accepted as deprecated aliases for
+	// given: autonomous (default) | acceptEdits | plan | bypassPermissions.
+	// The retired default | dontAsk are accepted as deprecated aliases for
 	// autonomous (permission.Resolve).
 	Mode string `toml:"mode,omitempty"`
 }

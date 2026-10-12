@@ -41,8 +41,11 @@ func TestArgCompleteMode(t *testing.T) {
 	if got := tab(m, "/mode pl"); got != "/mode plan " {
 		t.Errorf("mode = %q", got)
 	}
+	if got := tab(m, "/mode acc"); got != "/mode acceptEdits " {
+		t.Errorf("acceptEdits = %q, want it offered like the picker", got)
+	}
 	// Legacy modes still parse but are not offered, as in the picker.
-	if got := tab(m, "/mode acc"); got != "/mode acc" {
+	if got := tab(m, "/mode dont"); got != "/mode dont" {
 		t.Errorf("legacy mode completed to %q; only the picker's modes should be offered", got)
 	}
 }

@@ -51,7 +51,7 @@ func streamModeSetter(live *modeVar, launch permission.Mode, warn io.Writer) fun
 		m, retired := permission.Resolve(name)
 		switch {
 		case !m.Valid():
-			return fmt.Errorf("invalid permission mode %q (autonomous|plan|bypassPermissions)", s)
+			return fmt.Errorf("invalid permission mode %q (autonomous|acceptEdits|plan|bypassPermissions)", s)
 		case m == permission.ModeBypassPermissions && launch != permission.ModeBypassPermissions:
 			return fmt.Errorf("cannot switch to %s: the session was not launched with --dangerously-skip-permissions or --permission-mode bypassPermissions", m)
 		}

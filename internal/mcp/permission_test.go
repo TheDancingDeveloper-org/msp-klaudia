@@ -36,6 +36,14 @@ func TestMCPPermission(t *testing.T) {
 			want: permission.Deny,
 		},
 		{
+			// acceptEdits auto-approves file edits and nothing else. The prompt
+			// is the hard-to-answer one described above, which is the cost of
+			// choosing the mode and why it is not the default.
+			name: "acceptEdits asks",
+			mode: permission.ModeAcceptEdits,
+			want: permission.Ask,
+		},
+		{
 			name: "bypass does not prompt",
 			mode: permission.ModeBypassPermissions,
 			want: permission.Allow,
