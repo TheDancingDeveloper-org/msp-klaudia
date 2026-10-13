@@ -2302,16 +2302,17 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	})
 
 	out := ResultMessage{
-		Type:          "result",
-		Subtype:       "success",
-		IsError:       err != nil,
-		DurationMS:    time.Since(st.start).Milliseconds(),
-		DurationAPIMS: res.APIDuration.Milliseconds(),
-		NumTurns:      res.NumTurns,
-		Result:        res.Text,
-		StopReason:    res.StopReason,
-		SessionID:     sessionID,
-		TotalCostUSD:  res.CostUSD, // derived from usage + api pricing table; 0 for unpriced models
+		Type:           "result",
+		Subtype:        "success",
+		IsError:        err != nil,
+		DurationMS:     time.Since(st.start).Milliseconds(),
+		DurationAPIMS:  res.APIDuration.Milliseconds(),
+		NumTurns:       res.NumTurns,
+		Result:         res.Text,
+		StopReason:     res.StopReason,
+		TrailOffNudges: res.TrailOffNudges,
+		SessionID:      sessionID,
+		TotalCostUSD:   res.CostUSD, // derived from usage + api pricing table; 0 for unpriced models
 		Usage: map[string]any{
 			"input_tokens":                res.InputTokens,
 			"output_tokens":               res.OutputTokens,

@@ -31,6 +31,15 @@ func TestTrailOff(t *testing.T) {
 		"I've read it. Want me to change it?",
 		"I read loop.go and the exit is at line 597.",
 		"Earlier I said I'd read it. I did, and here is what it says.",
+		// From the WI-1301 review: an "I'll" that is not the last sentence,
+		// a conditional offer, and a deferral are real endings.
+		"Done. If you approve, I'll push the branch.",
+		"I'll note the fix is in loop.go. Everything passes now.",
+		"I've updated the docs; I will update the changelog in a follow-up PR.",
+		"Once CI is green I'll mark it ready.",
+		"When you're back, I'll rebase it.",
+		"I'll handle the rename separately.",
+		"I'll revisit the cap later.",
 	}
 	for _, s := range negatives {
 		if trailOff(s) {

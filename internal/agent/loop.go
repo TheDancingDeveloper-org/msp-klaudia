@@ -618,7 +618,7 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			// recover. Nudge inside this loop instead, up to the cap. The
 			// assistant turn is recorded first, exactly as a real final
 			// answer is, so the transcript stays paired.
-			if opts.ContinueOnTrailOff && !halted && trailOff(finalText) && trailOffNudges < maxTrailOffNudges {
+			if opts.ContinueOnTrailOff && !halted && trailOff(finalText) && trailOffNudges < maxTrailOffNudges && withinLimits(opts, res) {
 				rec("assistant", assistant)
 				nudge := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(trailOffNudge))
 				messages = append(messages, nudge)
@@ -739,6 +739,16 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			return res, nil
 		}
 	}
+}
+
+// withinLimits reports whether the run may make another request under its
+// turn cap and budget. A trail-off nudge is another request, so it is bound by
+// the same limits as a tool turn; past them the announcement is the answer.
+func withinLimits(opts Options, res Result) bool {
+	if opts.MaxTurns > 0 && res.NumTurns >= opts.MaxTurns {
+		return false
+	}
+	return opts.MaxBudgetUSD <= 0 || res.CostUSD < opts.MaxBudgetUSD
 }
 
 // elisionSpiller gives microcompact somewhere to put the tool results it

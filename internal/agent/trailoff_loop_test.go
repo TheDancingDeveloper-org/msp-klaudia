@@ -47,11 +47,14 @@ func (s *scripted) StreamTurn(_ context.Context, params anthropic.BetaMessageNew
 
 func runScript(t *testing.T, replies []string, cont bool) (Result, *scripted) {
 	t.Helper()
+	return runScriptOpts(t, replies, Options{ContinueOnTrailOff: cont})
+}
+
+func runScriptOpts(t *testing.T, replies []string, opts Options) (Result, *scripted) {
+	t.Helper()
 	s := &scripted{replies: replies}
-	res, err := New(s, tools.NewRegistry()).Run(context.Background(), Options{
-		Prompt:             "do the thing",
-		ContinueOnTrailOff: cont,
-	}, nil)
+	opts.Prompt = "do the thing"
+	res, err := New(s, tools.NewRegistry()).Run(context.Background(), opts, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -112,5 +115,47 @@ func TestTrailOffIgnoresARealEnding(t *testing.T) {
 		if res.TrailOffNudges != 0 || res.NumTurns != 1 {
 			t.Errorf("%q: nudges %d turns %d, want a plain ending", reply, res.TrailOffNudges, res.NumTurns)
 		}
+	}
+}
+
+// A nudge is another request, so it is bound by --max-turns like a tool turn.
+// Before the fix MaxTurns=1 with three announcements gave three turns.
+func TestTrailOffRespectsMaxTurns(t *testing.T) {
+	replies := []string{"I'll read loop.go next.", "Next I'll run the tests.", "Let me check the output now."}
+	res, _ := runScriptOpts(t, replies, Options{ContinueOnTrailOff: true, MaxTurns: 1})
+	if res.NumTurns != 1 || res.TrailOffNudges != 0 {
+		t.Fatalf("MaxTurns=1: turns %d nudges %d, want 1 and 0", res.NumTurns, res.TrailOffNudges)
+	}
+	res, _ = runScriptOpts(t, replies, Options{ContinueOnTrailOff: true, MaxTurns: 2})
+	if res.NumTurns != 2 || res.TrailOffNudges != 1 {
+		t.Fatalf("MaxTurns=2: turns %d nudges %d, want 2 and 1", res.NumTurns, res.TrailOffNudges)
+	}
+}
+
+func TestWithinLimits(t *testing.T) {
+	cases := []struct {
+		opts Options
+		res  Result
+		want bool
+	}{
+		{Options{}, Result{NumTurns: 50, CostUSD: 9}, true},
+		{Options{MaxTurns: 3}, Result{NumTurns: 2}, true},
+		{Options{MaxTurns: 3}, Result{NumTurns: 3}, false},
+		{Options{MaxBudgetUSD: 1}, Result{CostUSD: 0.5}, true},
+		{Options{MaxBudgetUSD: 1}, Result{CostUSD: 1}, false},
+	}
+	for _, c := range cases {
+		if got := withinLimits(c.opts, c.res); got != c.want {
+			t.Errorf("withinLimits(%+v, turns %d cost %v) = %v, want %v", c.opts, c.res.NumTurns, c.res.CostUSD, got, c.want)
+		}
+	}
+}
+
+// The review's conditional offer must end the run: nudging it under -p would
+// tell the model to push without the approval it asked for.
+func TestTrailOffLeavesAConditionalOffer(t *testing.T) {
+	res, _ := runScript(t, []string{"Done. If you approve, I'll push the branch."}, true)
+	if res.TrailOffNudges != 0 || res.NumTurns != 1 {
+		t.Fatalf("nudges %d turns %d, want a plain ending", res.TrailOffNudges, res.NumTurns)
 	}
 }

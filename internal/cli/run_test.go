@@ -74,6 +74,24 @@ func TestRunJSONOutputIsOneResultObject(t *testing.T) {
 	}
 }
 
+// A -p run that trails off is nudged, and the JSON result says how often:
+// without trail_off_nudges neither the run nor session economics can see it.
+func TestRunJSONReportsTrailOffNudges(t *testing.T) {
+	m := newFakeModel(t, say("I'll read loop.go next."), say("Read it; the exit is at line 597."))
+	e := newCLIEnv(t, m)
+	r := e.run(nil, "-p", "q", "--output-format", "json")
+	if r.Err != nil {
+		t.Fatal(r.dump())
+	}
+	res := r.lines()[0]
+	if res["trail_off_nudges"] != float64(1) || res["num_turns"] != float64(2) {
+		t.Errorf("trail_off_nudges = %v, num_turns = %v; want 1 and 2\n%s", res["trail_off_nudges"], res["num_turns"], r.dump())
+	}
+	if res["result"] != "Read it; the exit is at line 597." {
+		t.Errorf("result = %v", res["result"])
+	}
+}
+
 // stream-json output is the conversation as message envelopes, stamped with
 // the session id, and ends with the result line; the tool ran on disk.
 func TestRunStreamJSONEmitsEnvelopesThenResult(t *testing.T) {

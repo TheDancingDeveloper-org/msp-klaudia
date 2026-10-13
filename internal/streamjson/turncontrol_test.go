@@ -360,3 +360,15 @@ func TestResultEventSubtype(t *testing.T) {
 		})
 	}
 }
+
+// trail_off_nudges appears on the result line when the turn was nudged, and
+// is absent otherwise so an un-nudged result is unchanged.
+func TestResultEventReportsTrailOffNudges(t *testing.T) {
+	d := NewDriver(io.Discard)
+	if m := d.resultEvent(agent.Result{Text: "ok", TrailOffNudges: 2}, nil, 0, false); m["trail_off_nudges"] != 2 {
+		t.Errorf("trail_off_nudges = %v, want 2", m["trail_off_nudges"])
+	}
+	if m := d.resultEvent(agent.Result{Text: "ok"}, nil, 0, false); m["trail_off_nudges"] != nil {
+		t.Errorf("trail_off_nudges = %v on an un-nudged turn, want absent", m["trail_off_nudges"])
+	}
+}
