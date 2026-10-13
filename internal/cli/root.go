@@ -2158,6 +2158,11 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 			// The transcript on disk and the peer's envelope stream are fed
 			// from the same Record calls, as in the -p path.
 			o.Recorder = multiRecorder{recorder, turn.Recorder}
+			// A stream-json peer is a driver, not a person at a keyboard: an
+			// announcement with no tool call would otherwise end the turn and
+			// wait for the peer to re-prompt. An interactive TUI turn leaves
+			// this off, because there the user is who answers.
+			o.ContinueOnTrailOff = true
 			return loop.Run(ctx, o, turn.Emit)
 		}
 		// initialMessages, not nil: an explicit --resume/--continue was being
@@ -2267,6 +2272,9 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	headlessOpts.Recorder = runRecorder
 	headlessOpts.PartialMessages = partial
 	headlessOpts.DeferredTools = deferredTools
+	// Nobody is watching a -p run, so a reply that only announces its next
+	// step would end the process. Keep going inside the turn instead.
+	headlessOpts.ContinueOnTrailOff = true
 	res, err := loop.Run(ctx, headlessOpts, emit)
 	// Background sub-agents the turn launched are owed a later turn, and a -p
 	// run has no other: wait for them and deliver their results before the
