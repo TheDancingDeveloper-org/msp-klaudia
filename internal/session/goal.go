@@ -42,3 +42,9 @@ func ReadGoal(path string) string {
 	}
 	return strings.TrimSpace(string(data))
 }
+
+// GitguardPathFor is where a session keeps its git-guard baseline: beside its
+// transcript, so a resume finds the state the session first saw.
+func GitguardPathFor(transcriptPath string) string {
+	return strings.TrimSuffix(transcriptPath, ".jsonl") + ".gitguard.json"
+}

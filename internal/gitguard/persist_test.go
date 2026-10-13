@@ -1,6 +1,8 @@
 package gitguard
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,5 +39,131 @@ func TestBaselineRoundTripIncludesOthers(t *testing.T) {
 	// The on-disk file is what a hook writes; keep the shape obvious.
 	if filepath.Separator == '/' && !os.IsPathSeparator(raw[0]) && raw[0] != '{' {
 		t.Fatalf("marshal = %s", raw)
+	}
+}
+
+// reload round-trips b through its file, as a resumed session (or a hook
+// process per call) sees it.
+func reload(t *testing.T, b *Baseline, path string) *Baseline {
+	t.Helper()
+	if err := b.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Resume(path, "/nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return back
+}
+
+func bash(c string) []byte {
+	raw, _ := json.Marshal(map[string]string{"command": c})
+	return raw
+}
+
+// WI-1300: the cwd is a dirty main checkout, the session works in a clean
+// linked worktree, and the baseline is reloaded between calls — a resume, or
+// a hook that runs once per call. The session's own edit to a path that is
+// also dirty in the main checkout must commit; before the identity was
+// persisted the reloaded worktree baseline was dropped and re-captured with
+// that edit in it, and the commit was refused as pre-existing.
+func TestReloadedBaselineCommitsOwnEditInSiblingWorktree(t *testing.T) {
+	main := clean(t)
+	write(t, main, "engine/budget.rs", "v1\n")
+	git(t, main, "add", "-A")
+	git(t, main, "commit", "-qm", "budget")
+	write(t, main, "engine/budget.rs", "user dirt in the main checkout\n")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi", wt, "HEAD")
+
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	b, err := Capture(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, _ := json.Marshal(map[string]string{"file_path": filepath.Join(wt, "engine/budget.rs")})
+	b.CheckTool("Edit", edit, main)
+	b = reload(t, b, path)
+	write(t, wt, "engine/budget.rs", "the session's edit\n")
+	b = reload(t, b, path)
+	for _, c := range []string{
+		"cd " + wt + " && git add engine/budget.rs && git commit -qm x",
+		"git -C " + wt + " add engine/budget.rs",
+	} {
+		if msg := b.CheckTool("Bash", bash(c), main); msg != "" {
+			t.Errorf("%s: refused the session's own edit: %s", c, msg)
+		}
+		b = reload(t, b, path)
+	}
+	// The main checkout's own dirt is still the user's.
+	if msg := b.CheckTool("Bash", bash("git add engine/budget.rs"), main); msg == "" {
+		t.Error("staging the main checkout's pre-existing change was allowed")
+	}
+}
+
+// A path that really was dirty in the target worktree when the session first
+// touched it stays refused across a reload.
+func TestReloadedBaselineStillRefusesWorktreeDirt(t *testing.T) {
+	main := clean(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi", wt, "HEAD")
+	write(t, wt, "main.go", "package main // user dirt\n")
+	b, err := Capture(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	b.CheckTool("Bash", bash("cd "+wt+" && git status"), main)
+	b = reload(t, b, path)
+	for _, c := range []string{
+		"cd " + wt + " && git add main.go",
+		"cd " + wt + " && git checkout -- main.go",
+		"git -C " + wt + " commit -am x",
+	} {
+		if msg := b.CheckTool("Bash", bash(c), main); msg == "" {
+			t.Errorf("%s: allowed after a reload", c)
+		}
+	}
+}
+
+// Resume keeps the baseline the session first took: files the session wrote
+// before a restart are its own, while the start dirt stays protected.
+func TestResumeKeepsFirstBaseline(t *testing.T) {
+	dir := repo(t)
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	b, err := Resume(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := b.PersistentGuard(path)
+	write(t, dir, "mine.go", "package mine\n") // the session's file
+	guard("Bash", bash("git status"), dir)
+
+	// Restart: a fresh Capture would record mine.go as the user's.
+	if fresh, _ := Capture(dir); len(fresh.CheckCommand("git add mine.go", dir)) == 0 {
+		t.Fatal("test premise: a fresh capture should protect mine.go")
+	}
+	again, err := Resume(path, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := again.CheckCommand("git add mine.go", dir); msg != "" {
+		t.Errorf("resumed session refused its own file: %s", msg)
+	}
+	if msg := again.CheckCommand("git add todo.txt", dir); msg == "" {
+		t.Error("resumed session may stage the user's untracked file")
+	}
+	if msg := again.CheckCommand("git checkout -- src/a.py", dir); msg == "" {
+		t.Error("resumed session may discard the user's edit")
+	}
+}
+
+func TestResumeRefusesUnreadableFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resume(path, t.TempDir()); err == nil || errors.Is(err, ErrNotRepo) {
+		t.Fatalf("Resume of a corrupt file = %v", err)
 	}
 }
