@@ -268,7 +268,7 @@ func commonDir(gitDir string) string {
 // fail it, while a status, add or commit — which only rename files inside the
 // .git directory — does not.
 func (id gitIdentity) same(top string) bool {
-	if id.noConfig {
+	if id.noConfig || id.configDir() == "" {
 		return false
 	}
 	cur, ok := identityOf(top, id.configDir())
@@ -362,18 +362,13 @@ func samePaths(a, b []configStamp) bool {
 }
 
 // configDir is the git dir the config stamps were taken from. An identity
-// persisted before the git dir was recorded falls back to the directory of
-// the first stamp, which is the common dir for a linked worktree with no
-// config of its own: a later config.worktree there then fails the stamp
-// count and takes the re-probe in stillResolves.
+// with none recorded — one persisted before the git dir was — has no
+// configDir, so same fails it and the first check takes the re-probe in
+// stillResolves, which records the git dir. Falling back to the directory of
+// the first stamp would be the common dir for a linked worktree with no
+// config of its own, and its config.worktree would go unwatched (WI-1300).
 func (id gitIdentity) configDir() string {
-	if id.dir != "" {
-		return id.dir
-	}
-	if len(id.configs) == 0 {
-		return ""
-	}
-	return filepath.Dir(id.configs[0].path)
+	return id.dir
 }
 
 // stampsEqual reports whether the two config sets name the same files with the

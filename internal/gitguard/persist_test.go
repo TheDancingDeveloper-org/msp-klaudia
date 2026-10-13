@@ -305,3 +305,32 @@ func TestResumeRefusesConfigWrittenDuringProbe(t *testing.T) {
 		t.Fatal("the probe was never asked about the worktree; the race was not exercised")
 	}
 }
+
+// A baseline file saved before the identity recorded its git dir (#309) has
+// no dir. For a linked worktree with no config of its own, the old fallback
+// watched the common dir, so a core.worktree in the worktree's config.worktree
+// went unnoticed. The first check of such an identity must take the re-probe,
+// which records the git dir, so a redirect after it is refused.
+func TestOldFormatBaselineWatchesWorktreeConfig(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	b.mu.Lock()
+	o := b.others[canonical(wt)]
+	if o == nil {
+		b.mu.Unlock()
+		t.Fatal("setup: no baseline for the worktree")
+	}
+	o.id.dir = ""
+	b.mu.Unlock()
+	b = reload(t, b, filepath.Join(t.TempDir(), "old.gitguard.json"))
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add own.go"), main); msg != "" {
+		t.Fatalf("an old-format baseline refused the session's own file: %s", msg)
+	}
+	time.Sleep(20 * time.Millisecond)
+	git(t, wt, "config", "--worktree", "core.worktree", main)
+	if got := gitOut(t, wt, "rev-parse", "--show-toplevel"); canonical(got) != canonical(main) {
+		t.Fatalf("setup: core.worktree did not redirect the worktree (toplevel %s)", got)
+	}
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg == "" {
+		t.Error("an old-format baseline let git add of the main checkout's dirt through a redirected worktree")
+	}
+}
