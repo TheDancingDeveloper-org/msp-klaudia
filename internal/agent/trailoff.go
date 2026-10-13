@@ -31,11 +31,14 @@ var trailOffPatterns = []*regexp.Regexp{
 // notNowPatterns mark a last sentence that promises something other than an
 // immediate step: a conditional offer ("If you approve, I'll push") waits on
 // the user, and a deferral ("in a follow-up PR") is out of this run's scope.
-// Nudging either would tell the model to do now what it rightly did not —
+// A sign-off ("Let me know what you think", "I'll stop here", "I'll leave
+// the rest to you") hands the turn back on purpose, so it is an ending too.
+// Nudging any of these would tell the model to do now what it rightly did not —
 // under -p, to push without the approval it asked for.
 var notNowPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:if|once|when|whenever|unless|after|as soon as|should you|provided)\b`),
 	regexp.MustCompile(`(?i)\b(?:follow-?up|later|separate(?:ly)?|another (?:pr|change|commit|session)|next time|future|tomorrow|eventually)\b`),
+	regexp.MustCompile(`(?i)\blet me know\b|\b(?:stop|stopping|pause|pausing|end|ending|wrap(?:ping)? up|leave|leaving|hand(?:ing)? (?:it |this |the rest )?(?:back|over))\b`),
 }
 
 // doneMarkers are lines a reply uses to say it is finished. A reply carrying

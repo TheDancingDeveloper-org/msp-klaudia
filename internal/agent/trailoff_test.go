@@ -40,6 +40,12 @@ func TestTrailOff(t *testing.T) {
 		"When you're back, I'll rebase it.",
 		"I'll handle the rename separately.",
 		"I'll revisit the cap later.",
+		// From the WI-1301 re-review: sign-offs hand the turn back.
+		"Let me know what you think.",
+		"Summary above. Let me know.",
+		"Done. I'll leave the rest to you.",
+		"I'm going to stop here.",
+		"I will now stop.",
 	}
 	for _, s := range negatives {
 		if trailOff(s) {
