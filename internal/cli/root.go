@@ -1076,6 +1076,24 @@ func standingGoal(root, sessionID, transcriptPath, resumeID string) (path, goal 
 	return path, goal
 }
 
+// guardBaselinePaths returns where this session keeps its git-guard baseline,
+// and where to load one from: its own file when it has one, else (on a resume
+// or a fork) the file of the session it continues. A fork inherits the
+// baseline, because the files the parent wrote are the run's, not the user's.
+func guardBaselinePaths(root, sessionID, transcriptPath, resumeID string) (path, from string) {
+	if transcriptPath == "" {
+		transcriptPath = session.Path(root, sessionID)
+	}
+	path = session.GitguardPathFor(transcriptPath)
+	from = path
+	if resumeID != "" {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			from = session.GitguardPathFor(resumeTranscript(root, resumeID))
+		}
+	}
+	return path, from
+}
+
 // chooseSessionID returns the id this run records under and, when it continues
 // an existing transcript, that transcript's path (empty for a new file at the
 // default location).
@@ -1905,9 +1923,22 @@ func runFormat(cmd *cobra.Command, opts *options, format OutputFormat, st *runSt
 	// `git checkout -- <file>` from discarding a change the user had made before
 	// the session started (#257). Captured once, before any turn runs; outside a
 	// repository there is nothing to protect and the guard stays nil.
+	//
+	// The baseline is kept beside the transcript and reloaded on resume
+	// (WI-1300): a session resumed after a restart that re-captured instead
+	// would record the files it wrote before the restart as the user's, and
+	// refuse to commit them.
 	var sessionGuard func(tool string, input []byte, cwd string) string
-	if base, gerr := gitguard.Capture(cwd); gerr == nil {
-		sessionGuard = base.Guard()
+	guardPath, guardFrom := guardBaselinePaths(root, sessionID, transcriptPath, resumeID)
+	if base, gerr := gitguard.Resume(guardFrom, cwd); gerr == nil {
+		sessionGuard = base.PersistentGuard(guardPath)
+	} else if !errors.Is(gerr, gitguard.ErrNotRepo) {
+		// A baseline file that is there but unreadable must not turn the
+		// guard off: fall back to a capture now, which over-protects.
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: git guard: %v; capturing the working tree afresh\n", gerr)
+		if base, cerr := gitguard.Capture(cwd); cerr == nil {
+			sessionGuard = base.Guard()
+		}
 	}
 	// Background children do not run on the parent's context, so the guard
 	// has to be handed over explicitly or it holds only for the foreground.
