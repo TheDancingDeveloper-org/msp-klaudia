@@ -94,7 +94,8 @@ func (b *Baseline) touch(path string) {
 // captured for. The identity — the .git entry and the configs of the git dir it
 // resolved to — is re-read from the filesystem before the baseline is handed
 // back, and it is keyed by the tree's top, so it holds whichever directory the
-// command was aimed at (#295). A tree that no longer matches is not
+// command was aimed at (#295). A config rewrite that leaves the tree resolving
+// where it did keeps the baseline (stillResolves). A tree that no longer matches is not
 // re-captured: the remembered baseline is dropped and the command is refused,
 // because re-capturing would record files the run wrote since the first touch
 // as the user's. The next touch, finding nothing remembered, captures afresh.
@@ -104,6 +105,10 @@ func (b *Baseline) other(top, gitDir string) *Baseline {
 	defer b.mu.Unlock()
 	if o, ok := b.others[key]; ok {
 		if o.id.same(key) {
+			return o
+		}
+		if id, ok := o.id.stillResolves(key); ok {
+			o.id = id
 			return o
 		}
 		delete(b.others, key)
@@ -269,6 +274,57 @@ func (id gitIdentity) same(top string) bool {
 		return false
 	}
 	return id.dotGit == cur.dotGit && id.gitdir == cur.gitdir && stampsEqual(id.configs, cur.configs)
+}
+
+// stillResolves is the second look other takes when same fails. Config files
+// are stamped by ctime, and a config write is routine: a linked worktree
+// shares its main checkout's config, and every `git worktree add -b` or
+// `git push -u` by anyone working in that repository rewrites it. Dropping the
+// baseline on every such write re-captured it with the run's own edits in it,
+// and the run was then refused its own commit (WI-1300: a session whose
+// worktree's shared config was rewritten by another session's new worktree).
+//
+// So when only the config stamps moved — the .git entry and its gitdir content
+// are what they were — git is asked again, through gitprobe, where the tree
+// resolves. A config that now redirects it (core.worktree, core.bare, an
+// include doing either) gives a different top or git dir and fails this, as
+// before. When it still resolves to the same top and the same git dir, the
+// identity is refreshed to the new stamps and the baseline kept.
+func (id gitIdentity) stillResolves(top string) (gitIdentity, bool) {
+	if id.noConfig {
+		return id, false
+	}
+	gotTop, _, gotDir, err := runProbe(top, nil)
+	if err != nil || gotDir == "" || canonical(gotTop) != canonical(top) {
+		return id, false
+	}
+	cur, ok := identityOf(top, gotDir)
+	if !ok || id.dotGit != cur.dotGit || id.gitdir != cur.gitdir || !samePaths(id.configs, cur.configs) {
+		return id, false
+	}
+	// Re-stamp after the probe, and require the stamps to hold across it, so
+	// a config rewritten while git read it is not trusted.
+	again, ok := identityOf(top, gotDir)
+	if !ok || again.dotGit != cur.dotGit || again.gitdir != cur.gitdir || !stampsEqual(again.configs, cur.configs) {
+		return id, false
+	}
+	return cur, true
+}
+
+// samePaths reports whether the two config sets name the same files, whatever
+// their inodes and ctimes: git rewrites a config by renaming config.lock over
+// it, so every write gives it a new inode. Which tree the git dir serves is
+// established by the probe in stillResolves, not by these stamps.
+func samePaths(a, b []configStamp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].path != b[i].path {
+			return false
+		}
+	}
+	return true
 }
 
 // configDir is the git dir the config stamps were taken from: the directory of

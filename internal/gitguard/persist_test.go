@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBaselineRoundTripIncludesOthers(t *testing.T) {
@@ -165,5 +166,66 @@ func TestResumeRefusesUnreadableFile(t *testing.T) {
 	}
 	if _, err := Resume(path, t.TempDir()); err == nil || errors.Is(err, ErrNotRepo) {
 		t.Fatalf("Resume of a corrupt file = %v", err)
+	}
+}
+
+// WI-1300 regression, the vogt-1316 case: a session starts in a dirty main
+// checkout and edits files in a clean linked worktree of its own; the process
+// is killed (an engine restart) and the session resumed; meanwhile another
+// session's `git worktree add -b` rewrites the config the two worktrees share.
+// The shared config's new ctime used to fail the reloaded baseline's identity,
+// so it was dropped and re-captured with the session's edits in it, and the
+// session was refused its own commit. A config write that leaves the tree
+// resolving where it did must keep the baseline; dirt that was in the
+// worktree at first touch, and a config that redirects the tree, stay refused.
+func TestResumeAfterSharedConfigRewriteCommitsOwnEdits(t *testing.T) {
+	main := clean(t)
+	write(t, main, "notes.txt", "user dirt in the main checkout\n")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi-1316", wt, "HEAD")
+	write(t, wt, "dirty.go", "package main // there before the session\n")
+
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	b, err := Resume(path, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := b.PersistentGuard(path)
+	if msg := guard("Bash", bash("cd "+wt+" && git status --short"), main); msg != "" {
+		t.Fatalf("first touch refused: %s", msg)
+	}
+	edit, _ := json.Marshal(map[string]string{"file_path": filepath.Join(wt, "main.go")})
+	guard("Edit", edit, main)
+	write(t, wt, "main.go", "package main // the session's edit\n")
+	// The process dies here: nothing but the file survives.
+
+	time.Sleep(20 * time.Millisecond)
+	other := filepath.Join(t.TempDir(), "other")
+	git(t, main, "worktree", "add", "-q", "-b", "wi-other", other, "HEAD")
+	git(t, main, "config", "branch.wi-other.description", "another session")
+
+	b, err = Resume(path, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard = b.PersistentGuard(path)
+	if msg := guard("Bash", bash("cd "+wt+" && git add main.go && git commit -qm own"), main); msg != "" {
+		t.Errorf("resumed session refused its own edit after a shared config rewrite: %s", msg)
+	}
+	if msg := guard("Bash", bash("cd "+wt+" && git add dirty.go"), main); msg == "" {
+		t.Error("staging the worktree's pre-existing dirt was allowed after resume")
+	}
+	if msg := guard("Bash", bash("git add notes.txt"), main); msg == "" {
+		t.Error("staging the main checkout's pre-existing dirt was allowed after resume")
+	}
+
+	// A config rewrite that does redirect the tree still drops the baseline.
+	b, err = Resume(path, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, wt, "config", "core.worktree", main)
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add -A"), main); msg == "" {
+		t.Error("git add -A was allowed after core.worktree redirected the resumed tree")
 	}
 }
