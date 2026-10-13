@@ -57,7 +57,7 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 		},
 		{
 			name:  "a glob naming .github finds it",
-			in:    GrepInput{Pattern: "needle-ci", Glob: ".github/**/*.yml"},
+			in:    GrepInput{Pattern: "needle-ci", Glob: ".github/**/*.yml", OutputMode: "files_with_matches"},
 			found: filepath.Join(".github", "workflows", "ci.yml"),
 			// The glob could never match in target/ or .vscode/, so leaving
 			// them out is not a gap worth reporting.
@@ -65,19 +65,19 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 		},
 		{
 			name:  "a path inside .github finds it",
-			in:    GrepInput{Pattern: "needle-ci", Path: ".github"},
+			in:    GrepInput{Pattern: "needle-ci", Path: ".github", OutputMode: "files_with_matches"},
 			found: filepath.Join(".github", "workflows", "ci.yml"),
 			quiet: true,
 		},
 		{
 			name:  "hidden: true finds it from the root",
-			in:    GrepInput{Pattern: "needle-ci", Hidden: true},
+			in:    GrepInput{Pattern: "needle-ci", Hidden: true, OutputMode: "files_with_matches"},
 			found: filepath.Join(".github", "workflows", "ci.yml"),
 			quiet: true,
 		},
 		{
 			name:  "an untracked file is searched",
-			in:    GrepInput{Pattern: "needle-untracked"},
+			in:    GrepInput{Pattern: "needle-untracked", OutputMode: "files_with_matches"},
 			found: "notes.txt",
 			// Matches, and no glob or type to tell which skipped directory
 			// could have held more: a note here would be on every search.
@@ -85,7 +85,7 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 		},
 		{
 			name:  "with matches, a glob names only the skipped dirs holding files it would visit",
-			in:    GrepInput{Pattern: "needle", Glob: "**/*.yml"},
+			in:    GrepInput{Pattern: "needle", Glob: "**/*.yml", OutputMode: "files_with_matches"},
 			found: filepath.Join("deploy", "app.yml"),
 			// .github holds a .yml; .vscode and target do not.
 			note:   []string{"hidden: .github/", "hidden: true"},
@@ -93,7 +93,7 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 		},
 		{
 			name:   "with matches, a type filter works the same way",
-			in:     GrepInput{Pattern: "needle", Type: "yaml"},
+			in:     GrepInput{Pattern: "needle", Type: "yaml", OutputMode: "files_with_matches"},
 			found:  filepath.Join("deploy", "app.yml"),
 			note:   []string{"hidden: .github/"},
 			absent: []string{".vscode", "target"},
@@ -105,7 +105,7 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 		},
 		{
 			name:  "no_ignore: true searches it",
-			in:    GrepInput{Pattern: "needle-built", NoIgnore: true},
+			in:    GrepInput{Pattern: "needle-built", NoIgnore: true, OutputMode: "files_with_matches"},
 			found: filepath.Join("target", "out.txt"),
 			quiet: true,
 		},
@@ -148,7 +148,7 @@ func TestGrepHiddenAndIgnoredRows(t *testing.T) {
 func TestGrepSkipNoteCountsFilesOnlyWhenEmpty(t *testing.T) {
 	dir := skipRepo(t)
 	g, _ := NewGrep()
-	hit := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "needle", Glob: "**/*.yml"})
+	hit := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: "needle", Glob: "**/*.yml", OutputMode: "files_with_matches"})
 	if strings.Contains(hit.Content, "hidden file") {
 		t.Errorf("a result with matches counted skipped dotfiles:\n%s", hit.Content)
 	}
@@ -158,8 +158,9 @@ func TestGrepSkipNoteCountsFilesOnlyWhenEmpty(t *testing.T) {
 	}
 }
 
-// Asking for context or line numbers is asking to see lines. -A with no
-// output_mode used to return bare paths and drop the context in silence.
+// Asking for context is asking to see lines. -A with no output_mode used to
+// return bare paths and drop the context in silence; content is now the
+// default, so the flags only add context, and an explicit mode still wins.
 func TestGrepContextFlagsSelectContentMode(t *testing.T) {
 	dir := skipRepo(t)
 	g, _ := NewGrep()
@@ -169,9 +170,9 @@ func TestGrepContextFlagsSelectContentMode(t *testing.T) {
 		in   GrepInput
 		want string
 	}{
-		{"-A", GrepInput{Pattern: "test:", Hidden: true, After: 1}, ci + ":  test:\n" + ci + "-    run: make needle-ci"},
-		{"-B", GrepInput{Pattern: "test:", Hidden: true, Before: 1}, ci + "-jobs:\n" + ci + ":  test:"},
-		{"-C", GrepInput{Pattern: "test:", Hidden: true, Context: 1}, ci + "-jobs:\n" + ci + ":  test:\n" + ci + "-    run: make needle-ci"},
+		{"-A", GrepInput{Pattern: "test:", Hidden: true, After: 1}, ci + ":2:  test:\n" + ci + "-3-    run: make needle-ci"},
+		{"-B", GrepInput{Pattern: "test:", Hidden: true, Before: 1}, ci + "-1-jobs:\n" + ci + ":2:  test:"},
+		{"-C", GrepInput{Pattern: "test:", Hidden: true, Context: 1}, ci + "-1-jobs:\n" + ci + ":2:  test:\n" + ci + "-3-    run: make needle-ci"},
 		{"-n", GrepInput{Pattern: "test:", Hidden: true, LineNum: true}, ci + ":2:  test:"},
 		// An explicit mode still wins: the caller asked for paths.
 		{"explicit mode", GrepInput{Pattern: "test:", Hidden: true, After: 1, OutputMode: "files_with_matches"}, ci},
@@ -215,7 +216,7 @@ func TestGlobHiddenAndIgnoredInputs(t *testing.T) {
 func TestGrepDescriptionStatesDefaultsAndSkips(t *testing.T) {
 	g, _ := NewGrep()
 	desc, _ := g.Description(t.Context())
-	for _, want := range []string{"NOT searched", "hidden: true", "no_ignore: true", "files_with_matches\" by default", "selects content"} {
+	for _, want := range []string{"NOT searched", "hidden: true", "no_ignore: true", "content\" by default", "files_with_matches"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description does not say %q:\n%s", want, desc)
 		}
@@ -268,7 +269,7 @@ func TestGrepNeverWalksIntoCredentials(t *testing.T) {
 
 	// Aimed at the location itself, the search runs — behind the prompt the
 	// root check raises.
-	res = runTool(t, g, tctx, GrepInput{Pattern: "needle-secret", Path: filepath.Join(home, ".aws")})
+	res = runTool(t, g, tctx, GrepInput{Pattern: "needle-secret", Path: filepath.Join(home, ".aws"), OutputMode: "files_with_matches"})
 	if first, _, _ := strings.Cut(res.Content, "\n"); first != filepath.Join(".aws", "credentials") {
 		t.Errorf("a search rooted in .aws should search it:\n%s", res.Content)
 	}
