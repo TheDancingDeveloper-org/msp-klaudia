@@ -20,15 +20,15 @@ type GrepInput struct {
 	Pattern    string `json:"pattern" jsonschema:"description=The regular expression pattern to search for in file contents"`
 	Path       string `json:"path,omitempty" jsonschema:"description=File or directory to search in (defaults to cwd)"`
 	Glob       string `json:"glob,omitempty" jsonschema:"description=Glob pattern to filter files (e.g. *.go)"`
-	OutputMode string `json:"output_mode,omitempty" jsonschema:"description=files_with_matches (the default; or content when -A/-B/-C/-n is given), content, or count"`
+	OutputMode string `json:"output_mode,omitempty" jsonschema:"description=content (the default: matching lines with line numbers), files_with_matches (paths only), or count (per-file counts). -A/-B/-C also select content"`
 	IgnoreCase bool   `json:"-i,omitempty" jsonschema:"description=Case-insensitive search"`
-	LineNum    bool   `json:"-n,omitempty" jsonschema:"description=Show line numbers (content mode)"`
+	LineNum    bool   `json:"-n,omitempty" jsonschema:"description=Show line numbers (content mode; on by default)"`
 	Multiline  bool   `json:"multiline,omitempty" jsonschema:"description=Allow patterns to span lines (dot matches newline); content mode then shows each match with the line it starts on"`
 	Type       string `json:"type,omitempty" jsonschema:"description=Only search files of this type: go, py, js, ts, rust, java, c, cpp, rb, php, sh, md, json, yaml, toml, html, css, sql, swift, kotlin"`
 	After      int    `json:"-A,omitempty" jsonschema:"description=Lines of context after each match (content mode)"`
 	Before     int    `json:"-B,omitempty" jsonschema:"description=Lines of context before each match (content mode)"`
 	Context    int    `json:"-C,omitempty" jsonschema:"description=Lines of context before and after each match (content mode)"`
-	HeadLimit  int    `json:"head_limit,omitempty" jsonschema:"description=Return at most this many lines/files/counts; the rest are counted, not shown"`
+	HeadLimit  int    `json:"head_limit,omitempty" jsonschema:"description=Return at most this many lines/files/counts; the rest are counted, not shown. Defaults to 200 in content mode when omitted"`
 	Hidden     bool   `json:"hidden,omitempty" jsonschema:"description=Also search hidden (dot) files and directories such as .github"`
 	NoIgnore   bool   `json:"no_ignore,omitempty" jsonschema:"description=Also search paths excluded by .gitignore/.ignore and the default skip list (node_modules, vendor, __pycache__)"`
 }
@@ -74,11 +74,12 @@ func (g *Grep) Description(context.Context) (string, error) {
 		"are never searched from above, even when named in glob; pass one as path to search it (that asks first). " +
 		"\"No matches found\" names what was skipped, so it means \"not found where I looked\", not \"not in the repo\"; " +
 		"with matches, a note names only skipped directories holding files the glob or type would have searched.\n" +
-		"Output: output_mode is \"files_with_matches\" by default (matching file paths only), " +
-		"\"content\" (matching lines) or \"count\" (per-file counts). Giving -A/-B/-C (context lines) or -n " +
-		"(line numbers) without output_mode selects content. Context lines use '-' where matches use ':'.\n" +
+		"Output: output_mode is \"content\" by default (matching lines with line numbers, capped at 200 " +
+		"with the remainder counted). Pass \"files_with_matches\" for paths only, or \"count\" for per-file counts. " +
+		"Giving -A/-B/-C (context lines) without output_mode also selects content. " +
+		"Context lines use '-' where matches use ':'.\n" +
 		"Filter files with glob or type (e.g. type=go); ignore case with -i. head_limit caps how many results " +
-		"are shown; the rest are counted. A relative path is taken from the working directory.", nil
+		"are shown (200 when omitted in content mode); the rest are counted. A relative path is taken from the working directory.", nil
 }
 
 func (g *Grep) InputSchema() json.RawMessage { return g.schema.Raw }
@@ -121,6 +122,11 @@ func (g *Grep) CheckPermissions(pctx permission.Context, _ permission.Permission
 // maxSearchResults bounds what Grep and Glob collect before formatting.
 const maxSearchResults = 20000
 
+// defaultContentHeadLimit caps a content-mode search that names no head_limit,
+// so a pattern-only call returns lines rather than an unbounded dump, and says
+// how many it left out.
+const defaultContentHeadLimit = 200
+
 func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) ([]Result, error) {
 	var in GrepInput
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -136,15 +142,24 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	if in.Context > 0 {
 		before, after = max(before, in.Context), max(after, in.Context)
 	}
-	// Asking for context or line numbers is asking to see lines. Without this,
-	// -A with no mode returned bare file paths and the context was dropped in
-	// silence.
+	// Content is the default: a caller that names only a pattern wants the
+	// lines, with numbers, capped. Context flags select content too, so -A
+	// with no mode never returns bare paths and drops the context.
+	// files_with_matches and count stay explicit and uncapped.
 	mode := in.OutputMode
-	if mode == "" && (in.After > 0 || in.Before > 0 || in.Context > 0 || in.LineNum) {
+	lineNum := in.LineNum
+	if mode == "" {
 		mode = "content"
+		lineNum = true
 	}
 	if mode != "content" {
 		before, after = 0, 0 // context only means something where lines are shown
+	} else if before > 0 || after > 0 {
+		lineNum = true // context lines are unreadable without numbers
+	}
+	limit := in.HeadLimit
+	if mode == "content" && limit == 0 {
+		limit = defaultContentHeadLimit
 	}
 
 	hidden := 0
@@ -187,13 +202,13 @@ func (g *Grep) Execute(ctx context.Context, tctx Context, raw json.RawMessage) (
 	var out string
 	switch mode {
 	case "content":
-		out = formatContent(matches, in.LineNum, before > 0 || after > 0)
+		out = formatContent(matches, lineNum, before > 0 || after > 0)
 	case "count":
 		out = formatCount(matches)
 	default: // files_with_matches
 		out = formatFiles(matches)
 	}
-	return []Result{CapResult(Result{Content: headLimit(out, in.HeadLimit) + note})}, nil
+	return []Result{CapResult(Result{Content: headLimit(out, limit) + note})}, nil
 }
 
 // headLimit keeps the first n lines of out and says how many were left out,

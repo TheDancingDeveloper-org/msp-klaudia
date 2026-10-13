@@ -104,8 +104,13 @@ func TestGrepOutputModes(t *testing.T) {
 		want string
 	}{
 		{
-			name: "files_with_matches is the default and lists each file once",
+			name: "content with line numbers is the default",
 			in:   GrepInput{Pattern: "hello", Glob: "*.go"},
+			want: b + ":2:// hello again\n" + b + ":3:func hello() {}",
+		},
+		{
+			name: "files_with_matches lists each file once",
+			in:   GrepInput{Pattern: "hello", Glob: "*.go", OutputMode: "files_with_matches"},
 			want: b,
 		},
 		{
@@ -150,7 +155,7 @@ func TestGrepOutputModes(t *testing.T) {
 func TestGrepMultilineMatchesAcrossLines(t *testing.T) {
 	dir := searchTree(t)
 	g, _ := NewGrep()
-	res := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: `package b.*func hello`, Multiline: true})
+	res := runTool(t, g, Context{WorkingDir: dir}, GrepInput{Pattern: `package b.*func hello`, Multiline: true, OutputMode: "files_with_matches"})
 	if res.Content != "b.go" { // relative to the working dir
 		t.Errorf("content = %q, want b.go (the pattern spans its lines)", res.Content)
 	}
