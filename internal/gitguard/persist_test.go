@@ -219,13 +219,89 @@ func TestResumeAfterSharedConfigRewriteCommitsOwnEdits(t *testing.T) {
 		t.Error("staging the main checkout's pre-existing dirt was allowed after resume")
 	}
 
-	// A config rewrite that does redirect the tree still drops the baseline.
-	b, err = Resume(path, main)
+}
+
+// redirectSetup is a dirty main checkout and a clean linked worktree with
+// worktree-scoped config enabled, touched by a session that then writes a file
+// of its own there, saved and reloaded as a resume would. own.go is in no
+// baseline. notes.txt is dirt in the main checkout only: the worktree's
+// baseline does not list it, so staging it from the worktree is refused only
+// if the guard sees that the worktree now resolves onto the main checkout.
+func redirectSetup(t *testing.T) (main, wt string, b *Baseline) {
+	t.Helper()
+	main = clean(t)
+	write(t, main, "notes.txt", "user dirt in the main checkout\n")
+	git(t, main, "config", "extensions.worktreeConfig", "true")
+	wt = filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi", wt, "HEAD")
+	b, err := Capture(main)
 	if err != nil {
 		t.Fatal(err)
 	}
-	git(t, wt, "config", "core.worktree", main)
-	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add -A"), main); msg == "" {
-		t.Error("git add -A was allowed after core.worktree redirected the resumed tree")
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git status"), main); msg != "" {
+		t.Fatalf("first touch refused: %s", msg)
+	}
+	write(t, wt, "own.go", "package main // the session's\n")
+	b = reload(t, b, filepath.Join(t.TempDir(), "s.gitguard.json"))
+	// The resumed session's first call into the worktree caches its probe,
+	// so a later command there is judged by the remembered baseline.
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add own.go"), main); msg != "" {
+		t.Fatalf("resumed session refused its own file: %s", msg)
+	}
+	// Control: before any redirect the worktree has no notes.txt, so the
+	// command the tests below expect refused is allowed here.
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg != "" {
+		t.Fatalf("control: git add notes.txt in the unredirected worktree was refused: %s", msg)
+	}
+	return main, wt, b
+}
+
+// A worktree-scoped core.worktree really does move a linked worktree onto
+// another tree (git honours it in config.worktree, not in the shared config).
+// After a resume that write must drop the baseline, so `git add notes.txt`
+// from the worktree, which would now stage the main checkout's dirt, is
+// refused. The worktree's own baseline would have allowed it.
+func TestResumeDropsBaselineOnRealRedirect(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	time.Sleep(20 * time.Millisecond)
+	git(t, wt, "config", "--worktree", "core.worktree", main)
+	if got := gitOut(t, wt, "rev-parse", "--show-toplevel"); canonical(got) != canonical(main) {
+		t.Fatalf("setup: core.worktree did not redirect the worktree (toplevel %s)", got)
+	}
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg == "" {
+		t.Error("staging was allowed after core.worktree redirected the resumed tree")
+	}
+}
+
+// The config stamps are taken before git is asked where the tree resolves and
+// again after. A redirecting write that lands after git read the config, but
+// before the second stamp, must drop the baseline, not refresh it.
+func TestResumeRefusesConfigWrittenDuringProbe(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	// Move the stamps, harmlessly, so the reloaded identity takes the
+	// re-probe path.
+	time.Sleep(20 * time.Millisecond)
+	git(t, main, "config", "branch.wi.description", "another session")
+
+	real := runProbe
+	t.Cleanup(func() { runProbe = real })
+	injected := false
+	runProbe = func(dir string, gitOpts []string) (string, string, string, error) {
+		top, prefix, gitDir, err := real(dir, gitOpts)
+		if !injected && canonical(dir) == canonical(wt) {
+			injected = true
+			time.Sleep(20 * time.Millisecond)
+			git(t, wt, "config", "--worktree", "core.worktree", main)
+		}
+		return top, prefix, gitDir, err
+	}
+	// One lookup, so the check under test is the only one that can see the
+	// write: a later lookup would catch it through the identity anyway.
+	gitDir := gitOut(t, wt, "rev-parse", "--absolute-git-dir")
+	if o := b.other(wt, gitDir); o != nil {
+		t.Error("the baseline was kept across a redirect written during the probe")
+	}
+	if !injected {
+		t.Fatal("the probe was never asked about the worktree; the race was not exercised")
 	}
 }

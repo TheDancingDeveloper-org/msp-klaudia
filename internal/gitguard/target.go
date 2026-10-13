@@ -156,7 +156,8 @@ type gitIdentity struct {
 	dotGit   entryStamp
 	gitdir   string // content of a .git file; "" when .git is a directory
 	configs  []configStamp
-	noConfig bool // no config file could be read: the identity is not trustworthy
+	noConfig bool   // no config file could be read: the identity is not trustworthy
+	dir      string // the git dir the configs were stamped from
 }
 
 // entryStamp records a .git entry's type and, when it could be read, the
@@ -197,6 +198,7 @@ func identityOf(top, gitDir string) (gitIdentity, bool) {
 	if gitDir == "" {
 		return id, false
 	}
+	id.dir = gitDir
 	id.configs = stampConfigs(gitDir)
 	id.noConfig = len(id.configs) == 0
 	return id, !id.noConfig
@@ -294,21 +296,53 @@ func (id gitIdentity) stillResolves(top string) (gitIdentity, bool) {
 	if id.noConfig {
 		return id, false
 	}
+	// The git dir the .git entry names, read without git, and the config
+	// stamps taken from it BEFORE git is asked. Stamping after the probe
+	// alone would let a redirecting write land between git's read and ours.
+	dir := dotGitDir(top)
+	if dir == "" {
+		return id, false
+	}
+	pre, ok := identityOf(top, dir)
+	if !ok || id.dotGit != pre.dotGit || id.gitdir != pre.gitdir || !samePaths(id.configs, pre.configs) {
+		return id, false
+	}
 	gotTop, _, gotDir, err := runProbe(top, nil)
-	if err != nil || gotDir == "" || canonical(gotTop) != canonical(top) {
+	if err != nil || gotDir == "" || canonical(gotTop) != canonical(top) || canonical(gotDir) != canonical(dir) {
 		return id, false
 	}
-	cur, ok := identityOf(top, gotDir)
-	if !ok || id.dotGit != cur.dotGit || id.gitdir != cur.gitdir || !samePaths(id.configs, cur.configs) {
+	// Any config write while git read it — a redirect or not — refuses.
+	post, ok := identityOf(top, dir)
+	if !ok || post.dotGit != pre.dotGit || post.gitdir != pre.gitdir || !stampsEqual(post.configs, pre.configs) {
 		return id, false
 	}
-	// Re-stamp after the probe, and require the stamps to hold across it, so
-	// a config rewritten while git read it is not trusted.
-	again, ok := identityOf(top, gotDir)
-	if !ok || again.dotGit != cur.dotGit || again.gitdir != cur.gitdir || !stampsEqual(again.configs, cur.configs) {
-		return id, false
+	return pre, true
+}
+
+// dotGitDir is the git dir top's .git entry names: the directory itself, or
+// the target of a `gitdir:` file. "" when it cannot be read.
+func dotGitDir(top string) string {
+	p := filepath.Join(top, ".git")
+	fi, err := os.Lstat(p)
+	if err != nil {
+		return ""
 	}
-	return cur, true
+	if fi.IsDir() {
+		return p
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir:") {
+		return ""
+	}
+	d := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if !filepath.IsAbs(d) {
+		d = filepath.Join(top, d)
+	}
+	return d
 }
 
 // samePaths reports whether the two config sets name the same files, whatever
@@ -327,9 +361,15 @@ func samePaths(a, b []configStamp) bool {
 	return true
 }
 
-// configDir is the git dir the config stamps were taken from: the directory of
-// the first, which stampConfigs always records as the git dir's own config.
+// configDir is the git dir the config stamps were taken from. An identity
+// persisted before the git dir was recorded falls back to the directory of
+// the first stamp, which is the common dir for a linked worktree with no
+// config of its own: a later config.worktree there then fails the stamp
+// count and takes the re-probe in stillResolves.
 func (id gitIdentity) configDir() string {
+	if id.dir != "" {
+		return id.dir
+	}
 	if len(id.configs) == 0 {
 		return ""
 	}
