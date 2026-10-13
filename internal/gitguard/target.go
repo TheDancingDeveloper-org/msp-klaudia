@@ -94,7 +94,8 @@ func (b *Baseline) touch(path string) {
 // captured for. The identity — the .git entry and the configs of the git dir it
 // resolved to — is re-read from the filesystem before the baseline is handed
 // back, and it is keyed by the tree's top, so it holds whichever directory the
-// command was aimed at (#295). A tree that no longer matches is not
+// command was aimed at (#295). A config rewrite that leaves the tree resolving
+// where it did keeps the baseline (stillResolves). A tree that no longer matches is not
 // re-captured: the remembered baseline is dropped and the command is refused,
 // because re-capturing would record files the run wrote since the first touch
 // as the user's. The next touch, finding nothing remembered, captures afresh.
@@ -104,6 +105,10 @@ func (b *Baseline) other(top, gitDir string) *Baseline {
 	defer b.mu.Unlock()
 	if o, ok := b.others[key]; ok {
 		if o.id.same(key) {
+			return o
+		}
+		if id, ok := o.id.stillResolves(key); ok {
+			o.id = id
 			return o
 		}
 		delete(b.others, key)
@@ -151,7 +156,8 @@ type gitIdentity struct {
 	dotGit   entryStamp
 	gitdir   string // content of a .git file; "" when .git is a directory
 	configs  []configStamp
-	noConfig bool // no config file could be read: the identity is not trustworthy
+	noConfig bool   // no config file could be read: the identity is not trustworthy
+	dir      string // the git dir the configs were stamped from
 }
 
 // entryStamp records a .git entry's type and, when it could be read, the
@@ -192,6 +198,7 @@ func identityOf(top, gitDir string) (gitIdentity, bool) {
 	if gitDir == "" {
 		return id, false
 	}
+	id.dir = gitDir
 	id.configs = stampConfigs(gitDir)
 	id.noConfig = len(id.configs) == 0
 	return id, !id.noConfig
@@ -261,7 +268,7 @@ func commonDir(gitDir string) string {
 // fail it, while a status, add or commit — which only rename files inside the
 // .git directory — does not.
 func (id gitIdentity) same(top string) bool {
-	if id.noConfig {
+	if id.noConfig || id.configDir() == "" {
 		return false
 	}
 	cur, ok := identityOf(top, id.configDir())
@@ -271,13 +278,97 @@ func (id gitIdentity) same(top string) bool {
 	return id.dotGit == cur.dotGit && id.gitdir == cur.gitdir && stampsEqual(id.configs, cur.configs)
 }
 
-// configDir is the git dir the config stamps were taken from: the directory of
-// the first, which stampConfigs always records as the git dir's own config.
-func (id gitIdentity) configDir() string {
-	if len(id.configs) == 0 {
+// stillResolves is the second look other takes when same fails. Config files
+// are stamped by ctime, and a config write is routine: a linked worktree
+// shares its main checkout's config, and every `git worktree add -b` or
+// `git push -u` by anyone working in that repository rewrites it. Dropping the
+// baseline on every such write re-captured it with the run's own edits in it,
+// and the run was then refused its own commit (WI-1300: a session whose
+// worktree's shared config was rewritten by another session's new worktree).
+//
+// So when only the config stamps moved — the .git entry and its gitdir content
+// are what they were — git is asked again, through gitprobe, where the tree
+// resolves. A config that now redirects it (core.worktree, core.bare, an
+// include doing either) gives a different top or git dir and fails this, as
+// before. When it still resolves to the same top and the same git dir, the
+// identity is refreshed to the new stamps and the baseline kept.
+func (id gitIdentity) stillResolves(top string) (gitIdentity, bool) {
+	if id.noConfig {
+		return id, false
+	}
+	// The git dir the .git entry names, read without git, and the config
+	// stamps taken from it BEFORE git is asked. Stamping after the probe
+	// alone would let a redirecting write land between git's read and ours.
+	dir := dotGitDir(top)
+	if dir == "" {
+		return id, false
+	}
+	pre, ok := identityOf(top, dir)
+	if !ok || id.dotGit != pre.dotGit || id.gitdir != pre.gitdir || !samePaths(id.configs, pre.configs) {
+		return id, false
+	}
+	gotTop, _, gotDir, err := runProbe(top, nil)
+	if err != nil || gotDir == "" || canonical(gotTop) != canonical(top) || canonical(gotDir) != canonical(dir) {
+		return id, false
+	}
+	// Any config write while git read it — a redirect or not — refuses.
+	post, ok := identityOf(top, dir)
+	if !ok || post.dotGit != pre.dotGit || post.gitdir != pre.gitdir || !stampsEqual(post.configs, pre.configs) {
+		return id, false
+	}
+	return pre, true
+}
+
+// dotGitDir is the git dir top's .git entry names: the directory itself, or
+// the target of a `gitdir:` file. "" when it cannot be read.
+func dotGitDir(top string) string {
+	p := filepath.Join(top, ".git")
+	fi, err := os.Lstat(p)
+	if err != nil {
 		return ""
 	}
-	return filepath.Dir(id.configs[0].path)
+	if fi.IsDir() {
+		return p
+	}
+	content, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(content))
+	if !strings.HasPrefix(line, "gitdir:") {
+		return ""
+	}
+	d := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if !filepath.IsAbs(d) {
+		d = filepath.Join(top, d)
+	}
+	return d
+}
+
+// samePaths reports whether the two config sets name the same files, whatever
+// their inodes and ctimes: git rewrites a config by renaming config.lock over
+// it, so every write gives it a new inode. Which tree the git dir serves is
+// established by the probe in stillResolves, not by these stamps.
+func samePaths(a, b []configStamp) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].path != b[i].path {
+			return false
+		}
+	}
+	return true
+}
+
+// configDir is the git dir the config stamps were taken from. An identity
+// with none recorded — one persisted before the git dir was — has no
+// configDir, so same fails it and the first check takes the re-probe in
+// stillResolves, which records the git dir. Falling back to the directory of
+// the first stamp would be the common dir for a linked worktree with no
+// config of its own, and its config.worktree would go unwatched (WI-1300).
+func (id gitIdentity) configDir() string {
+	return id.dir
 }
 
 // stampsEqual reports whether the two config sets name the same files with the

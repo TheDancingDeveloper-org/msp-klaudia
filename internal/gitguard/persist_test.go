@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestBaselineRoundTripIncludesOthers(t *testing.T) {
@@ -165,5 +166,171 @@ func TestResumeRefusesUnreadableFile(t *testing.T) {
 	}
 	if _, err := Resume(path, t.TempDir()); err == nil || errors.Is(err, ErrNotRepo) {
 		t.Fatalf("Resume of a corrupt file = %v", err)
+	}
+}
+
+// WI-1300 regression, the vogt-1316 case: a session starts in a dirty main
+// checkout and edits files in a clean linked worktree of its own; the process
+// is killed (an engine restart) and the session resumed; meanwhile another
+// session's `git worktree add -b` rewrites the config the two worktrees share.
+// The shared config's new ctime used to fail the reloaded baseline's identity,
+// so it was dropped and re-captured with the session's edits in it, and the
+// session was refused its own commit. A config write that leaves the tree
+// resolving where it did must keep the baseline; dirt that was in the
+// worktree at first touch, and a config that redirects the tree, stay refused.
+func TestResumeAfterSharedConfigRewriteCommitsOwnEdits(t *testing.T) {
+	main := clean(t)
+	write(t, main, "notes.txt", "user dirt in the main checkout\n")
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi-1316", wt, "HEAD")
+	write(t, wt, "dirty.go", "package main // there before the session\n")
+
+	path := filepath.Join(t.TempDir(), "s.gitguard.json")
+	b, err := Resume(path, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard := b.PersistentGuard(path)
+	if msg := guard("Bash", bash("cd "+wt+" && git status --short"), main); msg != "" {
+		t.Fatalf("first touch refused: %s", msg)
+	}
+	edit, _ := json.Marshal(map[string]string{"file_path": filepath.Join(wt, "main.go")})
+	guard("Edit", edit, main)
+	write(t, wt, "main.go", "package main // the session's edit\n")
+	// The process dies here: nothing but the file survives.
+
+	time.Sleep(20 * time.Millisecond)
+	other := filepath.Join(t.TempDir(), "other")
+	git(t, main, "worktree", "add", "-q", "-b", "wi-other", other, "HEAD")
+	git(t, main, "config", "branch.wi-other.description", "another session")
+
+	b, err = Resume(path, main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guard = b.PersistentGuard(path)
+	if msg := guard("Bash", bash("cd "+wt+" && git add main.go && git commit -qm own"), main); msg != "" {
+		t.Errorf("resumed session refused its own edit after a shared config rewrite: %s", msg)
+	}
+	if msg := guard("Bash", bash("cd "+wt+" && git add dirty.go"), main); msg == "" {
+		t.Error("staging the worktree's pre-existing dirt was allowed after resume")
+	}
+	if msg := guard("Bash", bash("git add notes.txt"), main); msg == "" {
+		t.Error("staging the main checkout's pre-existing dirt was allowed after resume")
+	}
+
+}
+
+// redirectSetup is a dirty main checkout and a clean linked worktree with
+// worktree-scoped config enabled, touched by a session that then writes a file
+// of its own there, saved and reloaded as a resume would. own.go is in no
+// baseline. notes.txt is dirt in the main checkout only: the worktree's
+// baseline does not list it, so staging it from the worktree is refused only
+// if the guard sees that the worktree now resolves onto the main checkout.
+func redirectSetup(t *testing.T) (main, wt string, b *Baseline) {
+	t.Helper()
+	main = clean(t)
+	write(t, main, "notes.txt", "user dirt in the main checkout\n")
+	git(t, main, "config", "extensions.worktreeConfig", "true")
+	wt = filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "wi", wt, "HEAD")
+	b, err := Capture(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git status"), main); msg != "" {
+		t.Fatalf("first touch refused: %s", msg)
+	}
+	write(t, wt, "own.go", "package main // the session's\n")
+	b = reload(t, b, filepath.Join(t.TempDir(), "s.gitguard.json"))
+	// The resumed session's first call into the worktree caches its probe,
+	// so a later command there is judged by the remembered baseline.
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add own.go"), main); msg != "" {
+		t.Fatalf("resumed session refused its own file: %s", msg)
+	}
+	// Control: before any redirect the worktree has no notes.txt, so the
+	// command the tests below expect refused is allowed here.
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg != "" {
+		t.Fatalf("control: git add notes.txt in the unredirected worktree was refused: %s", msg)
+	}
+	return main, wt, b
+}
+
+// A worktree-scoped core.worktree really does move a linked worktree onto
+// another tree (git honours it in config.worktree, not in the shared config).
+// After a resume that write must drop the baseline, so `git add notes.txt`
+// from the worktree, which would now stage the main checkout's dirt, is
+// refused. The worktree's own baseline would have allowed it.
+func TestResumeDropsBaselineOnRealRedirect(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	time.Sleep(20 * time.Millisecond)
+	git(t, wt, "config", "--worktree", "core.worktree", main)
+	if got := gitOut(t, wt, "rev-parse", "--show-toplevel"); canonical(got) != canonical(main) {
+		t.Fatalf("setup: core.worktree did not redirect the worktree (toplevel %s)", got)
+	}
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg == "" {
+		t.Error("staging was allowed after core.worktree redirected the resumed tree")
+	}
+}
+
+// The config stamps are taken before git is asked where the tree resolves and
+// again after. A redirecting write that lands after git read the config, but
+// before the second stamp, must drop the baseline, not refresh it.
+func TestResumeRefusesConfigWrittenDuringProbe(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	// Move the stamps, harmlessly, so the reloaded identity takes the
+	// re-probe path.
+	time.Sleep(20 * time.Millisecond)
+	git(t, main, "config", "branch.wi.description", "another session")
+
+	real := runProbe
+	t.Cleanup(func() { runProbe = real })
+	injected := false
+	runProbe = func(dir string, gitOpts []string) (string, string, string, error) {
+		top, prefix, gitDir, err := real(dir, gitOpts)
+		if !injected && canonical(dir) == canonical(wt) {
+			injected = true
+			time.Sleep(20 * time.Millisecond)
+			git(t, wt, "config", "--worktree", "core.worktree", main)
+		}
+		return top, prefix, gitDir, err
+	}
+	// One lookup, so the check under test is the only one that can see the
+	// write: a later lookup would catch it through the identity anyway.
+	gitDir := gitOut(t, wt, "rev-parse", "--absolute-git-dir")
+	if o := b.other(wt, gitDir); o != nil {
+		t.Error("the baseline was kept across a redirect written during the probe")
+	}
+	if !injected {
+		t.Fatal("the probe was never asked about the worktree; the race was not exercised")
+	}
+}
+
+// A baseline file saved before the identity recorded its git dir (#309) has
+// no dir. For a linked worktree with no config of its own, the old fallback
+// watched the common dir, so a core.worktree in the worktree's config.worktree
+// went unnoticed. The first check of such an identity must take the re-probe,
+// which records the git dir, so a redirect after it is refused.
+func TestOldFormatBaselineWatchesWorktreeConfig(t *testing.T) {
+	main, wt, b := redirectSetup(t)
+	b.mu.Lock()
+	o := b.others[canonical(wt)]
+	if o == nil {
+		b.mu.Unlock()
+		t.Fatal("setup: no baseline for the worktree")
+	}
+	o.id.dir = ""
+	b.mu.Unlock()
+	b = reload(t, b, filepath.Join(t.TempDir(), "old.gitguard.json"))
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add own.go"), main); msg != "" {
+		t.Fatalf("an old-format baseline refused the session's own file: %s", msg)
+	}
+	time.Sleep(20 * time.Millisecond)
+	git(t, wt, "config", "--worktree", "core.worktree", main)
+	if got := gitOut(t, wt, "rev-parse", "--show-toplevel"); canonical(got) != canonical(main) {
+		t.Fatalf("setup: core.worktree did not redirect the worktree (toplevel %s)", got)
+	}
+	if msg := b.CheckTool("Bash", bash("cd "+wt+" && git add notes.txt"), main); msg == "" {
+		t.Error("an old-format baseline let git add of the main checkout's dirt through a redirected worktree")
 	}
 }

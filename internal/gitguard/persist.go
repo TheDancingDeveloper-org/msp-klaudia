@@ -31,6 +31,7 @@ type persistedIdentity struct {
 	Gitdir   string            `json:"gitdir,omitempty"`
 	Configs  []persistedConfig `json:"configs,omitempty"`
 	NoConfig bool              `json:"no_config,omitempty"`
+	Dir      string            `json:"dir,omitempty"`
 }
 
 type persistedEntry struct {
@@ -75,6 +76,7 @@ func toPersisted(b *Baseline) *persisted {
 			DotGit:   persistedEntry{b.id.dotGit.exists, b.id.dotGit.isDir, b.id.dotGit.dev, b.id.dotGit.ino, b.id.dotGit.known},
 			Gitdir:   b.id.gitdir,
 			NoConfig: b.id.noConfig,
+			Dir:      b.id.dir,
 		}
 		for _, c := range b.id.configs {
 			id.Configs = append(id.Configs, persistedConfig{c.path, c.dev, c.ino, c.nsec})
@@ -100,6 +102,7 @@ func fromPersisted(p *persisted) *Baseline {
 			dotGit:   entryStamp{id.DotGit.Exists, id.DotGit.IsDir, id.DotGit.Dev, id.DotGit.Ino, id.DotGit.Known},
 			gitdir:   id.Gitdir,
 			noConfig: id.NoConfig,
+			dir:      id.Dir,
 		}
 		for _, c := range id.Configs {
 			b.id.configs = append(b.id.configs, configStamp{c.Path, c.Dev, c.Ino, c.Nsec})
