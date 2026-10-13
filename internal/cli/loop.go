@@ -195,6 +195,9 @@ func runGoalLoop(ctx context.Context, cmd *cobra.Command, p loopRun) error {
 			Diagnostics:   p.diagnostics,
 			Hooks:         p.hooks,
 			CommandGuard:  baseline.Guard(),
+			// An iteration that ends by announcing the next step has not
+			// finished the iteration. Continue inside it.
+			ContinueOnTrailOff: true,
 		}, emit)
 	}
 

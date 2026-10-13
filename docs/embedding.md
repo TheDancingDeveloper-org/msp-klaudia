@@ -228,6 +228,7 @@ A response with no `subtype` at all is treated as success. Both are bounded by
 | `result` | the final assistant text; for an error, `"Error: <readable reason>"` |
 | `num_turns` | model calls in this turn (one per tool round-trip) |
 | `stop_reason` | the last model call's stop reason |
+| `trail_off_nudges` | optional; present when non-zero. Replies the turn refused to end on because they only announced a next step, each answered with a "do it now" nudge and counted in `num_turns` |
 | `usage` | tokens for **this turn**, summed over its model calls, not cumulative for the session |
 | `total_cost_usd` | priced from Klaudia's model table; `0` for an unpriced model (every OpenAI-compatible one). 0 means unpriced, not free; `usage` is the reliable figure |
 

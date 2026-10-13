@@ -805,6 +805,9 @@ func (d *Driver) resultEvent(res agent.Result, err error, dur time.Duration, int
 			"cache_creation_input_tokens": res.CacheCreationInputTokens,
 		},
 	}
+	if res.TrailOffNudges > 0 {
+		m["trail_off_nudges"] = res.TrailOffNudges
+	}
 	if len(res.Children) > 0 {
 		children := make([]map[string]any, 0, len(res.Children))
 		for _, c := range res.Children {

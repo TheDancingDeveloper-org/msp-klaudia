@@ -174,6 +174,15 @@ type Options struct {
 	// model-aware MaxTokens default comes from Claude's table only on
 	// Anthropic; any other provider gets the conservative unknown-model cap.
 	ProviderName string
+	// ContinueOnTrailOff keeps going when a turn ends with no tool call and
+	// the text only announces the next step ("I'll read X next."). The loop
+	// appends a nudge and requests again, up to maxTrailOffNudges times, and
+	// counts each one on Result.TrailOffNudges. It is for runs where nobody
+	// is there to re-prompt — headless and the goal loop — and stays off for
+	// an interactive session, where ending the turn is how the user gets to
+	// answer. A question, and a reply carrying a completion marker, still end
+	// the turn.
+	ContinueOnTrailOff bool
 	// PartialMessages, if set, receives raw model stream events during the main
 	// answer turn (not compaction summaries). The CLI wires this to a
 	// stream_event emitter when --include-partial-messages is set. Nil by
@@ -231,6 +240,11 @@ type Result struct {
 	// by delegating — and the breakdown is here so /cost and the stream-json
 	// result can show it rather than only the total.
 	Children []ChildUsage
+	// TrailOffNudges counts the times this run refused to end on a reply that
+	// only announced the next step (see trailoff.go). It is a session-economics
+	// figure: each one is a model call the announcement would otherwise have
+	// cost a whole re-prompt to recover.
+	TrailOffNudges int
 	// Messages is the full conversation after the run (initial + this turn's
 	// exchanges), so a caller can carry it forward as InitialMessages for the
 	// next turn (used by the stream-json embedding frontend).
@@ -433,6 +447,10 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 	// most once per Run, so a genuinely oversized request still surfaces.
 	var calib compaction.Calibration
 	overflowRecovered := false
+	// trailOffNudges counts how many times this run has already pushed back
+	// on a reply that announced its next step instead of taking it. It caps
+	// at maxTrailOffNudges, after which the announcement stands.
+	trailOffNudges := 0
 	for {
 		res.NumTurns++
 
@@ -595,6 +613,23 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 		// Collect tool_use blocks from this turn.
 		toolUses := toolUseBlocks(assistant)
 		if len(toolUses) == 0 {
+			// A reply that only promises the next step has done nothing, and
+			// in a run with nobody watching it costs a whole re-prompt to
+			// recover. Nudge inside this loop instead, up to the cap. The
+			// assistant turn is recorded first, exactly as a real final
+			// answer is, so the transcript stays paired.
+			if opts.ContinueOnTrailOff && !halted && trailOff(finalText) && trailOffNudges < maxTrailOffNudges && withinLimits(opts, res) {
+				rec("assistant", assistant)
+				nudge := anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(trailOffNudge))
+				messages = append(messages, nudge)
+				rec("user", nudge)
+				trailOffNudges++
+				res.TrailOffNudges = trailOffNudges
+				if emit != nil {
+					emit(Event{Type: "notice", Content: fmt.Sprintf("trail-off: the reply announced a next step without doing it — continuing (%d/%d)", trailOffNudges, maxTrailOffNudges)})
+				}
+				continue
+			}
 			// Final (tool-less) answer: structurally fine on its own, record now.
 			rec("assistant", assistant)
 			res.Messages = messages
@@ -704,6 +739,16 @@ func (l *Loop) Run(ctx context.Context, opts Options, emit Emitter) (Result, err
 			return res, nil
 		}
 	}
+}
+
+// withinLimits reports whether the run may make another request under its
+// turn cap and budget. A trail-off nudge is another request, so it is bound by
+// the same limits as a tool turn; past them the announcement is the answer.
+func withinLimits(opts Options, res Result) bool {
+	if opts.MaxTurns > 0 && res.NumTurns >= opts.MaxTurns {
+		return false
+	}
+	return opts.MaxBudgetUSD <= 0 || res.CostUSD < opts.MaxBudgetUSD
 }
 
 // elisionSpiller gives microcompact somewhere to put the tool results it

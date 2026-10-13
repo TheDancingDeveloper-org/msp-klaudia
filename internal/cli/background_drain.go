@@ -181,6 +181,7 @@ func remainingBudget(limit, spent float64) float64 {
 // describes the end of the run comes from the latest turn.
 func sumResults(sofar, next agent.Result) agent.Result {
 	next.NumTurns += sofar.NumTurns
+	next.TrailOffNudges += sofar.TrailOffNudges
 	next.InputTokens += sofar.InputTokens
 	next.OutputTokens += sofar.OutputTokens
 	next.CacheReadInputTokens += sofar.CacheReadInputTokens

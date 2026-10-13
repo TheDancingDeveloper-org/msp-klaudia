@@ -57,7 +57,7 @@ func noFollowUp(t *testing.T) followUpFunc {
 // are summed over both turns.
 func TestDrainBackgroundRunsFollowUpWithinCaps(t *testing.T) {
 	reg := launch(t, childProvider{})
-	first := agent.Result{NumTurns: 2, CostUSD: 0.25, InputTokens: 10, Text: "launched", StopReason: "end_turn"}
+	first := agent.Result{NumTurns: 2, CostUSD: 0.25, InputTokens: 10, TrailOffNudges: 1, Text: "launched", StopReason: "end_turn"}
 
 	calls := 0
 	run := func(_ context.Context, _ []anthropic.BetaMessageParam, maxTurns int, budget float64) (agent.Result, error) {
@@ -69,7 +69,7 @@ func TestDrainBackgroundRunsFollowUpWithinCaps(t *testing.T) {
 		if report := reg.PendingReport(); !strings.Contains(report, "child done") {
 			t.Errorf("report = %q", report)
 		}
-		return agent.Result{NumTurns: 1, CostUSD: 0.5, InputTokens: 5, Text: "final", StopReason: "end_turn"}, nil
+		return agent.Result{NumTurns: 1, CostUSD: 0.5, InputTokens: 5, TrailOffNudges: 1, Text: "final", StopReason: "end_turn"}, nil
 	}
 	var warned []string
 	res, err := drainBackground(context.Background(), reg, first, nil,
@@ -81,7 +81,7 @@ func TestDrainBackgroundRunsFollowUpWithinCaps(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("follow-up ran %d times, want 1", calls)
 	}
-	if res.Text != "final" || res.NumTurns != 3 || res.CostUSD != 0.75 || res.InputTokens != 15 {
+	if res.Text != "final" || res.NumTurns != 3 || res.CostUSD != 0.75 || res.InputTokens != 15 || res.TrailOffNudges != 2 {
 		t.Errorf("summed result = %+v", res)
 	}
 	if len(warned) != 0 {
