@@ -145,7 +145,12 @@ func (b *Baseline) snapshot() {
 
 // hashUnreadable marks a path whose content could not be read. It never
 // matches a real hash, so a comparison fails closed.
-const hashUnreadable = "?"
+// hashAbsent marks an index entry git answered for and does not have: the
+// session unstaged or removed it, which is a definite answer, not a failure.
+const (
+	hashUnreadable = "?"
+	hashAbsent     = "-"
+)
 
 func hashWork(root, rel string) string {
 	if strings.HasSuffix(rel, "/") {
@@ -160,8 +165,14 @@ func hashWork(root, rel string) string {
 }
 
 func hashIndex(root, rel string) string {
-	out, err := gitprobe.Command(root, "rev-parse", "--verify", ":"+rel).Output()
+	out, err := gitprobe.Command(root, "rev-parse", "--verify", "-q", ":"+rel).CombinedOutput()
 	if err != nil {
+		// -q leaves stdout empty and writes nothing when the revision is
+		// simply absent, so an empty result is "not in the index". Anything
+		// else — git missing, the index unreadable — fails closed.
+		if len(bytes.TrimSpace(out)) == 0 {
+			return hashAbsent
+		}
 		return hashUnreadable
 	}
 	return strings.TrimSpace(string(out))
@@ -399,7 +410,7 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 			continue
 		}
 		var hits []string
-		if d.index {
+		if d.index && len(d.paths) == 0 {
 			// A pathless commit records the index whatever the line's
 			// paths: what was staged before the run is in reach.
 			hits = at.base.stillStaged()
@@ -408,8 +419,13 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 		} else {
 			hits = at.base.pick(d, at.base.resolve(d.paths, at.dir), len(d.paths) == 0)
 		}
-		if d.stage && !d.index {
+		if d.stage && !(d.index && len(d.paths) == 0) {
 			hits = at.base.stillBaseline(hits)
+		}
+		if d.index && len(d.paths) > 0 {
+			// -i/--include commits the pathspecs and the index together,
+			// so the paths staged at capture are in reach as well.
+			hits = union(hits, at.base.stillStaged())
 		}
 		if len(hits) > 0 {
 			what := "git " + strings.Join(append([]string{args[0]}, d.flags...), " ")
@@ -493,7 +509,7 @@ type discardSpec struct {
 	all       bool     // reaches the whole tree whatever the pathspecs say
 	tracked   bool     // can discard changes to tracked files
 	stage     bool     // stages or commits them rather than discarding them
-	index     bool     // commits the index as it stands: what was staged at capture
+	index     bool     // also commits the index as it stands, not only the pathspecs
 	untracked bool     // can remove untracked files
 	flags     []string // for the message
 }
@@ -626,6 +642,11 @@ func discard(sub string, args []string) *discardSpec {
 			// Commits what is staged. An add by the run was checked when it
 			// ran; a path staged before the run began was not (WI-1596).
 			return &discardSpec{tracked: true, stage: true, index: true}
+		}
+		// -i/--include records the named pathspecs and the index as it
+		// stands, so pre-staged work rides along (WI-1596).
+		if has("-i", "--include") {
+			return &discardSpec{paths: paths, tracked: true, stage: true, index: true, flags: []string{"--include"}}
 		}
 		return &discardSpec{paths: paths, tracked: true, stage: true}
 	}
@@ -779,7 +800,9 @@ func (b *Baseline) stillBaseline(hits []string) []string {
 // still record as they were: the index entry is unchanged since capture, and
 // git does not have the path unmerged. A path the session has restaged,
 // unstaged or removed from the index has a different index entry and is the
-// session's to commit. A path whose captured entry could not be read stays.
+// session's to commit. A path whose captured entry could not be read stays,
+// and a path whose current index entry cannot be read stays too: failing
+// to read the index is a refusal, not a pass (WI-1596).
 func (b *Baseline) stillStaged() []string {
 	if len(b.Staged) == 0 {
 		return nil
@@ -790,10 +813,22 @@ func (b *Baseline) stillStaged() []string {
 		if merging[p] {
 			continue
 		}
-		if want, ok := b.Index[p]; ok && want != hashUnreadable && hashIndex(b.Root, p) != want {
+		want, ok := b.Index[p]
+		if !ok || want == hashUnreadable {
+			keep = append(keep, p)
 			continue
 		}
-		keep = append(keep, p)
+		got := hashIndex(b.Root, p)
+		switch got {
+		case hashAbsent:
+			// The session took it out of the index.
+		case hashUnreadable:
+			keep = append(keep, p)
+		default:
+			if got == want {
+				keep = append(keep, p)
+			}
+		}
 	}
 	return keep
 }
@@ -837,6 +872,21 @@ func (b *Baseline) unmerged() map[string]bool {
 		set[line[tab+1:]] = true
 	}
 	return set
+}
+
+// union appends the members of extra that are not already in hits, in order.
+func union(hits, extra []string) []string {
+	seen := map[string]bool{}
+	for _, p := range hits {
+		seen[p] = true
+	}
+	for _, p := range extra {
+		if !seen[p] {
+			hits = append(hits, p)
+			seen[p] = true
+		}
+	}
+	return hits
 }
 
 // overlaps reports whether any pathspec names p, a directory containing p, or

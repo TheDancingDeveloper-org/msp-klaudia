@@ -224,16 +224,30 @@ func TestPlainCommitLeavesPreStagedWorkOut(t *testing.T) {
 			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt and the pathspec commit", c, msg)
 		}
 	}
-	for _, c := range []string{
-		"git commit -m own -- own.txt",
-		"git commit -m own own.txt",
-	} {
-		if msg := b.CheckCommand(c, dir); msg != "" {
-			t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
+		for _, c := range []string{
+			"git commit -m own -- own.txt",
+			"git commit -m own own.txt",
+		} {
+			if msg := b.CheckCommand(c, dir); msg != "" {
+				t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
+			}
 		}
-	}
 
-	// The session unstaging the entry is the session's call; the plain
+		// -i/--include commits the named files and the index, so the user's
+		// pre-staged work rides along even though a pathspec is named.
+		for _, c := range []string{
+			"git commit -i -m x own.txt",
+			"git commit --include -m x -- own.txt",
+		} {
+			msg := b.CheckCommand(c, dir)
+			if msg == "" {
+				t.Errorf("CheckCommand(%q) allowed --include to sweep in staged.txt", c)
+			} else if !strings.Contains(msg, "staged.txt") {
+				t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt", c, msg)
+			}
+		}
+
+		// The session unstaging the entry is the session's call; the plain
 	// commit then records only its own work.
 	git(t, dir, "restore", "--staged", "staged.txt")
 	if msg := b.CheckCommand("git commit -m own", dir); msg != "" {
@@ -251,6 +265,39 @@ func TestPlainCommitLeavesPreStagedWorkOut(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back.Staged, []string{"staged.txt"}) {
 		t.Errorf("reloaded Staged = %v, want [staged.txt]", back.Staged)
+	}
+}
+
+// An index entry that cannot be re-read is not evidence the session changed
+// it. A plain commit and an --include commit both refuse rather than pass.
+func TestUnreadableIndexRefusesCommit(t *testing.T) {
+	b := &Baseline{
+		Root:    t.TempDir(),
+		Tracked: []string{"staged.txt"},
+		Staged:  []string{"staged.txt"},
+		Index:   map[string]string{"staged.txt": hashUnreadable},
+	}
+	for _, c := range []string{
+		"git commit -m own",
+		"git commit -i -m x own.txt",
+		"git commit --include -m x -- own.txt",
+	} {
+		msg := b.CheckCommand(c, b.Root)
+		if msg == "" {
+			t.Errorf("CheckCommand(%q) allowed a commit when the index could not be read", c)
+		} else if !strings.Contains(msg, "staged.txt") {
+			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt", c, msg)
+		}
+	}
+	// The allowed forms do not record the index, so an unreadable entry is
+	// not their concern.
+	for _, c := range []string{
+		"git commit -m own -- own.txt",
+		"git commit -m own own.txt",
+	} {
+		if msg := b.CheckCommand(c, b.Root); msg != "" {
+			t.Errorf("CheckCommand(%q) refused a pathspec commit: %s", c, msg)
+		}
 	}
 }
 
