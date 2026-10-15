@@ -310,6 +310,12 @@ func TestSessionIDIsUUID(t *testing.T) {
 	if !strings.Contains(string(got), "--session-id "+res.SessionID) {
 		t.Fatalf("args %s, session %q", got, res.SessionID)
 	}
+	// --session-id starts a persisted thread. Codex rejects the pair
+	// ("--session-id is only supported when starting a new persisted thread"),
+	// so the old argv — both flags — fails before the child starts.
+	if strings.Contains(string(got), "--ephemeral") {
+		t.Fatalf("passed --ephemeral with --session-id: %s", got)
+	}
 	if _, err := uuid.Parse(res.SessionID); err != nil {
 		t.Fatalf("session id %q is not a UUID", res.SessionID)
 	}
