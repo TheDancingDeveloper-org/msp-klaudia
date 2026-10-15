@@ -224,30 +224,52 @@ func TestPlainCommitLeavesPreStagedWorkOut(t *testing.T) {
 			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt and the pathspec commit", c, msg)
 		}
 	}
-		for _, c := range []string{
-			"git commit -m own -- own.txt",
-			"git commit -m own own.txt",
-		} {
-			if msg := b.CheckCommand(c, dir); msg != "" {
-				t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
-			}
+	for _, c := range []string{
+		"git commit -m own -- own.txt",
+		"git commit -m own own.txt",
+	} {
+		if msg := b.CheckCommand(c, dir); msg != "" {
+			t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
 		}
+	}
 
-		// -i/--include commits the named files and the index, so the user's
-		// pre-staged work rides along even though a pathspec is named.
-		for _, c := range []string{
-			"git commit -i -m x own.txt",
-			"git commit --include -m x -- own.txt",
-		} {
-			msg := b.CheckCommand(c, dir)
-			if msg == "" {
-				t.Errorf("CheckCommand(%q) allowed --include to sweep in staged.txt", c)
-			} else if !strings.Contains(msg, "staged.txt") {
-				t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt", c, msg)
-			}
+	// -i/--include commits the named files and the index, so the user's
+	// pre-staged work rides along even though a pathspec is named.
+	for _, c := range []string{
+		"git commit -i -m x own.txt",
+		"git commit --include -m x -- own.txt",
+	} {
+		msg := b.CheckCommand(c, dir)
+		if msg == "" {
+			t.Errorf("CheckCommand(%q) allowed --include to sweep in staged.txt", c)
+		} else if !strings.Contains(msg, "staged.txt") {
+			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt", c, msg)
 		}
+	}
 
-		// The session unstaging the entry is the session's call; the plain
+	// -i inside a short cluster, and an unambiguous abbreviation of
+	// --include, record the index too.
+	for _, c := range []string{
+		"git commit -qi -m x own.txt",
+		"git commit -iq -m x own.txt",
+		"git commit -im x own.txt",
+		"git commit --incl -m x own.txt",
+		"git commit --inc -m x own.txt",
+	} {
+		msg := b.CheckCommand(c, dir)
+		if msg == "" {
+			t.Errorf("CheckCommand(%q) allowed --include to sweep in staged.txt", c)
+		} else if !strings.Contains(msg, "staged.txt") {
+			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt", c, msg)
+		}
+	}
+	// --in is also a prefix of --interactive, so git rejects it and so do we
+	// not treat it as --include: it is a pathspec commit of the run's file.
+	if msg := b.CheckCommand("git commit --in -m x own.txt", dir); msg != "" {
+		t.Errorf("CheckCommand(--in) refused a pathspec commit: %s", msg)
+	}
+
+	// The session unstaging the entry is the session's call; the plain
 	// commit then records only its own work.
 	git(t, dir, "restore", "--staged", "staged.txt")
 	if msg := b.CheckCommand("git commit -m own", dir); msg != "" {
@@ -268,7 +290,61 @@ func TestPlainCommitLeavesPreStagedWorkOut(t *testing.T) {
 	}
 }
 
-// An index entry that cannot be re-read is not evidence the session changed
+// A deletion the user staged before the run is still the user's. A plain
+// commit records it, so it is refused; the session unstaging the entry first
+// is the session's call.
+func TestPreStagedDeletionStaysOutOfPlainCommit(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	write(t, dir, "gone.txt", "was here\n")
+	write(t, dir, "f.txt", "stays\n")
+	git(t, dir, "add", "gone.txt", "f.txt")
+	git(t, dir, "commit", "-qm", "init")
+	git(t, dir, "rm", "-q", "gone.txt")
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "own.txt", "the run's\n")
+	git(t, dir, "add", "own.txt")
+
+	if msg := b.CheckCommand("git commit -m own", dir); msg == "" {
+		t.Error("plain commit allowed a pre-staged deletion of gone.txt")
+	} else if !strings.Contains(msg, "gone.txt") {
+		t.Errorf("refusal = %q; want it to name gone.txt", msg)
+	}
+	for _, c := range []string{
+		"git commit -m own -- own.txt",
+		"git commit -m own own.txt",
+	} {
+		if msg := b.CheckCommand(c, dir); msg != "" {
+			t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
+		}
+	}
+	git(t, dir, "restore", "--staged", "gone.txt")
+	if msg := b.CheckCommand("git commit -m own", dir); msg != "" {
+		t.Errorf("plain commit refused after the deletion was unstaged: %s", msg)
+	}
+}
+
+// hashIndex fails closed when git cannot answer, rather than reading an exec
+// failure as "not in the index".
+func TestHashIndexFailsClosedWhenGitCannotRun(t *testing.T) {
+	notRepo := t.TempDir()
+	if got := hashIndex(notRepo, "f.txt"); got != hashUnreadable {
+		t.Errorf("hashIndex outside a repo = %q, want %q", got, hashUnreadable)
+	}
+	b := &Baseline{
+		Root:    notRepo,
+		Tracked: []string{"f.txt"},
+		Staged:  []string{"f.txt"},
+		Index:   map[string]string{"f.txt": "abc"},
+	}
+	if msg := b.CheckCommand("git commit -m own", notRepo); msg == "" {
+		t.Error("plain commit allowed when the index could not be re-read")
+	}
+}
+
 // it. A plain commit and an --include commit both refuse rather than pass.
 func TestUnreadableIndexRefusesCommit(t *testing.T) {
 	b := &Baseline{
