@@ -16,6 +16,7 @@ type persisted struct {
 	Root      string                `json:"root"`
 	Tracked   []string              `json:"tracked,omitempty"`
 	Untracked []string              `json:"untracked,omitempty"`
+	Staged    []string              `json:"staged,omitempty"`
 	Work      map[string]string     `json:"work,omitempty"`
 	Index     map[string]string     `json:"index,omitempty"`
 	Others    map[string]*persisted `json:"others,omitempty"`
@@ -69,7 +70,7 @@ func toPersisted(b *Baseline) *persisted {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p := &persisted{Root: b.Root, Tracked: b.Tracked, Untracked: b.Untracked, Work: b.Work, Index: b.Index}
+	p := &persisted{Root: b.Root, Tracked: b.Tracked, Untracked: b.Untracked, Staged: b.Staged, Work: b.Work, Index: b.Index}
 	if b.id.dotGit.exists {
 		id := &persistedIdentity{
 			DotGit:   persistedEntry{b.id.dotGit.exists, b.id.dotGit.isDir, b.id.dotGit.dev, b.id.dotGit.ino, b.id.dotGit.known},
@@ -94,7 +95,7 @@ func fromPersisted(p *persisted) *Baseline {
 	if p == nil {
 		return nil
 	}
-	b := &Baseline{Root: p.Root, Tracked: p.Tracked, Untracked: p.Untracked, Work: p.Work, Index: p.Index}
+	b := &Baseline{Root: p.Root, Tracked: p.Tracked, Untracked: p.Untracked, Staged: p.Staged, Work: p.Work, Index: p.Index}
 	if id := p.Identity; id != nil {
 		b.id = gitIdentity{
 			dotGit:   entryStamp{id.DotGit.Exists, id.DotGit.IsDir, id.DotGit.Dev, id.DotGit.Ino, id.DotGit.Known},

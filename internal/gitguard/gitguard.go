@@ -9,7 +9,9 @@
 // session has edited since capture, and a path git has unmerged because the
 // session is resolving a merge, may be staged and committed. A baseline path
 // left untouched stays out of the commit. Discarding a baseline path is
-// refused either way.
+// refused either way. A path already staged at capture stays out of a plain
+// `git commit` too, which records the whole index, until the session restages
+// or unstages it.
 //
 // The goal loop is the caller. Its first production run undid a one-line edit
 // of its own with `git checkout -- <14 files>`, and that reverted every one of
@@ -60,6 +62,7 @@ type Baseline struct {
 	Root      string            // absolute repository root
 	Tracked   []string          // tracked paths modified, staged, deleted or renamed
 	Untracked []string          // untracked (not ignored) files and directories
+	Staged    []string          // the Tracked paths with a change in the index at capture
 	Work      map[string]string // path → hash of the work-tree bytes at capture
 	Index     map[string]string // tracked path → hash of the index blob at capture
 
@@ -97,18 +100,30 @@ func Capture(dir string) (*Baseline, error) {
 		case code == "!!":
 		default:
 			b.Tracked = append(b.Tracked, path)
+			// The X column is the index side: anything but a space is a
+			// change a plain `git commit` would record. An unmerged entry is
+			// a merge the session may be resolving, not staged work.
+			unmerged := code == "DD" || code == "AA" || strings.ContainsRune(code, 'U')
+			staged := code[0] != ' ' && !unmerged
+			if staged {
+				b.Staged = append(b.Staged, path)
+			}
 			// A rename or copy is followed by its source path; the source is
 			// part of the change too.
 			if code[0] == 'R' || code[0] == 'C' {
 				if i+1 < len(fields) {
 					i++
 					b.Tracked = append(b.Tracked, string(fields[i]))
+					if staged {
+						b.Staged = append(b.Staged, string(fields[i]))
+					}
 				}
 			}
 		}
 	}
 	sort.Strings(b.Tracked)
 	sort.Strings(b.Untracked)
+	sort.Strings(b.Staged)
 	b.snapshot()
 	return b, nil
 }
@@ -183,7 +198,7 @@ func (b *Baseline) Without(abs ...string) *Baseline {
 		return out
 	}
 	return &Baseline{
-		Root: b.Root, Tracked: keep(b.Tracked), Untracked: keep(b.Untracked),
+		Root: b.Root, Tracked: keep(b.Tracked), Untracked: keep(b.Untracked), Staged: keep(b.Staged),
 		Work: keepMap(b.Work), Index: keepMap(b.Index),
 	}
 }
@@ -384,12 +399,16 @@ func (b *Baseline) scan(cmd, cwd string, cwdKnown bool, depth int) ([]string, st
 			continue
 		}
 		var hits []string
-		if d.all || viaXargs || !literal || !pathsKnown {
+		if d.index {
+			// A pathless commit records the index whatever the line's
+			// paths: what was staged before the run is in reach.
+			hits = at.base.stillStaged()
+		} else if d.all || viaXargs || !literal || !pathsKnown {
 			hits = at.base.pick(d, nil, true)
 		} else {
 			hits = at.base.pick(d, at.base.resolve(d.paths, at.dir), len(d.paths) == 0)
 		}
-		if d.stage {
+		if d.stage && !d.index {
 			hits = at.base.stillBaseline(hits)
 		}
 		if len(hits) > 0 {
@@ -474,6 +493,7 @@ type discardSpec struct {
 	all       bool     // reaches the whole tree whatever the pathspecs say
 	tracked   bool     // can discard changes to tracked files
 	stage     bool     // stages or commits them rather than discarding them
+	index     bool     // commits the index as it stands: what was staged at capture
 	untracked bool     // can remove untracked files
 	flags     []string // for the message
 }
@@ -481,7 +501,17 @@ type discardSpec struct {
 // discard classifies one git subcommand. It returns nil when the invocation
 // cannot discard uncommitted work.
 func discard(sub string, args []string) *discardSpec {
-	flags, paths, dashdash := splitArgs(args)
+	// A short-option cluster ending in a valued option takes the next word
+	// as that value: `git commit -qm wip` has no pathspec. Only where the
+	// letter always takes a value; `checkout -m` is a flag.
+	clustered := ""
+	switch sub {
+	case "commit":
+		clustered = "mFCc"
+	case "stash":
+		clustered = "m"
+	}
+	flags, paths, dashdash := splitArgs(args, clustered)
 	has := func(names ...string) bool {
 		for _, f := range flags {
 			for _, n := range names {
@@ -545,7 +575,7 @@ func discard(sub string, args []string) *discardSpec {
 		}
 		switch mode {
 		case "push", "save":
-			f2, p2, _ := splitArgs(rest)
+			f2, p2, _ := splitArgs(rest, clustered)
 			d := &discardSpec{paths: p2, tracked: true, flags: []string{mode}}
 			if mode == "save" {
 				d.paths = nil // save takes a message, not pathspecs
@@ -593,7 +623,9 @@ func discard(sub string, args []string) *discardSpec {
 			return &discardSpec{all: true, tracked: true, stage: true, flags: []string{"-a"}}
 		}
 		if len(paths) == 0 {
-			return nil // commits what is staged; the add that staged it was checked
+			// Commits what is staged. An add by the run was checked when it
+			// ran; a path staged before the run began was not (WI-1596).
+			return &discardSpec{tracked: true, stage: true, index: true}
 		}
 		return &discardSpec{paths: paths, tracked: true, stage: true}
 	}
@@ -602,7 +634,9 @@ func discard(sub string, args []string) *discardSpec {
 
 // splitArgs separates flags from positional arguments. Everything after `--`
 // is positional. Flags that take a separate value consume it.
-func splitArgs(args []string) (flags, positional []string, dashdash bool) {
+// clustered names the short options that take a value even at the end of a
+// cluster like -qm.
+func splitArgs(args []string, clustered string) (flags, positional []string, dashdash bool) {
 	valued := map[string]bool{"-s": true, "--source": true, "-m": true, "--message": true,
 		"-b": true, "-B": true, "--orphan": true, "-e": true, "--exclude": true,
 		"--pathspec-from-file": true, "--conflict": true, "-F": true, "--file": true, "-C": true,
@@ -614,7 +648,8 @@ func splitArgs(args []string) (flags, positional []string, dashdash bool) {
 			return flags, append(positional, args[i+1:]...), true
 		case strings.HasPrefix(a, "-") && a != "-":
 			flags = append(flags, a)
-			if valued[a] && i+1 < len(args) {
+			cluster := len(a) > 2 && a[1] != '-' && strings.IndexByte(clustered, a[len(a)-1]) >= 0
+			if (valued[a] || cluster) && i+1 < len(args) {
 				i++
 			}
 		default:
@@ -740,6 +775,29 @@ func (b *Baseline) stillBaseline(hits []string) []string {
 	return keep
 }
 
+// stillStaged returns the paths staged at capture that a plain commit would
+// still record as they were: the index entry is unchanged since capture, and
+// git does not have the path unmerged. A path the session has restaged,
+// unstaged or removed from the index has a different index entry and is the
+// session's to commit. A path whose captured entry could not be read stays.
+func (b *Baseline) stillStaged() []string {
+	if len(b.Staged) == 0 {
+		return nil
+	}
+	merging := b.unmerged()
+	var keep []string
+	for _, p := range b.Staged {
+		if merging[p] {
+			continue
+		}
+		if want, ok := b.Index[p]; ok && want != hashUnreadable && hashIndex(b.Root, p) != want {
+			continue
+		}
+		keep = append(keep, p)
+	}
+	return keep
+}
+
 // edited reports whether the path's work-tree bytes or index blob differ
 // from the baseline. Missing hashes and unreadable content are not edits.
 func (b *Baseline) edited(p string) bool {
@@ -811,7 +869,8 @@ func stageRefusal(what string, hits []string) string {
 	list, more := shortList(hits)
 	return fmt.Sprintf("Refused: %s would stage or commit uncommitted changes that existed before this run began "+
 		"and are the user's, not yours: %s%s. They stay uncommitted. Commit only your own work: "+
-		"`git add <the files you changed>` (not -A, ., -u or commit -a), leaving out the files in that list.",
+		"`git add <the files you changed>` (not -A, ., -u or commit -a), then "+
+		"`git commit -m <message> -- <those files>`, leaving out the files in that list.",
 		what, strings.Join(list, ", "), more)
 }
 

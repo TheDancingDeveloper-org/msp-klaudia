@@ -90,6 +90,9 @@ func TestCapture(t *testing.T) {
 	if want := []string{"scratch/", "todo.txt"}; !reflect.DeepEqual(b.Untracked, want) {
 		t.Errorf("Untracked = %v, want %v", b.Untracked, want)
 	}
+	if want := []string{"docs/x.md", "new.txt", "old.txt"}; !reflect.DeepEqual(b.Staged, want) {
+		t.Errorf("Staged = %v, want %v", b.Staged, want)
+	}
 	if _, err := Capture(t.TempDir()); err != ErrNotRepo {
 		t.Errorf("Capture outside a repo: err = %v, want ErrNotRepo", err)
 	}
@@ -185,6 +188,69 @@ func TestCheckCommand(t *testing.T) {
 		if msg := b.CheckCommand(c, "/r"); msg != "" {
 			t.Errorf("CheckCommand(%q) refused: %s", c, msg)
 		}
+	}
+}
+
+// A plain `git commit` records the whole index, so work the user had staged
+// before the run began would ride along in the run's commit (WI-1596). It is
+// refused until the session commits its own paths by name, or restages or
+// unstages the user's entry itself.
+func TestPlainCommitLeavesPreStagedWorkOut(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	write(t, dir, "f.txt", "committed\n")
+	git(t, dir, "add", "f.txt")
+	git(t, dir, "commit", "-qm", "init")
+	write(t, dir, "staged.txt", "the user's, staged\n")
+	git(t, dir, "add", "staged.txt")
+	write(t, dir, "f.txt", "the user's, unstaged\n")
+	b, err := Capture(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, dir, "own.txt", "the run's\n")
+	git(t, dir, "add", "own.txt")
+
+	for _, c := range []string{
+		"git commit -m own",
+		"git commit -qm own",
+		"git commit --amend --no-edit",
+		"git add own.txt && git commit -m own",
+	} {
+		msg := b.CheckCommand(c, dir)
+		if msg == "" {
+			t.Errorf("CheckCommand(%q) allowed a commit that sweeps in staged.txt", c)
+		} else if !strings.Contains(msg, "staged.txt") || !strings.Contains(msg, "-- <those files>") {
+			t.Errorf("CheckCommand(%q) = %q; want it to name staged.txt and the pathspec commit", c, msg)
+		}
+	}
+	for _, c := range []string{
+		"git commit -m own -- own.txt",
+		"git commit -m own own.txt",
+	} {
+		if msg := b.CheckCommand(c, dir); msg != "" {
+			t.Errorf("CheckCommand(%q) refused the run's own commit: %s", c, msg)
+		}
+	}
+
+	// The session unstaging the entry is the session's call; the plain
+	// commit then records only its own work.
+	git(t, dir, "restore", "--staged", "staged.txt")
+	if msg := b.CheckCommand("git commit -m own", dir); msg != "" {
+		t.Errorf("plain commit refused after the pre-staged entry was unstaged: %s", msg)
+	}
+
+	// The staged set survives the hook's save and reload.
+	data, err := MarshalBaseline(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := UnmarshalBaseline(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(back.Staged, []string{"staged.txt"}) {
+		t.Errorf("reloaded Staged = %v, want [staged.txt]", back.Staged)
 	}
 }
 
