@@ -24,19 +24,16 @@ func TestCodexSubagentMCP(t *testing.T) {
 		t.Fatalf("building klaudia: %v\n%s", err, out)
 	}
 
+	// A compiled binary, not a shell script. refuseWrapper rejects every
+	// executable that starts with "#!", and it must keep doing so: a script
+	// can prepend the bypass flag, which does not conflict with -s, and the
+	// child would run unsandboxed. The fixture has to be something the check
+	// accepts so the test can reach the tool at all.
 	fake := filepath.Join(t.TempDir(), "codex")
-	script := "#!/bin/sh\n" + `cd=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --cd) cd="$2"; shift 2;;
-    *) shift;;
-  esac
-done
-printf 'child was here\n' > "$cd/child.txt"
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}'
-`
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
+	fakeBuild := exec.Command("go", "build", "-o", fake, ".")
+	fakeBuild.Dir = filepath.Join(repoRoot, "cmd", "klaudia", "testdata", "fakecodex")
+	if out, err := fakeBuild.CombinedOutput(); err != nil {
+		t.Fatalf("building fake codex: %v\n%s", err, out)
 	}
 
 	root := t.TempDir()

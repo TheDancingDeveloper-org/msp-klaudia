@@ -1354,7 +1354,8 @@ not parse.
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | unset | Anthropic API key, sent as `x-api-key`. Wins over every other Anthropic credential. |
 | `ANTHROPIC_AUTH_TOKEN` | unset | Bearer token for the Anthropic API, used when `ANTHROPIC_API_KEY` is unset; wins over the Claude Code Keychain session. |
-| `KLAUDIA_CUSTOM_ENDPOINT` | Anthropic's production API | Base URL for the Anthropic provider (a proxy or gateway). The OpenAI-compatible provider uses `baseURL` in `config.toml` instead. |
+| `ANTHROPIC_BASE_URL` | unset (Anthropic's production API) | Base URL for the native Anthropic provider. `baseURL` in `config.toml` wins over it, and so does `KLAUDIA_CUSTOM_ENDPOINT`. |
+| `KLAUDIA_CUSTOM_ENDPOINT` | unset | Base URL for the Anthropic provider (a proxy or gateway), from `--custom-endpoint`. The OpenAI-compatible provider uses `baseURL` in `config.toml` instead. |
 | `KLAUDIA_MAX_RETRIES` | `5` | Retries for a failed model request (429, 5xx, dropped connection), with exponential backoff that honours `Retry-After`. A non-negative integer. |
 | `KLAUDIA_STREAM_IDLE_TIMEOUT` | `120` | Seconds a streamed turn may go without an event before it counts as stalled (see [Streaming & reliability](#streaming--reliability)). `0` disables the watchdog. |
 | `KLAUDIA_DISABLE_PROMPT_CACHE` | unset (caching on) | Any non-empty value — even `0` — stops Klaudia marking prompt-cache breakpoints on Anthropic requests, so every turn re-sends and is billed for the whole prompt. |
@@ -1368,6 +1369,12 @@ not parse.
 | `KLAUDIA_CHROME_USER_DATA_DIR` | `<config dir>/browser/chrome-profile` | Chrome profile directory (cookies, the solved-challenge state). Config: `browser.userDataDir`. |
 | `KLAUDIA_BROWSER_HEADLESS` | `true` | Run the launched Chrome headless. Config: `browser.headless`. |
 | `KLAUDIA_BROWSER_HEADED_FALLBACK` | `true` | On a search bot-challenge page, relaunch a headed Chrome so you can solve it once. Config: `browser.headedFallback`. |
+| `KLAUDIA_CURSOR_BLINK` | unset (steady) | `1`/`true`/`on`/`yes` makes the TUI input cursor blink; `0`/`false`/`off`/`no` keeps it steady. Wins over `[tui] cursor` in `config.toml` when set. |
+| `KLAUDIA_DUMP_FAILED_REQUEST` | unset (off) | File to append a redacted copy of a request the endpoint rejected. Headers are dropped and message text is replaced by its length, so the dump shows the request's shape, not its content. |
+| `KLAUDIA_MCP_CONNECT_TIMEOUT` | `30` | Seconds a stdio MCP server has to finish its handshake. A positive integer. |
+| `KLAUDIA_MCP_TOOL_TIMEOUT` | `600` | Seconds one MCP tool call may take, unless the server's own `timeout` in `.mcp.json` says otherwise. A positive integer. |
+| `KLAUDIA_CODEXSUB_DEPTH` | unset (`0`) | How many `klaudia mcp codex-subagent` servers are already stacked above this one. The server sets it in the child's environment and refuses to spawn once it passes `--max-depth`. |
+| `KLAUDIA_PROC_TAG` | unset | Set by Klaudia on the commands it runs, never by you. It marks a command's processes so that cancelling the command can still reach one that left its process group. |
 
 Variables you name yourself — `apiKeyEnv`, `extraHeadersEnv`, `${VAR}` in
 `.mcp.json` — are not listed. `cmd/klaudia/envdocs_test.go` keeps this table
