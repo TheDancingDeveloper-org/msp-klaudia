@@ -66,6 +66,42 @@ func TestCodexSubagentMCP(t *testing.T) {
 	}
 	defer session.Close()
 
+	// WI-1639: output_schema was published as an array of bytes because the
+	// field was a json.RawMessage, which the SDK infers from the Go type. A
+	// model cannot pass a JSON object through that. It must be an object.
+	listed, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inputSchema []byte
+	for _, tool := range listed.Tools {
+		if tool.Name == "spawn_isolated" {
+			inputSchema, err = json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if inputSchema == nil {
+		t.Fatal("spawn_isolated is not published")
+	}
+	var parsed struct {
+		Properties map[string]struct {
+			Type  string   `json:"type"`
+			Types []string `json:"types"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(inputSchema, &parsed); err != nil {
+		t.Fatalf("input schema %s: %v", inputSchema, err)
+	}
+	prop := parsed.Properties["output_schema"]
+	if prop.Type == "array" || containsString(prop.Types, "array") {
+		t.Fatalf("output_schema is an array, so a model cannot pass a JSON object: %s", inputSchema)
+	}
+	if prop.Type != "object" && !containsString(prop.Types, "object") {
+		t.Fatalf("output_schema type = %q/%v, want object: %s", prop.Type, prop.Types, inputSchema)
+	}
+
 	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      "spawn_isolated",
 		Arguments: codexsub.Request{Task: "do it", WorkingDir: root},
@@ -87,4 +123,13 @@ func TestCodexSubagentMCP(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(root, "child.txt")); err != nil || string(b) != "child was here\n" {
 		t.Fatalf("adopted file = %q, %v", b, err)
 	}
+}
+
+func containsString(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }

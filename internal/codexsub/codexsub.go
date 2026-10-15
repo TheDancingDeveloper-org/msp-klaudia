@@ -68,7 +68,14 @@ type Request struct {
 	// OutputSchema, when set, is a JSON Schema the child's final message must
 	// satisfy. A mismatch is an error and, for a worktree, nothing is adopted:
 	// a result the caller cannot use should not change their tree.
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
+	//
+	// The type is a JSON object, not json.RawMessage. RawMessage is a []byte,
+	// and the MCP SDK infers a tool schema from the Go type, so a RawMessage
+	// field is published as an array of bytes (integer items, minItems 1). A
+	// model then cannot pass the schema object it has. map[string]any infers
+	// an object, which is what a JSON Schema is. The cost is that a boolean
+	// schema ("true"/"false") cannot be expressed; callers pass objects.
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
 	// Background starts the child and returns a job id instead of waiting.
 	Background bool `json:"background,omitempty"`
 	// Job, when set, does not spawn anything: it reads the job of that id.
@@ -182,8 +189,10 @@ func (r *Runner) Run(ctx context.Context, req Request) (Result, error) {
 	default:
 		return Result{}, fmt.Errorf("isolation %q is not worktree or shared", req.Isolation)
 	}
-	if len(req.OutputSchema) > 0 && !json.Valid(req.OutputSchema) {
-		return Result{}, errors.New("output_schema is not valid JSON")
+	if len(req.OutputSchema) > 0 {
+		if _, err := json.Marshal(req.OutputSchema); err != nil {
+			return Result{}, fmt.Errorf("output_schema is not valid JSON: %w", err)
+		}
 	}
 	if req.Background {
 		return r.start(ctx, req, dir)
@@ -399,7 +408,11 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, st
 	}
 	if len(req.OutputSchema) > 0 {
 		schema := filepath.Join(tmp, "schema.json")
-		if werr := os.WriteFile(schema, req.OutputSchema, 0o600); werr != nil {
+		body, merr := json.Marshal(req.OutputSchema)
+		if merr != nil {
+			return "", "", fmt.Errorf("output_schema: %w", merr)
+		}
+		if werr := os.WriteFile(schema, body, 0o600); werr != nil {
 			return "", "", werr
 		}
 		args = append(args, "--output-schema", schema)
@@ -423,8 +436,23 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, st
 
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	// codex exec reads stdin whenever it is a pipe, even when the prompt is
+	// already an argument: it prints "Reading additional input from stdin..."
+	// and exits 1. The MCP server's own stdin is the transport, which is a
+	// pipe, and a child inherits it. Pointing the child's stdin at DevNull
+	// makes the argument the whole prompt.
+	devnull, oerr := os.Open(os.DevNull)
+	if oerr != nil {
+		return "", "", oerr
+	}
+	defer devnull.Close()
+	cmd.Stdin = devnull
 	// Depth travels in the environment because the child runs its own copy
 	// of this server, and that copy has no other way to know it is a child.
+	// The rest is the server's own environment. The session bootstrap exports
+	// the provider's credentials (HOMELAB_LITELLM_SESSION_KEY and the rest)
+	// into this process, and the child authenticates as the same provider,
+	// so it must see them too. os.Environ is that whole set.
 	cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%d", DepthEnv, r.Depth+1))
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -483,14 +511,11 @@ func finalFromEvents(out []byte) string {
 // The schema arrives from the caller, which is a model, so it is compiled with
 // the same restriction internal/schema uses: no $ref out of the document. A
 // schema of {"$ref":"file:///etc/hostname"} must not read that file.
-func validate(schema json.RawMessage, final string) error {
+func validate(schema map[string]any, final string) error {
 	if len(schema) == 0 {
 		return nil
 	}
-	var doc any
-	if err := json.Unmarshal(schema, &doc); err != nil {
-		return fmt.Errorf("output_schema: %w", err)
-	}
+	doc := any(schema)
 	c := jsonschema.NewCompiler()
 	c.UseLoader(jsonschema.SchemeURLLoader{
 		"file":  refuseExternal{},
