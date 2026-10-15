@@ -374,8 +374,11 @@ func (r *Runner) execute(ctx context.Context, req Request, dir string) (Result, 
 // --json prints an event per line; the last {"type":"item.completed"} whose
 // item is an agent message is the answer. -o writes the same answer to a file,
 // which is the fallback when the event stream has no such item. --ephemeral
-// keeps the child out of the user's session list: it was spawned, not
-// started by them.
+// keeps a child that has no session id out of the user's session list: it
+// was spawned, not started by them. It is mutually exclusive with
+// --session-id (codex: "--session-id is only supported when starting a new
+// persisted thread"), so a child that is given an id — the one the caller
+// resumes by — is persisted and not marked ephemeral.
 func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, string, error) {
 	bin := r.bin()
 	tmp, err := os.MkdirTemp("", "codexsub-")
@@ -392,7 +395,7 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, st
 	args := []string{
 		"exec", "--cd", dir,
 		"-s", sandbox,
-		"--json", "--ephemeral", "-o", last,
+		"--json", "-o", last,
 	}
 	if len(req.OutputSchema) > 0 {
 		schema := filepath.Join(tmp, "schema.json")
@@ -406,10 +409,15 @@ func (r *Runner) codex(ctx context.Context, dir string, req Request) (string, st
 	// that would make every spawn fail the moment the flag is accepted.
 	sessionID := uuid.NewString()
 	// TODO(WI-1126): the flag is withheld until the binary accepts it. See sessionIDSupported.
+	// --session-id starts a persisted thread, which --ephemeral refuses, so
+	// the two never share an argv. A binary that does not accept the id
+	// still gets --ephemeral, which is what keeps an unidentifiable child
+	// out of the session list.
 	if sessionIDSupported(bin) {
 		args = append(args, "--session-id", sessionID)
 	} else {
 		sessionID = ""
+		args = append(args, "--ephemeral")
 	}
 	args = append(args, req.Task)
 
