@@ -38,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -167,10 +168,11 @@ func hashWork(root, rel string) string {
 func hashIndex(root, rel string) string {
 	out, err := gitprobe.Command(root, "rev-parse", "--verify", "-q", ":"+rel).CombinedOutput()
 	if err != nil {
-		// -q leaves stdout empty and writes nothing when the revision is
-		// simply absent, so an empty result is "not in the index". Anything
-		// else — git missing, the index unreadable — fails closed.
-		if len(bytes.TrimSpace(out)) == 0 {
+		// git answers "not in the index" with exit 1 and empty output. An
+		// exec failure (git missing, the repo gone) is not that answer, so
+		// it fails closed even when the output happens to be empty.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 && len(bytes.TrimSpace(out)) == 0 {
 			return hashAbsent
 		}
 		return hashUnreadable
@@ -531,7 +533,7 @@ func discard(sub string, args []string) *discardSpec {
 	has := func(names ...string) bool {
 		for _, f := range flags {
 			for _, n := range names {
-				if f == n || strings.HasPrefix(f, n+"=") {
+				if f == n || strings.HasPrefix(f, n+"=") || longPrefix(sub, f, n) {
 					return true
 				}
 			}
@@ -644,13 +646,67 @@ func discard(sub string, args []string) *discardSpec {
 			return &discardSpec{tracked: true, stage: true, index: true}
 		}
 		// -i/--include records the named pathspecs and the index as it
-		// stands, so pre-staged work rides along (WI-1596).
-		if has("-i", "--include") {
+		// stands, so pre-staged work rides along (WI-1596). -i inside a
+		// cluster (-qi, -iq, -im) is the same option.
+		if has("-i", "--include") || shortHas('i') {
 			return &discardSpec{paths: paths, tracked: true, stage: true, index: true, flags: []string{"--include"}}
 		}
 		return &discardSpec{paths: paths, tracked: true, stage: true}
 	}
 	return nil
+}
+
+// longPrefix reports whether f is an unambiguous abbreviation of name for
+// sub, the way git matches a long option of that subcommand: for commit,
+// --incl and --inc are --include, but --in is not because --interactive
+// and --inter-hunk-context share that prefix. A name of the form --opt=
+// takes the same prefixes of --opt, with or without the value.
+func longPrefix(sub, f, name string) bool {
+	base, valued := name, false
+	if strings.HasSuffix(name, "=") {
+		base, valued = strings.TrimSuffix(name, "="), true
+	}
+	if !strings.HasPrefix(base, "--") || !strings.HasPrefix(f, "--") {
+		return false
+	}
+	flag, value := f, ""
+	if i := strings.IndexByte(f, '='); i >= 0 {
+		flag, value = f[:i], f[i+1:]
+	}
+	// The full name is already matched by the equality check; a prefix
+	// must be shorter, and a value only belongs to an option that takes one.
+	if len(flag) >= len(base) || !strings.HasPrefix(base, flag) || (value != "" && !valued) {
+		return false
+	}
+	n := 0
+	for _, o := range longOptions[sub] {
+		if strings.HasPrefix(o, flag) {
+			n++
+		}
+	}
+	return n == 1
+}
+
+// longOptions lists, per subcommand, the long options discard matches and
+// the git options that share a prefix with one of them. A prefix matches
+// only when exactly one name in that subcommand's list starts with it, so
+// a stash option cannot make a commit abbreviation look ambiguous.
+var longOptions = map[string][]string{
+	"commit": {
+		"--all", "--allow-empty", "--allow-empty-message", "--amend", "--author",
+		"--date", "--dry-run", "--file", "--fixup", "--include", "--inter-hunk-context",
+		"--interactive", "--message", "--no-edit", "--no-post-rewrite", "--no-verbose",
+		"--no-verify", "--only", "--patch", "--pathspec-file-nul", "--pathspec-from-file",
+		"--squash",
+	},
+	"clean":    {"--dry-run", "--exclude", "--force"},
+	"stash":    {"--all", "--include-untracked", "--keep", "--staged"},
+	"add":      {"--all", "--force", "--update"},
+	"reset":    {"--hard", "--keep", "--merge"},
+	"restore":  {"--conflict", "--source", "--staged", "--worktree"},
+	"checkout": {"--conflict", "--force", "--orphan"},
+	"switch":   {"--discard-changes", "--force", "--orphan"},
+	"rm":       {"--cached", "--force"},
 }
 
 // splitArgs separates flags from positional arguments. Everything after `--`
@@ -819,15 +875,13 @@ func (b *Baseline) stillStaged() []string {
 			continue
 		}
 		got := hashIndex(b.Root, p)
-		switch got {
-		case hashAbsent:
-			// The session took it out of the index.
-		case hashUnreadable:
+		switch {
+		case got == hashUnreadable:
 			keep = append(keep, p)
-		default:
-			if got == want {
-				keep = append(keep, p)
-			}
+		case got == want:
+			// Unchanged since capture, including a deletion the user had
+			// already staged: hashAbsent on both sides is still that entry.
+			keep = append(keep, p)
 		}
 	}
 	return keep
