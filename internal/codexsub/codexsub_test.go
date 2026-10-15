@@ -3,7 +3,6 @@ package codexsub
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,7 +117,7 @@ func TestSchemaMismatchAdoptsNothing(t *testing.T) {
 	_, err := r.Run(context.Background(), Request{
 		Task:         "do it",
 		WorkingDir:   root,
-		OutputSchema: json.RawMessage(`{"type":"object","required":["ok"]}`),
+		OutputSchema: map[string]any{"type": "object", "required": []any{"ok"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "output_schema") {
 		t.Fatalf("got %v, want a schema error", err)
@@ -135,7 +134,7 @@ func TestSchemaMatch(t *testing.T) {
 	res, err := r.Run(context.Background(), Request{
 		Task:         "do it",
 		WorkingDir:   root,
-		OutputSchema: json.RawMessage(`{"type":"object","required":["ok"]}`),
+		OutputSchema: map[string]any{"type": "object", "required": []any{"ok"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,6 +289,56 @@ env > "$CODEXSUB_ENV"
 	}
 	if strings.Contains(string(e), "CODEX_NONINTERACTIVE") {
 		t.Errorf("CODEX_NONINTERACTIVE is not a Codex variable: %s", e)
+	}
+}
+
+// TestChildInheritsProviderEnv checks the third failure of WI-1639: with its
+// stdin closed, the child died on a missing HOMELAB_LITELLM_SESSION_KEY. The
+// session bootstrap exports the provider's credentials into this process,
+// and the child authenticates as the same provider, so it must see them.
+func TestChildInheritsProviderEnv(t *testing.T) {
+	root := repo(t)
+	env := filepath.Join(t.TempDir(), "env")
+	t.Setenv("CODEXSUB_ENV", env)
+	const key = "HOMELAB_LITELLM_SESSION_KEY"
+	t.Setenv(key, "test-session-key")
+	t.Setenv("HOMELAB_LITELLM_BASE_URL", "http://litellm.test/v1")
+	r := &Runner{Bin: fakeCodex(t, `env > "$CODEXSUB_ENV"
+	`+echoAgent("done"))}
+
+	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{key + "=test-session-key", "HOMELAB_LITELLM_BASE_URL=http://litellm.test/v1"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("child env missing %q", want)
+		}
+	}
+}
+
+// TestChildStdinIsDevNull checks the second failure of WI-1639. codex exec
+// reads stdin whenever it is a pipe, even with the prompt already in argv,
+// and the MCP server's stdin is a pipe the child would otherwise inherit.
+// The runner must hand the child os.DevNull, so a read returns nothing.
+func TestChildStdinIsDevNull(t *testing.T) {
+	root := repo(t)
+	marker := filepath.Join(t.TempDir(), "stdin")
+	t.Setenv("CODEXSUB_STDIN", marker)
+	r := &Runner{Bin: fakeCodex(t, `cat > "$CODEXSUB_STDIN"
+	`+echoAgent("done"))}
+	if _, err := r.Run(context.Background(), Request{Task: "do it", WorkingDir: root}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bytes.TrimSpace(got)) != 0 {
+		t.Fatalf("child read %q from stdin; want nothing (os.DevNull)", got)
 	}
 }
 
