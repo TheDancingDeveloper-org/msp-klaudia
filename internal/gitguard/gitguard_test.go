@@ -887,6 +887,40 @@ func TestGuardKeepsBaselineAcrossGitActivity(t *testing.T) {
 	}
 }
 
+// A linked worktree shares its main checkout's config, and git rewrites that
+// file whenever any worktree creates a branch or records an upstream. That
+// must not drop the remembered baseline: re-capturing would count the files
+// this run wrote in the worktree as the user's, which is what refused workers
+// committing their own edits (WI-1670). A rewrite of the worktree's own git
+// dir config still drops it, because that is what retargets the worktree.
+func TestGuardKeepsLinkedWorktreeBaselineWhenSharedConfigChanges(t *testing.T) {
+	main := repo(t)
+	b, err := Capture(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "wt")
+	git(t, main, "worktree", "add", "-q", "-b", "agent", wt)
+	if msg := b.CheckCommand("git status --short", wt); msg != "" {
+		t.Fatalf("first touch of a clean linked worktree was refused: %s", msg)
+	}
+	// Another worktree's branch lands in the shared config, after the baseline
+	// was taken and before this run writes anything.
+	git(t, main, "checkout", "-qb", "unrelated")
+	write(t, wt, "mine.go", "package mine\n")
+
+	if msg := b.CheckCommand("git add mine.go && git commit -qm mine", wt); msg != "" {
+		t.Errorf("committing the run's own file was refused after the shared config changed: %s", msg)
+	}
+	// A rewrite that retargets the tree still drops the baseline: changing
+	// core.worktree in the shared config is a different tree, so a later add of
+	// everything is refused.
+	git(t, main, "config", "core.worktree", "/somewhere/else")
+	if msg := b.CheckCommand("git add -A", wt); msg == "" {
+		t.Error("git add -A was allowed after core.worktree changed")
+	}
+}
+
 // A cached probe is trusted only while the directory still belongs to the tree
 // it names. After the run has probed a subdirectory, a .git entry written there
 // — a fresh repository, or a gitdir file pointing at the start repository —
