@@ -43,10 +43,12 @@ type persistedEntry struct {
 }
 
 type persistedConfig struct {
-	Path string `json:"path"`
-	Dev  uint64 `json:"dev"`
-	Ino  uint64 `json:"ino"`
-	Nsec int64  `json:"nsec"`
+	Path   string `json:"path"`
+	Dev    uint64 `json:"dev"`
+	Ino    uint64 `json:"ino"`
+	Nsec   int64  `json:"nsec"`
+	Shared bool   `json:"shared,omitempty"`
+	Anchor string `json:"anchor,omitempty"`
 }
 
 // MarshalBaseline encodes b, including the baselines of other work trees the
@@ -78,7 +80,7 @@ func toPersisted(b *Baseline) *persisted {
 			NoConfig: b.id.noConfig,
 		}
 		for _, c := range b.id.configs {
-			id.Configs = append(id.Configs, persistedConfig{c.path, c.dev, c.ino, c.nsec})
+			id.Configs = append(id.Configs, persistedConfig{Path: c.path, Dev: c.dev, Ino: c.ino, Nsec: c.nsec, Shared: c.shared, Anchor: c.anchor})
 		}
 		p.Identity = id
 	}
@@ -103,7 +105,7 @@ func fromPersisted(p *persisted) *Baseline {
 			noConfig: id.NoConfig,
 		}
 		for _, c := range id.Configs {
-			b.id.configs = append(b.id.configs, configStamp{c.Path, c.Dev, c.Ino, c.Nsec})
+			b.id.configs = append(b.id.configs, configStamp{path: c.Path, dev: c.Dev, ino: c.Ino, nsec: c.Nsec, shared: c.Shared, anchor: c.Anchor})
 		}
 	}
 	if len(p.Others) > 0 {

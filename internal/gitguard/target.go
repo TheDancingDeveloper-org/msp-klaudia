@@ -1,6 +1,7 @@
 package gitguard
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,13 +165,17 @@ type entryStamp struct {
 	known  bool // dev and ino were readable
 }
 
-// configStamp records one config file by the device and inode it occupies and
-// its ctime, neither of which userland can forge.
+// configStamp records one config file. A file of the git dir itself is recorded
+// by the device and inode it occupies and its ctime, neither of which userland
+// can forge. A shared file is recorded by the lines that say where the work
+// tree points, because its inode changes under ordinary branch bookkeeping.
 type configStamp struct {
-	path string
-	dev  uint64
-	ino  uint64
-	nsec int64
+	path   string
+	dev    uint64
+	ino    uint64
+	nsec   int64
+	shared bool   // the common config a linked worktree shares
+	anchor string // the retargeting lines of a shared config
 }
 
 // identityOf reads the identity of the work tree rooted at top that resolves
@@ -212,12 +217,29 @@ func stampEntry(p string) entryStamp {
 
 // stampConfigs reads the config files of a git dir: its own config, the common
 // config a linked worktree shares with its main checkout, and config.worktree
-// where one is present. A path that does not exist is not stamped; a path that
-// exists but cannot be read fails the whole set, so the identity is not trusted.
+// where one is present. A path that does not exist is not stamped, except the
+// git dir's own config, which is always recorded — a linked worktree's git dir
+// usually has none, and skipping it would leave the shared config as the first
+// stamp, which configDir reads back as the git dir. A path that exists but
+// cannot be read fails the whole set, so the identity is not trusted.
+//
+// The common config is stamped by content, not by inode. A linked worktree has
+// no config of its own, so that shared file is the only one it can be anchored
+// on — and every `git checkout -b` or `git worktree add` rewrites it to record
+// the new branch's upstream, which changes its inode and ctime without
+// retargeting any worktree. Stamping the inode made one session's new branch
+// drop every other session's remembered baseline, so the next touch captured
+// afresh and recorded the files that session had written as the user's
+// (WI-1670). The keys that do retarget a worktree (core.worktree,
+// core.bare) are still compared, so a rewrite that changes where the tree
+// points keeps failing the identity.
 func stampConfigs(gitDir string) []configStamp {
-	paths := []string{filepath.Join(gitDir, "config")}
-	if common := commonDir(gitDir); common != "" && canonical(common) != canonical(gitDir) {
-		paths = append(paths, filepath.Join(common, "config"))
+	own := filepath.Join(gitDir, "config")
+	paths := []string{own}
+	common := ""
+	if c := commonDir(gitDir); c != "" && canonical(c) != canonical(gitDir) {
+		common = filepath.Join(c, "config")
+		paths = append(paths, common)
 	}
 	paths = append(paths, filepath.Join(gitDir, "config.worktree"))
 	var out []configStamp
@@ -225,6 +247,9 @@ func stampConfigs(gitDir string) []configStamp {
 		fi, err := os.Lstat(p)
 		if err != nil {
 			if os.IsNotExist(err) {
+				if p == own {
+					out = append(out, configStamp{path: p})
+				}
 				continue
 			}
 			return nil
@@ -233,9 +258,33 @@ func stampConfigs(gitDir string) []configStamp {
 		if !ok {
 			return nil
 		}
-		out = append(out, configStamp{path: p, dev: uint64(st.Dev), ino: st.Ino, nsec: int64(st.Ctim.Sec)*1e9 + int64(st.Ctim.Nsec)})
+		cs := configStamp{path: p, dev: uint64(st.Dev), ino: st.Ino, nsec: int64(st.Ctim.Sec)*1e9 + int64(st.Ctim.Nsec)}
+		if p == common {
+			body, err := os.ReadFile(p)
+			if err != nil {
+				return nil
+			}
+			cs.shared, cs.anchor = true, configAnchor(body)
+		}
+		out = append(out, cs)
 	}
 	return out
+}
+
+// configAnchor keeps the lines of a shared config that say where a work tree
+// points. Branch tracking rewrites everything else — a new branch.<name>.remote
+// and branch.<name>.merge — on every checkout and worktree add, and that must
+// not look like a different tree.
+func configAnchor(body []byte) string {
+	var keep []string
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		t := strings.TrimSpace(string(line))
+		low := strings.ToLower(t)
+		if strings.HasPrefix(low, "[core]") || strings.HasPrefix(low, "worktree") || strings.HasPrefix(low, "bare") {
+			keep = append(keep, low)
+		}
+	}
+	return strings.Join(keep, "\n")
 }
 
 // commonDir reads the commondir a linked worktree's git dir names, or "" when
@@ -287,6 +336,12 @@ func stampsEqual(a, b []configStamp) bool {
 		return false
 	}
 	for i := range a {
+		if a[i].shared || b[i].shared {
+			if a[i].path != b[i].path || a[i].anchor != b[i].anchor {
+				return false
+			}
+			continue
+		}
 		if a[i] != b[i] {
 			return false
 		}
